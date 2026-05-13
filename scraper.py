@@ -74,9 +74,9 @@ def get_result(query):
     else:
         split_query=['--**retry search**--',11]
         link=search(query)
-    ignore_list=['weather.com','finance.yahoo.com','www.mlb.com','www.espn.com','nytimes.com']
+    ignore_list=['weather.com','finance.yahoo.com','www.mlb.com','www.espn.com','nytimes.com','www.accuweather.com']
     #print(link)
     for i in link:  
         data=scrape(i)
-        if ('https://' in i) and (data != '' and 'Error: Unable to retrieve content. Status code' not in data) and (i != int(split_query[1])) and (i.split('https://')[1].split('/')[0] not in ignore_list):
+        if data is not None and ('https://' in i) and (data != '' and 'Error: Unable to retrieve content. Status code' not in data) and (i != int(split_query[1])) and (i.split('https://')[1].split('/')[0] not in ignore_list):
             return data[:3000], i, link.index(i)
