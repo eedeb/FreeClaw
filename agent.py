@@ -6,8 +6,8 @@ import shlex
 import scraper
 from datetime import datetime
 from json_repair import repair_json
-
-
+import alexa_integration as alexa
+import smart_tv as tv
 
 
 location=None
@@ -34,16 +34,24 @@ def reset(groq_key, location_innit):
         }
     ]
 
+    best_sites = [
+        {
+            "weather": ["localconditions.com"],
+            "news": ["bbc.com", "atoztimes.com"]
+        }
+    ]
+    
     tools = [
         {
             "type": "function",
             "function": {
                 "name": "search",
-                "description": "Fetches validated, up-to-date information for real-time queries.",
+                "description": "Fetches validated, up-to-date information for real-time queries. Only call this tool a maximum of 2 times per task — if you have sufficient data after 1-2 searches, proceed to the next step immediately. If you don't have the sufficient data, report back to the user after a maximium of 2 searches. Here is a website guide: "+str(best_sites),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                    "query": { "type": "string", "description": "The natural language query to answer" }
+                        "query": { "type": "string", "description": "The natural language query to answer" },
+                        "site": { "type": ["string","null"], "description": "The site to be searched or None" }
                     },
                     "required": ["query"]
                 }
@@ -53,7 +61,7 @@ def reset(groq_key, location_innit):
             "type": "function",
             "function": {
                 "name": "read_web",
-                "description": "Returns the first 3000 English characters of a webpage",
+                "description": "Returns the first 3000 English characters of a webpage. Only use this if the user tells you to specifically look at a webpage.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -90,6 +98,48 @@ def reset(groq_key, location_innit):
                         "contents": { "type": "string", "description": "HTML code" }
                     },
                     "required": ["filename","contents"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "alexa",
+                "description": "Sends directions to an Alexa connected to my house. Use this command for common Alexa funcitons, such as smarthome tasks and music.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Directions for Alexa" }
+                    },
+                    "required": ["command"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "tv_control",
+                "description": "Sends directions to a smart TV",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Either on, off, volume up, or volume down" }
+                    },
+                    "required": ["command"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "youtube",
+                "description": "Plays youtube videos on my smart TV.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "media_id": { "type": "string", "description": "The exact media id of the video to be played." }
+                    },
+                    "required": ["media_id"]
                 }
             }
         },
@@ -221,12 +271,14 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         eco_messages = [agent_messages[0]] + agent_messages[start_index:]
     else:
         raise Exception("You must have either user input or system input.")
-
+    '''
     print('##########################################################################')
     print('\n')
     print(eco_messages)
     print('\n')
     print('##########################################################################')
+    '''
+    print('Reveived: '+agent_input)
     completion = client.chat.completions.create(
         model=model,
         messages=eco_messages,
@@ -238,7 +290,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
     )
     assistant_msg=completion.choices[0].message
     buffer=completion.choices[0].message.content
-
+    print('Agent: '+buffer if buffer is not None else ' ')
 
 
 
@@ -276,14 +328,19 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         fixed_tool_args = repair_json(tool_args)
 
         args_dict = json.loads(fixed_tool_args)
-        parameter = args_dict.get('query') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or None
+        parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
+        print('Agent called tool: '+command_name)
+        print('Agent parameter: '+parameter if parameter else ' ')
         if command_name == 'search':
 
 
+            query=args_dict.get('query')
 
-
-            web_data=scraper.get_result(parameter)
-
+            site=args_dict.get('site') or None
+            if site is not None:
+                web_data=scraper.get_result(parameter+' - '+site)
+            else:
+                web_data=scraper.get_result(parameter)
             #print(web_data)
 
 
@@ -305,7 +362,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             return agent(tool_input=report+" - "+web_data[1], tool_id=tool_call.id,tool_name=command_name)
 
         elif command_name == 'read_web':
-            site_data=scrape(parameter)
+            site_data=scraper.scrape(parameter)
             return agent(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
         
 
@@ -332,14 +389,36 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
                 f.write(contents)
             return agent(tool_input="Your site is live at https://app.chat314.com/newtab/agent/"+filename.replace('.html',''), tool_id=tool_call.id,tool_name=command_name)
         
+        elif command_name == 'alexa':
+            alexa.send_to_alexa(parameter)
+            output='Command sent to alexa.'
+            return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         
-        
+        elif command_name == 'tv_control':
+            if parameter.lower() == 'on':
+                tv.tv_on()
+                output='TV turned on.'
+            elif parameter.lower() == 'off':
+                tv.tv_off()
+                output='TV turned off.'
+            elif parameter.lower() == 'volume up':
+                tv.volume_up()
+                output='TV volume turned up.'
+            elif parameter.lower() == 'volume down':
+                tv.volume_down()
+                output='TV volume turned down.'
+            return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
+        elif command_name == 'youtube':
+            media_id=args_dict.get('media_id')
+            tv.play_youtube(media_id)
+            output='Playing video on TV.'
+            return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'run_bash_command':
             print(parameter)
             run_command='y'
             if run_command.lower() == 'y':
                 proc = subprocess.Popen(
-                    f'cmd /c {parameter}',
+                    f'{parameter}',
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
