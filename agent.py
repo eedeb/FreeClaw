@@ -17,7 +17,7 @@ agent_messages=[]
 tools=[]
 
 
-def reset(groq_key, location_innit):
+def reset(groq_key, location_innit,tts=False):
     global client
     client = Groq(api_key=groq_key)
     global location
@@ -27,12 +27,20 @@ def reset(groq_key, location_innit):
 
     global agent_messages
     global tools
-    agent_messages=[
-        {
-        "role": "system",
-        "content": f"You are a helpful AI agent. Use the tools only if you need them to get data. Today's date is {datetime.now().strftime('%B %d, %Y')}."
-        }
-    ]
+    if tts:
+        agent_messages=[
+            {
+            "role": "system",
+            "content": f"You are a helpful AI agent. Use the tools only if you need them to get data. Your output will be via text-to-speech, so format accordingly. Today's date is {datetime.now().strftime('%B %d, %Y')}."
+            }
+        ]
+    else:
+        agent_messages=[
+            {
+            "role": "system",
+            "content": f"You are a helpful AI agent. Use the tools only if you need them to get data. Today's date is {datetime.now().strftime('%B %d, %Y')}."
+            }
+        ]
 
     best_sites = [
         {
