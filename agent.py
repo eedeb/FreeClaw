@@ -83,7 +83,7 @@ def reset(groq_key, location_innit,tts=False):
             "type": "function",
             "function": {
                 "name": "create_file",
-                "description": "Creates a file for the user to access",
+                "description": "Creates interoperable outputs for other applications and systems. Use for documents, data exports, scripts, configurations, automation artifacts, and other task-completing file outputs.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -345,6 +345,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             query=args_dict.get('query')
 
             site=args_dict.get('site') or None
+            print('Site: '+site if site else None)
             if site is not None:
                 web_data=scraper.get_result(parameter+' - '+site)
             else:
