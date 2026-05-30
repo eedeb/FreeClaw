@@ -10,6 +10,14 @@ import alexa_integration as alexa
 import smart_tv as tv
 
 
+html_dir='/Flask/templates/'
+static_dir='/Flask/static/'
+
+import socket
+ip = socket.gethostbyname(socket.gethostname())
+
+url='https://'+ip+':6767'
+
 location=None
 client = None
 
@@ -381,9 +389,9 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             if "/" in filename or "\\" in filename:
                 return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
             contents=args_dict.get('contents')
-            with open('/root/AI_page/static/'+filename, "w", encoding="utf-8") as f:
+            with open(static_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            return agent(tool_input="Your file is accessable at https://app.chat314.com/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
+            return agent(tool_input="Your file is accessable at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
         
 
 
@@ -394,9 +402,9 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             if "/" in filename or "\\" in filename:
                 return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
             contents=args_dict.get('contents')
-            with open('/root/AI_page/templates/agent/'+filename, "w", encoding="utf-8") as f:
+            with open(html_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            return agent(tool_input="Your site is live at https://app.chat314.com/newtab/agent/"+filename.replace('.html',''), tool_id=tool_call.id,tool_name=command_name)
+            return agent(tool_input="Your site is live at "+url+"/"+filename.replace('.html',''), tool_id=tool_call.id,tool_name=command_name)
         
         elif command_name == 'alexa':
             alexa.send_to_alexa(parameter)
