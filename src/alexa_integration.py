@@ -24,7 +24,7 @@ def send_to_alexa(text):
         "media_content_id": text
     }
 
-    response = requests.post(api_url, headers=headers, json=data)
+    response = requests.post(api_url+'/api/services/media_player/play_media', headers=headers, json=data)
 
     print(response.status_code)
     print(response.text)
