@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 try:
     load_dotenv()
     TOKEN=os.getenv("HA_TOKEN")
-    api_url=os.getenv("HA_URL")
+    api_url='http://'+os.getenv("HA_URL")
 except:
     TOKEN = ""
     api_url = ""
