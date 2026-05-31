@@ -18,6 +18,7 @@ venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 venv/bin/pip install classy-ai
 venv/bin/pip install sentence_transformers --no-deps
 venv/bin/pip install flask groq ddgs beautifulsoup4 json-repair python-dotenv uvicorn
+venv/bin/pip install fastapi
 
 echo 'Setting up directories...'
 mkdir -p Flask/static

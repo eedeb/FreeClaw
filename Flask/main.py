@@ -33,6 +33,12 @@ def chat():
         if user_input.lower() == '/reset':
             agent.reset(groq_key, location)
             return jsonify({'response': 'Agent reset successfully'})
+        elif user_input.lower() == '/startapi':
+            os.system("sudo systemctl start FreeClawAPI.service")
+            return jsonify({'response': 'API started successfully on port 8080'})
+        elif user_input.lower() == '/stopapi':
+            os.system("sudo systemctl stop FreeClawAPI.service")
+            return jsonify({'response': 'API stopped successfully'})
         else:
             response = agent.agent(user_input=user_input)
             return jsonify({'response': response})

@@ -1,8 +1,16 @@
 import src.agent as agent
-tts=False
-groq_key=""
-location=""
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+groq_key=os.getenv("API_KEY")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+location=BASE_DIR+"/../models/data.pth"
+
+tts=True
 
 agent.reset(groq_key, location, tts=tts)
 
