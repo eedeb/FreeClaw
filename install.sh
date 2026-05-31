@@ -1,34 +1,33 @@
 #!/bin/bash
-echo 'cloning repository...'
+set -e
+
+# Verify required tools
+for cmd in git python3 sudo; do
+    command -v "$cmd" &>/dev/null || { echo "Error: $cmd is required but not found."; exit 1; }
+done
+
+echo 'Cloning repository...'
 git clone https://github.com/eedeb/FreeClaw
-cd FreeClaw
-echo 'setting up virtual environment...'
+cd FreeClaw || exit 1
+
+echo 'Setting up virtual environment...'
 python3 -m venv venv
-source venv/bin/activate
-echo 'installing dependencies...'
 
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install classy-ai
-pip install sentence_transformers --no-deps
+echo 'Installing dependencies...'
+venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+venv/bin/pip install classy-ai
+venv/bin/pip install sentence_transformers --no-deps
+venv/bin/pip install flask groq ddgs beautifulsoup4 json-repair python-dotenv uvicorn
 
-pip install flask
-pip install groq
-pip install ddgs
-pip install beautifulsoup4
-pip install json-repair
-pip install python-dotenv
-pip install uvicorn
+echo 'Setting up directories...'
+mkdir -p Flask/static
 
-echo 'settig up directories...'
-mkdir Flask/static
+read -p "Enter your API key: " api_key < /dev/tty
+printf 'API_KEY=%s\n' "$api_key" > .env
+chmod 600 .env
+echo 'API key saved to .env'
 
-read -p "Enter your API key: " api_key
-echo "API_KEY=$api_key" > .env
-echo "API key saved to .env"
-
-
-echo 'settting up systemctl...'
-
+echo 'Setting up systemctl...'
 INSTALL_DIR=$(pwd)
 USER_NAME=$(whoami)
 
@@ -49,7 +48,6 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-
 sudo tee /etc/systemd/system/FreeClawAPI.service > /dev/null <<EOF
 [Unit]
 Description=FreeClaw API service
@@ -67,18 +65,19 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-
-
-
 sudo systemctl daemon-reload
+
 sudo systemctl enable FreeClaw.service
 sudo systemctl start FreeClaw.service
 
-chmod +x ha_setup.sh
-read -p "Do you want to set up Home Assistant integration? (y/n) " answer
-if [[ "$answer" == "y" ]]; then
-    ./ha_setup.sh
-else
-    echo "Skipping Home Assistant setup."
-fi
 
+if [[ -x ha_setup.sh ]]; then
+    read -p "Do you want to set up Home Assistant integration? (y/n) " answer < /dev/tty
+    if [[ "$answer" == "y" ]]; then
+        ./ha_setup.sh
+    else
+        echo "Skipping Home Assistant setup."
+    fi
+else
+    echo "Warning: ha_setup.sh not found or not executable, skipping Home Assistant setup."
+fi
