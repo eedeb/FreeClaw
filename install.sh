@@ -82,3 +82,13 @@ if [[ -x ha_setup.sh ]]; then
 else
     echo "Warning: ha_setup.sh not found or not executable, skipping Home Assistant setup."
 fi
+
+IP=$(hostname -I | awk '{print $1}')
+
+echo ""
+echo "======================================="
+echo "Installation complete!"
+echo ""
+echo "Open the following URL in your browser:"
+echo "http://$IP:8080"
+echo "======================================="
