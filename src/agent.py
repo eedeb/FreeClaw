@@ -3,20 +3,29 @@ import Classy
 from groq import Groq
 import subprocess
 import shlex
-import scraper
+import src.scraper as scraper
 from datetime import datetime
 from json_repair import repair_json
-import alexa_integration as alexa
-import smart_tv as tv
+import src.alexa_integration as alexa
+import src.smart_tv as tv
+import os
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-html_dir='/Flask/templates/'
-static_dir='/Flask/static/'
+html_dir=BASE_DIR+'/../Flask/templates/agent/'
+static_dir=BASE_DIR+'/../Flask/static/'
 
 import socket
-ip = socket.gethostbyname(socket.gethostname())
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-url='https://'+ip+':6767'
+try:
+    # Doesn't actually send data
+    s.connect(("8.8.8.8", 80))
+    ip = s.getsockname()[0]
+finally:
+    s.close()
+
+url='http://'+ip+':6767'
 
 location=None
 client = None
@@ -90,13 +99,13 @@ def reset(groq_key, location_innit,tts=False):
         {
             "type": "function",
             "function": {
-                "name": "create_file",
-                "description": "Creates interoperable outputs for other applications and systems. Use for documents, data exports, scripts, configurations, automation artifacts, and other task-completing file outputs.",
+                "name": "create_page",
+                "description": "Creates an HTML page for the user to see",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "filename": { "type": "string", "description": "name_of_your_file.something" },
-                        "contents": { "type": "string", "description": "Contents of file, can leave blank" }
+                        "filename": { "type": "string", "description": "name_of_your_webpage.html" },
+                        "contents": { "type": "string", "description": "HTML code" }
                     },
                     "required": ["filename","contents"]
                 }
@@ -105,13 +114,13 @@ def reset(groq_key, location_innit,tts=False):
         {
             "type": "function",
             "function": {
-                "name": "create_page",
-                "description": "Creates an HTML page for the user to see",
+                "name": "create_file",
+                "description": "Creates interoperable outputs for other applications and systems. Use for documents, data exports, scripts, configurations, automation artifacts, and other task-completing file outputs.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "filename": { "type": "string", "description": "name_of_your_webpage.html" },
-                        "contents": { "type": "string", "description": "HTML code" }
+                        "filename": { "type": "string", "description": "name_of_your_file.something" },
+                        "contents": { "type": "string", "description": "Contents of file, can leave blank" }
                     },
                     "required": ["filename","contents"]
                 }
@@ -404,7 +413,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             contents=args_dict.get('contents')
             with open(html_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            return agent(tool_input="Your site is live at "+url+"/"+filename.replace('.html',''), tool_id=tool_call.id,tool_name=command_name)
+            return agent(tool_input="Your site is live at "+url+"/agent/agent/"+filename.replace('.html',''), tool_id=tool_call.id,tool_name=command_name)
         
         elif command_name == 'alexa':
             alexa.send_to_alexa(parameter)

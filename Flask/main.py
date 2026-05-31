@@ -1,5 +1,16 @@
-from flask import Flask, render_template_string, abort, send_from_directory
+from flask import Flask, render_template_string, abort, send_from_directory, render_template, request, jsonify
+import src.agent as agent
+
+from dotenv import load_dotenv
 import os
+load_dotenv()
+groq_key=os.getenv("API_KEY")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+location=BASE_DIR+"/../models/data.pth"
+
+agent.reset(groq_key, location)
 
 app = Flask(__name__)
 
@@ -7,21 +18,33 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
 
 
-@app.route('/<filename>')
-def serve_template(filename):
-    if not filename.endswith('.html'):
-        abort(404)
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    template_path = os.path.join(TEMPLATES_DIR, filename)
 
-    if not os.path.isfile(template_path):
-        abort(404)
+@app.route('/chat', methods=['POST'])
+def chat():
+    data = request.get_json()
+    user_input = data.get('message', '').strip()
+    if not user_input:
+        return jsonify({'error': 'Empty message'}), 400
+    try:
+        if user_input.lower() == '/reset':
+            agent.reset(groq_key, location)
+            return jsonify({'response': 'Agent reset successfully'})
+        else:
+            response = agent.agent(user_input=user_input)
+            return jsonify({'response': response})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-    with open(template_path, 'r') as f:
-        content = f.read()
 
-    return render_template_string(content)
-
+@app.route('/agent/<path:text>')
+def serve_template(text):
+    template_folder=app.template_folder or 'templates'
+    file_path = os.path.join(template_folder, f"{text}.html")
+    return render_template(f"{text}.html")
 
 @app.route('/static/<path:filename>')
 def serve_static(filename):
