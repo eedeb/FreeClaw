@@ -1,4 +1,4 @@
-import agent
+import src.agent as agent
 tts=False
 groq_key=""
 location=""

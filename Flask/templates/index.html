@@ -345,7 +345,7 @@
       <span class="header-tagline">an AI agent that doesn't burn your money</span>
     </div>
     <div class="header-right">
-      <span id="msg-count">0 messages</span>
+      <span id="token-count">~0 tokens</span>
       <button id="reset-btn" title="Clear conversation">reset</button>
     </div>
   </header>
@@ -373,23 +373,25 @@
   const messagesEl = document.getElementById('messages');
   const inputEl    = document.getElementById('user-input');
   const sendBtn    = document.getElementById('send-btn');
-  const countEl   = document.getElementById('msg-count');
+  const countEl   = document.getElementById('token-count');
   const emptyEl   = document.getElementById('empty-state');
 
   const resetBtn   = document.getElementById('reset-btn');
 
-  let msgCount = 0;
+  let totalTokens = 0;
   let emptyRemoved = false;
+
+  const estimate = str => Math.ceil(str.length / 4);
 
   marked.setOptions({ breaks: true, gfm: true });
 
   function updateCount() {
-    countEl.textContent = msgCount + (msgCount === 1 ? ' message' : ' messages');
+    countEl.textContent = '~' + totalTokens.toLocaleString() + ' tokens';
   }
 
   function addMessage(role, text) {
     if (emptyEl) emptyEl.remove();
-    msgCount++;
+    totalTokens += estimate(text);
     updateCount();
 
     const wrap = document.createElement('div');
@@ -484,7 +486,7 @@
       await fetch('/reset', { method: 'POST' });
     } catch (_) {}
     messagesEl.innerHTML = '';
-    msgCount = 0;
+    totalTokens = 0;
     updateCount();
     emptyRemoved = false;
     const empty = document.createElement('div');

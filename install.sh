@@ -17,6 +17,7 @@ pip install ddgs
 pip install beautifulsoup4
 pip install json-repair
 pip install python-dotenv
+pip install uvicorn
 
 echo 'settig up directories...'
 mkdir Flask/static
@@ -47,6 +48,27 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
+
+sudo tee /etc/systemd/system/FreeClawAPI.service > /dev/null <<EOF
+[Unit]
+Description=FreeClaw API service
+After=network.target
+
+[Service]
+Type=simple
+User=$USER_NAME
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/uvicorn src.api:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+
 
 sudo systemctl daemon-reload
 sudo systemctl enable FreeClaw.service
