@@ -70,7 +70,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable FreeClaw.service
 sudo systemctl start FreeClaw.service
 
-
+chmod +x ha_setup.sh
 if [[ -x ha_setup.sh ]]; then
     read -p "Do you want to set up Home Assistant integration? (y/n) " answer < /dev/tty
     if [[ "$answer" == "y" ]]; then
