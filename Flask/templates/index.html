@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Agent Chat</title>
+  <title>FreeClaw</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
@@ -87,12 +87,47 @@
       color: var(--text);
     }
 
+    .header-title { display: flex; flex-direction: column; gap: 2px; }
+    .header-title h1 {
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    .header-tagline {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
     header span {
       font-family: var(--mono);
       font-size: 11px;
       color: var(--muted);
-      margin-left: auto;
     }
+    #reset-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 5px 10px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #reset-btn:hover { border-color: rgba(192,57,57,0.4); color: #e05555; }
+    #reset-btn:active { transform: scale(0.97); }
 
     /* Messages */
     #messages {
@@ -305,20 +340,26 @@
 <div id="app">
   <header>
     <div class="header-dot"></div>
-    <h1>Agent</h1>
-    <span id="msg-count">0 messages</span>
+    <div class="header-title">
+      <h1>FreeClaw</h1>
+      <span class="header-tagline">an AI agent that doesn't burn your money</span>
+    </div>
+    <div class="header-right">
+      <span id="msg-count">0 messages</span>
+      <button id="reset-btn" title="Clear conversation">reset</button>
+    </div>
   </header>
 
   <div id="messages">
     <div id="empty-state">
-      <div class="big">◈</div>
-      <div>start a conversation</div>
+      <div class="big">🦅</div>
+      <div>search the web, run bash, control smart home, write files…</div>
     </div>
   </div>
 
   <p class="hint">shift+enter for newline</p>
   <div id="input-area">
-    <textarea id="user-input" placeholder="Send a message…" rows="1"></textarea>
+    <textarea id="user-input" placeholder="Ask anything — search, code, bash, smart home…" rows="1"></textarea>
     <button id="send-btn" title="Send">
       <svg viewBox="0 0 24 24" fill="none" stroke="#0d0d0f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <line x1="12" y1="19" x2="12" y2="5"/>
@@ -335,7 +376,10 @@
   const countEl   = document.getElementById('msg-count');
   const emptyEl   = document.getElementById('empty-state');
 
+  const resetBtn   = document.getElementById('reset-btn');
+
   let msgCount = 0;
+  let emptyRemoved = false;
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -435,7 +479,21 @@
     }
   });
 
-  // Auto-resize textarea
+  resetBtn.addEventListener('click', async () => {
+    try {
+      await fetch('/reset', { method: 'POST' });
+    } catch (_) {}
+    messagesEl.innerHTML = '';
+    msgCount = 0;
+    updateCount();
+    emptyRemoved = false;
+    const empty = document.createElement('div');
+    empty.id = 'empty-state';
+    empty.innerHTML = '<div class="big">🦅</div><div>search the web, run bash, control smart home, write files…</div>';
+    messagesEl.appendChild(empty);
+  });
+
+
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';

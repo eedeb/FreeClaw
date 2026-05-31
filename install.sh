@@ -24,3 +24,39 @@ mkdir Flask/static
 read -p "Enter your API key: " api_key
 echo "API_KEY=$api_key" > .env
 echo "API key saved to .env"
+
+
+echo 'settting up systemctl...'
+
+INSTALL_DIR=$(pwd)
+USER_NAME=$(whoami)
+
+sudo tee /etc/systemd/system/FreeClaw.service > /dev/null <<EOF
+[Unit]
+Description=FreeClaw Flask Application
+After=network.target
+
+[Service]
+Type=simple
+User=$USER_NAME
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/python3 -m Flask.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable FreeClaw.service
+sudo systemctl start FreeClaw.service
+
+chmod +x ha_setup.sh
+read -p "Do you want to set up Home Assistant integration? (y/n) " answer
+if [[ "$answer" == "y" ]]; then
+    ./ha_setup.sh
+else
+    echo "Skipping Home Assistant setup."
+fi
+

@@ -1,7 +1,15 @@
 import requests
+import os
+from dotenv import load_dotenv
 
-TOKEN = ""
-url = ""
+try:
+    load_dotenv()
+    TOKEN=os.getenv("HA_TOKEN")
+    api_url=os.getenv("HA_URL")
+except:
+    TOKEN = ""
+    api_url = ""
+
 
 def send_to_alexa(text):
     headers = {
@@ -16,7 +24,7 @@ def send_to_alexa(text):
         "media_content_id": text
     }
 
-    response = requests.post(url, headers=headers, json=data)
+    response = requests.post(api_url, headers=headers, json=data)
 
     print(response.status_code)
     print(response.text)
