@@ -8,4 +8,3 @@ printf 'HA_TOKEN=%s\n' "$ha_token" >> .env
 echo "Token saved to .env"
 
 sudo systemctl restart FreeClaw.service
-sudo systemctl restart FreeClawAPI.service
