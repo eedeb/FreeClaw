@@ -44,11 +44,17 @@ def reset(groq_key, location_innit,tts=False):
 
     global agent_messages
     global tools
+    with open(static_dir+"context.md", "r", encoding="utf-8") as f:
+        content = f.read()
     if tts:
         agent_messages=[
             {
             "role": "system",
             "content": f"You are a helpful AI agent. Use the tools only if you need them to get data. Your output will be via text-to-speech, so format accordingly. Today's date is {datetime.now().strftime('%B %d, %Y')}."
+            },
+            {
+            "role": "system",
+            "content": f"Context about the user is stored in context.md. Here are the contents of that file: {content}"
             }
         ]
     else:
@@ -56,6 +62,10 @@ def reset(groq_key, location_innit,tts=False):
             {
             "role": "system",
             "content": f"You are a helpful AI agent. Use the tools only if you need them to get data. Today's date is {datetime.now().strftime('%B %d, %Y')}."
+            },
+            {
+            "role": "system",
+            "content": f"Context about the user is stored in context.md. Here are the contents of that file: {content}"
             }
         ]
 
@@ -67,6 +77,20 @@ def reset(groq_key, location_innit,tts=False):
     ]
     
     tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "save_context",
+                "description": "Save important information about the user for future interactions. This information is stored in context.md, and should be referred to when relevant in future interactions. Use this tool to remember important details about the user, such as their preferences, important events in their life, and other relevant information that can help you better assist them in the future. Only use this tool when you have new information to add or need to update existing information. Do not use this tool excessively or for trivial details.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "contents": { "type": "string", "description": "Completely rewrites context.md" }
+                    },
+                    "required": ["url"]
+                }
+            }
+        },
         {
             "type": "function",
             "function": {
@@ -390,7 +414,11 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         elif command_name == 'read_web':
             site_data=scraper.scrape(parameter)
             return agent(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
-        
+        elif command_name == 'save_context':
+            contents=args_dict.get('contents')
+            with open(static_dir+"context.md", "w", encoding="utf-8") as f:
+                f.write(contents)
+            return agent(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
 
         elif command_name == 'create_file':
 

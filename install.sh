@@ -145,6 +145,7 @@ section_gap
 step "4" "Setting up project directories..."
 section_gap
 mkdir -p Flask/static
+touch Flask/static/context.md
 success "Directories ready"
 
 section_gap
