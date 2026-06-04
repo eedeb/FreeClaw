@@ -10,22 +10,41 @@ import src.alexa_integration as alexa
 import src.smart_tv as tv
 import os
 
+
+
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 html_dir=BASE_DIR+'/../Flask/templates/agent/'
 static_dir=BASE_DIR+'/../Flask/static/'
 
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-try:
-    # Doesn't actually send data
-    s.connect(("8.8.8.8", 80))
-    ip = s.getsockname()[0]
-finally:
-    s.close()
+from dotenv import load_dotenv
 
-url='http://'+ip+':6767'
+load_dotenv()
+
+
+custom_domain = os.getenv("CUSTOM_DOMAIN")
+
+if custom_domain is None:
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    try:
+        # Doesn't actually send data
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    finally:
+        s.close()
+
+    url='http://'+ip+':6767'
+else:
+    url=custom_domain
+
+
+
+
 
 location=None
 client = None
