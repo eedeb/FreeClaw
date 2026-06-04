@@ -1,47 +1,139 @@
 #!/bin/bash
 set -e
 
+# ─────────────────────────────────────────────
+#  FreeClaw — Updater
+#  github.com/eedeb/FreeClaw
+# ─────────────────────────────────────────────
+
+RESET="\033[0m"
+BOLD="\033[1m"
+DIM="\033[2m"
+
+LIME="\033[38;5;154m"
+WHITE="\033[0;97m"
+GRAY="\033[0;90m"
+RED="\033[0;31m"
+YELLOW="\033[0;33m"
+
+BG_DARK="\033[48;5;234m"
+
+# ── Helpers ──────────────────────────────────
+
+info() {
+    echo -e "     ${GRAY}→${RESET}  $1"
+}
+
+success() {
+    echo -e "     ${LIME}✓${RESET}  $1"
+}
+
+warn() {
+    echo -e "     ${YELLOW}!${RESET}  $1"
+}
+
+error() {
+    echo -e "     ${RED}✗${RESET}  $1"
+}
+
+divider() {
+    echo -e "   ${DIM}${GRAY}────────────────────────────────────────────────────${RESET}"
+}
+
+section_gap() {
+    echo ""
+}
+
+# ── Header ───────────────────────────────────
+
+echo ""
+echo -e "   ${LIME}${BOLD}FreeClaw${RESET} ${GRAY}·${RESET} ${BOLD}${WHITE}Updater${RESET}"
+echo ""
+divider
+section_gap
+
+# ── Preflight ────────────────────────────────
+
 INSTALL_DIR=$(pwd)
 
-# Make sure we're in the FreeClaw directory
 if [[ ! -f "$INSTALL_DIR/.env" || ! -d "$INSTALL_DIR/src" ]]; then
-    echo "Error: Run this script from your FreeClaw installation directory."
+    error "Run this script from your FreeClaw installation directory."
+    section_gap
     exit 1
 fi
 
-echo "Fetching latest changes from GitHub..."
+# ── Check for updates ────────────────────────
+
+info "Fetching latest changes from GitHub..."
 git fetch origin main
 
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse origin/main)
+LOCAL_SHORT="${LOCAL:0:7}"
+REMOTE_SHORT="${REMOTE:0:7}"
+
+section_gap
 
 if [[ "$LOCAL" == "$REMOTE" ]]; then
-    echo "Already up to date. Nothing to do."
+    success "Already up to date ${GRAY}(${LOCAL_SHORT})${RESET}"
+    section_gap
+    divider
+    echo ""
     exit 0
 fi
 
-echo "Update available. Applying..."
+echo -e "     ${GRAY}Current:${RESET}  ${YELLOW}${LOCAL_SHORT}${RESET}"
+echo -e "     ${GRAY}Latest: ${RESET}  ${LIME}${REMOTE_SHORT}${RESET}"
+section_gap
+divider
+section_gap
 
-# Stop the Flask service while we update
-echo "Stopping FreeClaw..."
+# ── Apply update ─────────────────────────────
+
+info "Stopping FreeClaw service..."
 sudo systemctl stop FreeClaw.service
+success "Service stopped"
 
-# Pull only src/ and Flask/ — overwrite repo files, leave user files alone
+section_gap
+info "Pulling updates from origin/main..."
 git checkout origin/main -- src/
 git checkout origin/main -- Flask/templates/
 git checkout origin/main -- Flask/main.py
+success "Source files updated"
 
-# Restore Flask/static/ in case git checkout wiped it (user-uploaded files live here)
+info "Restoring Flask/static/ (user files preserved)..."
 mkdir -p Flask/static
+success "Static directory intact"
 
-echo "Updating dependencies in case anything changed..."
+section_gap
+info "Syncing dependencies..."
 venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
+success "Dependencies up to date"
 
-echo "Restarting FreeClaw..."
+section_gap
+divider
+section_gap
+
+# ── Restart ──────────────────────────────────
+
+info "Restarting FreeClaw..."
 sudo systemctl start FreeClaw.service
+success "FreeClaw is running"
 
+section_gap
+divider
+section_gap
+
+# ── Summary ──────────────────────────────────
+
+echo -e "   ${LIME}${BOLD}Update complete!${RESET}"
+section_gap
+echo -e "   ${GRAY}Recent commits:${RESET}"
+git log --oneline -5 | while IFS= read -r line; do
+    hash="${line:0:7}"
+    msg="${line:8}"
+    echo -e "     ${LIME}${hash}${RESET}  ${GRAY}${msg}${RESET}"
+done
+section_gap
+divider
 echo ""
-echo "======================================="
-echo "FreeClaw updated successfully!"
-git log --oneline -5
-echo "======================================="
