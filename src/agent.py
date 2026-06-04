@@ -100,7 +100,7 @@ def reset(groq_key, location_innit,tts=False):
             "type": "function",
             "function": {
                 "name": "save_context",
-                "description": "Save important information about the user for future interactions. This information is stored in context.md, and should be referred to when relevant in future interactions. Use this tool to remember important details about the user, such as their preferences, important events in their life, and other relevant information that can help you better assist them in the future. Only use this tool when you have new information to add or need to update existing information. Do not use this tool excessively or for trivial details.",
+                "description": "Stores long-term user information such as identity details, preferences, habits, and persistent instructions for future sessions. Use only for durable facts the user expects the assistant to remember across conversations. Do not store temporary context, one-time information, or sensitive data such as passwords, financial details, or medical information.",
                 "parameters": {
                     "type": "object",
                     "properties": {
