@@ -273,7 +273,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
                 eco_messages=[agent_messages[0]] + agent_messages[-3:]
             else:
                 eco_messages=agent_messages
-            model="llama-3.1-8b-instant"
+            model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Search':
             if len(agent_messages) > 2:
