@@ -435,8 +435,8 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             return agent(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'save_context':
             contents=args_dict.get('contents')
-            with open(static_dir+"context.md", "w", encoding="utf-8") as f:
-                f.write(contents)
+            with open(static_dir+"context.md", "a", encoding="utf-8") as f:
+                f.write(contents.strip()+'\n')
             return agent(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
 
         elif command_name == 'create_file':
