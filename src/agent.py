@@ -100,7 +100,7 @@ def reset(groq_key, location_innit,tts=False):
             "type": "function",
             "function": {
                 "name": "save_context",
-                "description": "Stores long-term user information such as identity details, preferences, habits, and persistent instructions for future sessions. Use only for durable facts the user expects the assistant to remember across conversations. Do not store temporary context, one-time information, or sensitive data such as passwords, financial details, or medical information.",
+                "description": "Appends a new entry to context.md for long-term memory storage; each input is added as a new line (trimmed of extra whitespace) without overwriting existing content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
