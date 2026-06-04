@@ -23,10 +23,27 @@ venv/bin/pip install fastapi
 echo 'Setting up directories...'
 mkdir -p Flask/static
 
-read -p "Enter your API key: " api_key < /dev/tty
+read -p "Enter your Groq API key: " api_key < /dev/tty
 printf 'API_KEY=%s\n' "$api_key" > .env
 chmod 600 .env
-echo 'API key saved to .env'
+echo 'API key saved.'
+
+read -s -p "Enter a password for the FreeClaw web UI: " fc_password < /dev/tty
+echo ""
+read -s -p "Confirm password: " fc_password_confirm < /dev/tty
+echo ""
+
+if [[ "$fc_password" != "$fc_password_confirm" ]]; then
+    echo "Error: Passwords do not match. Please run the installer again."
+    exit 1
+fi
+
+# Generate a random secret key for session signing
+secret_key=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+
+printf 'FC_PASSWORD=%s\n' "$fc_password" >> .env
+printf 'SECRET_KEY=%s\n' "$secret_key" >> .env
+echo 'Password saved.'
 
 echo 'Setting up systemctl...'
 INSTALL_DIR=$(pwd)

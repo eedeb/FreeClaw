@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>FreeClaw — Login</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0d0f;
+      --surface: #141416;
+      --border: #222228;
+      --border-bright: #2e2e38;
+      --accent: #c8f04a;
+      --accent-dim: #a8cc38;
+      --text: #e8e8ec;
+      --muted: #666672;
+      --error: #e05555;
+      --mono: 'IBM Plex Mono', monospace;
+      --sans: 'Syne', sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px;
+      opacity: 0.35;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 360px;
+      background: var(--surface);
+      border: 1px solid var(--border-bright);
+      border-radius: 6px;
+      overflow: hidden;
+      animation: fadeUp 0.5s ease forwards;
+      opacity: 0;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      animation: pulse 2.5s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent); }
+      50%       { opacity: 0.5; box-shadow: 0 0 3px var(--accent); }
+    }
+
+    .header-title {
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .card-body {
+      padding: 28px 24px 24px;
+    }
+
+    .prompt {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+
+    .input-wrap {
+      position: relative;
+      margin-bottom: 12px;
+    }
+
+    .input-wrap input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border-bright);
+      border-radius: 4px;
+      padding: 11px 14px;
+      font-family: var(--mono);
+      font-size: 14px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+      letter-spacing: 0.1em;
+    }
+
+    .input-wrap input:focus {
+      border-color: var(--accent);
+    }
+
+    .input-wrap input.error-input {
+      border-color: var(--error);
+    }
+
+    .error-msg {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--error);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .error-msg::before {
+      content: '✕';
+      font-size: 10px;
+    }
+
+    .submit-btn {
+      width: 100%;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: 4px;
+      padding: 11px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+
+    .submit-btn:hover {
+      background: var(--accent-dim);
+      transform: translateY(-1px);
+    }
+
+    .submit-btn:active {
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="card-header">
+        <div class="header-dot"></div>
+        <span class="header-title">FreeClaw</span>
+      </div>
+      <div class="card-body">
+        <p class="prompt">Enter your password to continue.</p>
+
+        {% if error %}
+        <div class="error-msg">Incorrect password. Try again.</div>
+        {% endif %}
+
+        <form method="POST" action="/login">
+          <div class="input-wrap">
+            <input
+              type="password"
+              name="password"
+              placeholder="password"
+              class="{{ 'error-input' if error else '' }}"
+              autofocus
+              autocomplete="current-password"
+            />
+          </div>
+          <button type="submit" class="submit-btn">Unlock →</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
