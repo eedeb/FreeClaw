@@ -16,8 +16,6 @@ GRAY="\033[0;90m"
 RED="\033[0;31m"
 YELLOW="\033[0;33m"
 
-BG_DARK="\033[48;5;234m"
-
 # ── Helpers ──────────────────────────────────
 
 info() {
@@ -99,6 +97,10 @@ info "Pulling updates from origin/main..."
 git checkout origin/main -- src/
 git checkout origin/main -- Flask/templates/
 git checkout origin/main -- Flask/main.py
+
+# Advance local HEAD to match origin/main so git log is correct next run
+git merge --ff-only origin/main 2>/dev/null || git reset --soft origin/main 2>/dev/null || true
+
 success "Source files updated"
 
 info "Restoring Flask/static/ (user files preserved)..."
@@ -128,12 +130,15 @@ section_gap
 
 echo -e "   ${LIME}${BOLD}Update complete!${RESET}"
 section_gap
-echo -e "   ${GRAY}Recent commits:${RESET}"
-git log --oneline -5 | while IFS= read -r line; do
+echo -e "   ${GRAY}Latest commits:${RESET}"
+
+# Read from origin/main so commits are always fresh from GitHub
+git log origin/main --oneline -5 | while IFS= read -r line; do
     hash="${line:0:7}"
     msg="${line:8}"
     echo -e "     ${LIME}${hash}${RESET}  ${GRAY}${msg}${RESET}"
 done
+
 section_gap
 divider
 echo ""
