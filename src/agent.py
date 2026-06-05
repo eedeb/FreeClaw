@@ -113,6 +113,14 @@ def reset(groq_key, location_innit,tts=False):
         {
             "type": "function",
             "function": {
+                "name": "read_context",
+                "description": "Shows contents of the context.md file.",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "search",
                 "description": "Fetches validated, up-to-date information for real-time queries. Only call this tool a maximum of 2 times per task — if you have sufficient data after 1-2 searches, proceed to the next step immediately. If you don't have the sufficient data, report back to the user after a maximium of 2 searches. Here is a website guide: "+str(best_sites),
                 "parameters": {
@@ -142,15 +150,9 @@ def reset(groq_key, location_innit,tts=False):
         {
             "type": "function",
             "function": {
-                "name": "read_web",
-                "description": "Returns the first 3000 English characters of a webpage. Only use this if the user tells you to specifically look at a webpage.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": { "type": "string", "description": "URL of the webpage to read" }
-                    },
-                    "required": ["url"]
-                }
+                "name": "list_files",
+                "description": "Lists the files in the /static directory.",
+                "parameters": { "type": "object", "properties": {} }
             }
         },
         {
@@ -180,6 +182,50 @@ def reset(groq_key, location_innit,tts=False):
                         "contents": { "type": "string", "description": "Contents of file, can leave blank" }
                     },
                     "required": ["filename","contents"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_file",
+                "description": "Deletes a file in the /static directory. Use this command to delete files that are no longer needed, or if the user asks you to delete a file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": { "type": "string", "description": "name_of_your_file.something" },
+                    },
+                    "required": ["filename"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "Edits an existing file in the /static directory by replacing a specific string with a new one. Use this instead of create_file when modifying existing content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": { "type": "string", "description": "Name of the file to edit" },
+                        "old_str": { "type": "string", "description": "The exact string to find and replace" },
+                        "new_str": { "type": "string", "description": "The string to replace it with" }
+                    },
+                    "required": ["filename", "old_str", "new_str"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_web",
+                "description": "Returns the first 3000 English characters of a webpage. Only use this if the user tells you to specifically look at a webpage.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "URL of the webpage to read" }
+                    },
+                    "required": ["url"]
                 }
             }
         },
@@ -251,6 +297,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
     global reset
     global tools
     model="openai/gpt-oss-120b"
+    temp=1
     check_tools=tools
     if user_input and system_input:
         raise Exception("You cannot have both user input and system input at the same time.")
@@ -290,6 +337,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Search':
+            temp=0.4
             if len(agent_messages) > 5:
                 eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-3:]]
             else:
@@ -311,6 +359,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
 
 
         elif tag == 'Logic' or tag == 'Math' or tag == 'Explain':
+            temp=0.2
             if len(agent_messages) > 7:
                 eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
             else:
@@ -337,6 +386,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         agent_input=system_input
         eco_messages=agent_messages
     elif tool_input:
+        temp=0.2
         agent_messages.append(
             {
             "role": "tool",
@@ -364,7 +414,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
     completion = client.chat.completions.create(
         model=model,
         messages=eco_messages,
-        temperature=1,
+        temperature=temp,
         tools=check_tools,
         top_p=1,
         stream=False,
@@ -413,7 +463,16 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
         print('Agent called tool: '+command_name)
         print('Agent parameter: '+parameter if parameter else ' ')
-        if command_name == 'search':
+        if command_name == 'save_context':
+            contents=args_dict.get('contents')
+            with open(static_dir+"context.md", "a", encoding="utf-8") as f:
+                f.write(contents.strip()+'\n')
+            return agent(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
+        elif command_name == 'read_context':
+            with open(static_dir+"context.md", "r", encoding="utf-8") as f:
+                content = f.read()
+            return agent(tool_input=content, tool_id=tool_call.id,tool_name=command_name)
+        elif command_name == 'search':
 
 
             query=args_dict.get('query')
@@ -454,14 +513,12 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
                 return agent(tool_input=file_contents, tool_id=tool_call.id,tool_name=command_name)
             except FileNotFoundError:
                 return agent(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)            
+        elif command_name == 'list_files':
+            files = os.listdir(static_dir)
+            return agent(tool_input="Files in static directory: "+", ".join(files), tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_web':
             site_data=scraper.scrape(parameter)
             return agent(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'save_context':
-            contents=args_dict.get('contents')
-            with open(static_dir+"context.md", "a", encoding="utf-8") as f:
-                f.write(contents.strip()+'\n')
-            return agent(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
 
         elif command_name == 'create_file':
 
@@ -474,8 +531,33 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             return agent(tool_input="Your file is accessable at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
         
 
-
-
+        elif command_name == 'delete_file':
+            filename=args_dict.get('filename')
+            if "/" in filename or "\\" in filename:
+                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+            file_path = static_dir + filename
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                return agent(tool_input="File deleted.", tool_id=tool_call.id,tool_name=command_name)
+            else:
+                return agent(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
+        elif command_name == 'edit_file':
+            filename = args_dict.get('filename')
+            if "/" in filename or "\\" in filename:
+                return agent(tool_input="Invalid filename.", tool_id=tool_call.id, tool_name=command_name)
+            old_str = args_dict.get('old_str')
+            new_str = args_dict.get('new_str')
+            try:
+                with open(static_dir + filename, "r", encoding="utf-8") as f:
+                    contents = f.read()
+                if old_str not in contents:
+                    return agent(tool_input="String not found in file.", tool_id=tool_call.id, tool_name=command_name)
+                updated = contents.replace(old_str, new_str, 1)  # replace only first occurrence
+                with open(static_dir + filename, "w", encoding="utf-8") as f:
+                    f.write(updated)
+                return agent(tool_input="File edited successfully.", tool_id=tool_call.id, tool_name=command_name)
+            except FileNotFoundError:
+                return agent(tool_input="File not found.", tool_id=tool_call.id, tool_name=command_name)
         elif command_name == 'create_page':
 
             filename=args_dict.get('filename')
