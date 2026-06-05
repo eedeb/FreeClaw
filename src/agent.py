@@ -427,7 +427,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             #print(web_data)
 
 
-
+            '''
             s_messages=[{"role": "system", "content": "Query: "+parameter+".The following data has been scraped from a website, and your job is to clean up and structure the following data, answering the query. Only include information closely related to the query. Respond in full sentences."+web_data[0]}]
 
 
@@ -440,9 +440,10 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             for chunk in stream:
                 report+=chunk.choices[0].delta.content or ""
 
-
+            '''
             
-            return agent(tool_input=report+" - "+web_data[1], tool_id=tool_call.id,tool_name=command_name)
+            #return agent(tool_input=report+" - "+web_data[1], tool_id=tool_call.id,tool_name=command_name)
+            return agent(tool_input=web_data, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_file':
             filename=args_dict.get('filename')
             if "/" in filename or "\\" in filename:
