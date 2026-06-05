@@ -11,7 +11,7 @@ import src.smart_tv as tv
 import os
 
 
-
+ 
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -266,7 +266,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         print(tag)
         if tag == 'Greeting/goodbye':
             eco_messages=[agent_messages[0], agent_messages[-1]]
-            model="llama-3.1-8b-instant"
+            model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
             if len(agent_messages) > 2:
