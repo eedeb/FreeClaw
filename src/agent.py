@@ -279,7 +279,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
 #####################################################################################################################################
         print(tag)
         if tag == 'Greeting/goodbye':
-            eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-1]]
+            eco_messages=[agent_messages[0], agent_messages[1], agent_messages[-1]]
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
