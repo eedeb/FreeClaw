@@ -128,6 +128,20 @@ def reset(groq_key, location_innit,tts=False):
         {
             "type": "function",
             "function": {
+                "name": "read_file",
+                "description": "See the contents of a file that is in the /static directory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": { "type": "string", "description": "Name of the file" }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "read_web",
                 "description": "Returns the first 3000 English characters of a webpage. Only use this if the user tells you to specifically look at a webpage.",
                 "parameters": {
@@ -429,7 +443,16 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
 
             
             return agent(tool_input=report+" - "+web_data[1], tool_id=tool_call.id,tool_name=command_name)
-
+        elif command_name == 'read_file':
+            filename=args_dict.get('filename')
+            if "/" in filename or "\\" in filename:
+                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+            try:
+                with open(static_dir+filename, "r", encoding="utf-8") as f:
+                    file_contents = f.read()
+                return agent(tool_input=file_contents, tool_id=tool_call.id,tool_name=command_name)
+            except FileNotFoundError:
+                return agent(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)            
         elif command_name == 'read_web':
             site_data=scraper.scrape(parameter)
             return agent(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)

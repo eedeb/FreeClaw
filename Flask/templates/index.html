@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>FreeClaw</title>
 
-  <!-- PWA / Home Screen -->
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="FreeClaw"/>
@@ -13,7 +12,6 @@
   <meta name="theme-color" content="#0d0d0f"/>
   <meta name="description" content="An AI agent that doesn't burn your money."/>
 
-  <!-- App icon from your server -->
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
 
@@ -36,8 +34,6 @@
       --radius: 4px;
       --mono: 'IBM Plex Mono', monospace;
       --sans: 'Syne', sans-serif;
-      --safe-top: env(safe-area-inset-top, 0px);
-      --safe-bottom: env(safe-area-inset-bottom, 0px);
     }
 
     html, body {
@@ -64,74 +60,64 @@
       z-index: 0;
     }
 
-    /* ── App shell ── */
+    /* ── Full-screen app shell ── */
     #app {
-      position: relative;
+      position: fixed;
+      inset: 0;
       z-index: 1;
       display: flex;
       flex-direction: column;
-      height: 100svh;
+      /* Respect every safe area edge */
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
       max-width: 860px;
       margin: 0 auto;
-    }
-
-    /* ── Status bar spacer (Dynamic Island / notch) ── */
-    /* Only applied in standalone PWA mode */
-    #status-bar-spacer {
-      display: none;
-      height: var(--safe-top);
-      background: var(--bg);
-      flex-shrink: 0;
-    }
-
-    @media all and (display-mode: standalone) {
-      #status-bar-spacer { display: block; }
     }
 
     /* ── Header ── */
     header {
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 13px 20px 12px;
+      gap: 10px;
+      padding: 12px 16px 11px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
-      background: rgba(13,13,15,0.94);
+      background: rgba(13,13,15,0.97);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
+      min-height: 52px;
     }
 
     .header-icon {
-      width: 28px;
-      height: 28px;
+      width: 30px; height: 30px;
       border-radius: 7px;
       overflow: hidden;
       flex-shrink: 0;
       border: 1px solid rgba(200,240,74,0.2);
     }
-
-    .header-icon img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
+    .header-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
     .header-dot {
-      width: 8px; height: 8px;
+      width: 7px; height: 7px;
       border-radius: 50%;
       background: var(--accent);
       box-shadow: 0 0 8px var(--accent);
       animation: pulse 2.5s ease-in-out infinite;
       flex-shrink: 0;
     }
-
     @keyframes pulse {
       0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent); }
       50% { opacity: 0.4; box-shadow: 0 0 3px var(--accent); }
     }
 
-    .header-title { display: flex; flex-direction: column; gap: 1px; }
+    .header-title {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0; /* allow text to truncate */
+    }
     .header-title h1 {
       font-family: var(--sans);
       font-size: 13px;
@@ -140,30 +126,33 @@
       text-transform: uppercase;
       color: var(--text);
       line-height: 1;
+      white-space: nowrap;
     }
     .header-tagline {
       font-family: var(--mono);
       font-size: 9px;
       color: var(--muted);
-      letter-spacing: 0.04em;
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-
-    @media (max-width: 360px) { .header-tagline { display: none; } }
 
     .header-right {
       margin-left: auto;
       display: flex;
       align-items: center;
       gap: 10px;
+      flex-shrink: 0;
     }
 
     #token-count {
       font-family: var(--mono);
       font-size: 10px;
       color: var(--muted);
+      white-space: nowrap;
     }
-
-    @media (max-width: 400px) { #token-count { display: none; } }
+    @media (max-width: 380px) { #token-count { display: none; } }
 
     #reset-btn {
       background: none;
@@ -174,15 +163,15 @@
       font-size: 10px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      padding: 7px 12px;
+      padding: 7px 11px;
       cursor: pointer;
       transition: border-color 0.15s, color 0.15s;
       -webkit-user-select: none;
       user-select: none;
-      min-height: 32px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
     #reset-btn:active { border-color: rgba(192,57,57,0.5); color: #e05555; transform: scale(0.96); }
-    #reset-btn:hover  { border-color: rgba(192,57,57,0.4); color: #e05555; }
 
     /* ── Messages ── */
     #messages {
@@ -198,8 +187,6 @@
       overscroll-behavior: contain;
     }
 
-    @media (min-width: 600px) { #messages { padding: 24px; } }
-
     #messages::-webkit-scrollbar { width: 3px; }
     #messages::-webkit-scrollbar-track { background: transparent; }
     #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
@@ -211,7 +198,6 @@
       animation: fadeUp 0.22s ease forwards;
       opacity: 0;
     }
-
     @media (min-width: 600px) { .message { max-width: 78%; } }
 
     @keyframes fadeUp {
@@ -249,14 +235,12 @@
     .bubble code {
       font-family: var(--mono); font-size: 0.82em;
       background: #1e1e24; border: 1px solid var(--border);
-      padding: 1px 5px; border-radius: 3px; color: var(--accent);
-      word-break: break-all;
+      padding: 1px 5px; border-radius: 3px; color: var(--accent); word-break: break-all;
     }
     .bubble pre {
       background: #0a0a0c; border: 1px solid var(--border);
       border-radius: var(--radius); padding: 12px;
-      overflow-x: auto; margin: 8px 0;
-      -webkit-overflow-scrolling: touch;
+      overflow-x: auto; margin: 8px 0; -webkit-overflow-scrolling: touch;
     }
     .bubble pre code { background: none; border: none; padding: 0; color: #c8e6a0; font-size: 0.82em; word-break: normal; }
     .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
@@ -267,7 +251,7 @@
     .bubble blockquote { border-left: 2px solid var(--accent); padding-left: 12px; color: var(--muted); margin: 6px 0; }
     .bubble a { color: var(--accent); text-decoration: underline; }
 
-    /* Thinking */
+    /* Thinking dots */
     .thinking .bubble { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
     .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s ease-in-out infinite; }
     .dot:nth-child(2) { animation-delay: 0.2s; }
@@ -290,46 +274,41 @@
       padding: 0 32px;
     }
     #empty-state .eagle-wrap {
-      width: 72px; height: 72px;
-      border-radius: 18px;
+      width: 68px; height: 68px;
+      border-radius: 16px;
       overflow: hidden;
-      opacity: 0.22;
+      opacity: 0.2;
       border: 1px solid rgba(200,240,74,0.15);
     }
     #empty-state .eagle-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
     #empty-state .empty-name {
       font-family: var(--sans);
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 700;
-      letter-spacing: 0.14em;
+      letter-spacing: 0.16em;
       text-transform: uppercase;
       color: var(--muted);
-      opacity: 0.5;
+      opacity: 0.45;
     }
     #empty-state .empty-sub {
       font-family: var(--mono);
       font-size: 11px;
       color: var(--muted);
       line-height: 1.9;
-      opacity: 0.5;
+      opacity: 0.4;
     }
 
     /* ── Input area ── */
     #input-area {
-      padding: 12px 16px;
-      padding-bottom: calc(12px + var(--safe-bottom));
-      border-top: 1px solid var(--border);
       display: flex;
       gap: 10px;
       align-items: flex-end;
       flex-shrink: 0;
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
       background: rgba(13,13,15,0.97);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
-    }
-
-    @media (min-width: 600px) {
-      #input-area { padding: 14px 24px calc(14px + var(--safe-bottom)); }
     }
 
     #user-input {
@@ -343,7 +322,7 @@
       padding: 11px 14px;
       resize: none;
       min-height: 44px;
-      max-height: 140px;
+      max-height: 130px;
       outline: none;
       transition: border-color 0.15s;
       line-height: 1.5;
@@ -367,48 +346,37 @@
       -webkit-user-select: none;
       user-select: none;
     }
-    #send-btn:hover  { background: var(--accent-dim); }
-    #send-btn:active { transform: scale(0.93); background: var(--accent-dim); }
+    #send-btn:active { transform: scale(0.92); background: var(--accent-dim); }
     #send-btn:disabled { background: #2a2a30; cursor: not-allowed; }
     #send-btn svg { width: 18px; height: 18px; }
 
-    .hint {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      padding: 0 24px 6px;
-      margin-top: -4px;
-      flex-shrink: 0;
-    }
-    @media (max-width: 599px) { .hint { display: none; } }
-
-    /* ── PWA Splash screen ──
-       Shown briefly on launch from home screen              */
+    /* ── PWA Splash ── */
     #splash {
       position: fixed;
       inset: 0;
       background: var(--bg);
       z-index: 9999;
-      display: flex;
+      display: none; /* hidden by default, shown only in standalone via JS */
       flex-direction: column;
       align-items: center;
       justify-content: center;
       gap: 20px;
       pointer-events: none;
     }
+    #splash.visible { display: flex; }
+    #splash.hide { animation: splashOut 0.35s ease forwards; }
 
-    #splash .splash-icon {
-      width: 96px; height: 96px;
-      border-radius: 22px;
+    .splash-icon {
+      width: 100px; height: 100px;
+      border-radius: 24px;
       overflow: hidden;
       border: 1px solid rgba(200,240,74,0.25);
-      box-shadow: 0 0 40px rgba(200,240,74,0.12);
+      box-shadow: 0 0 50px rgba(200,240,74,0.1);
       animation: splashIconIn 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards;
       opacity: 0;
     }
-    #splash .splash-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
-
-    #splash .splash-name {
+    .splash-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .splash-name {
       font-family: var(--sans);
       font-size: 22px;
       font-weight: 700;
@@ -418,24 +386,18 @@
       opacity: 0;
       animation: splashTextIn 0.4s ease 0.35s forwards;
     }
-
-    #splash .splash-sub {
+    .splash-sub {
       font-family: var(--mono);
       font-size: 10px;
       color: var(--muted);
       letter-spacing: 0.06em;
       opacity: 0;
-      animation: splashTextIn 0.4s ease 0.5s forwards;
       margin-top: -8px;
-    }
-
-    /* Fade out the whole splash */
-    #splash.hide {
-      animation: splashOut 0.35s ease forwards;
+      animation: splashTextIn 0.4s ease 0.5s forwards;
     }
 
     @keyframes splashIconIn {
-      from { opacity: 0; transform: scale(0.8) translateY(10px); }
+      from { opacity: 0; transform: scale(0.75) translateY(12px); }
       to   { opacity: 1; transform: scale(1) translateY(0); }
     }
     @keyframes splashTextIn {
@@ -444,30 +406,19 @@
     }
     @keyframes splashOut {
       from { opacity: 1; }
-      to   { opacity: 0; visibility: hidden; pointer-events: none; }
-    }
-
-    /* Only show splash in standalone mode */
-    @media not all and (display-mode: standalone) {
-      #splash { display: none; }
+      to   { opacity: 0; visibility: hidden; }
     }
   </style>
 </head>
 <body>
 
-<!-- Splash — only visible when launched as PWA from home screen -->
 <div id="splash">
-  <div class="splash-icon">
-    <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
-  </div>
+  <div class="splash-icon"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
   <div class="splash-name">FreeClaw</div>
   <div class="splash-sub">an AI agent that doesn't burn your money</div>
 </div>
 
 <div id="app">
-  <!-- Fills safe-area behind status bar/notch in standalone mode -->
-  <div id="status-bar-spacer"></div>
-
   <header>
     <div class="header-icon">
       <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
@@ -479,24 +430,17 @@
     </div>
     <div class="header-right">
       <span id="token-count">~0 tokens</span>
-      <button id="reset-btn" title="Clear conversation">reset</button>
+      <button id="reset-btn">reset</button>
     </div>
   </header>
 
   <div id="messages">
     <div id="empty-state">
-      <div class="eagle-wrap">
-        <img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/>
-      </div>
+      <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
       <div class="empty-name">FreeClaw</div>
-      <div class="empty-sub">
-        search the web · run bash<br>
-        control smart home · write files
-      </div>
+      <div class="empty-sub">search the web · run bash<br>control smart home · write files</div>
     </div>
   </div>
-
-  <p class="hint">shift+enter for newline</p>
 
   <div id="input-area">
     <textarea id="user-input" placeholder="Ask anything…" rows="1"></textarea>
@@ -517,8 +461,12 @@
   const resetBtn   = document.getElementById('reset-btn');
   const splash     = document.getElementById('splash');
 
-  // Dismiss splash after 1.1s
-  if (splash) {
+  // Show splash only when running as installed PWA
+  const isStandalone = window.navigator.standalone === true
+    || window.matchMedia('(display-mode: standalone)').matches;
+
+  if (isStandalone) {
+    splash.classList.add('visible');
     setTimeout(() => splash.classList.add('hide'), 1100);
   }
 
@@ -539,22 +487,15 @@
     removeEmpty();
     totalTokens += estimate(text);
     updateCount();
-
     const wrap = document.createElement('div');
     wrap.className = `message ${role}`;
-
     const label = document.createElement('div');
     label.className = 'msg-label';
     label.textContent = role === 'user' ? 'you' : 'agent';
-
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    if (role === 'agent') {
-      bubble.innerHTML = marked.parse(text);
-    } else {
-      bubble.textContent = text;
-    }
-
+    bubble.innerHTML = role === 'agent' ? marked.parse(text) : '';
+    if (role !== 'agent') bubble.textContent = text;
     wrap.appendChild(label);
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
@@ -585,11 +526,9 @@
     inputEl.value = '';
     inputEl.style.height = 'auto';
     sendBtn.disabled = true;
-    inputEl.blur(); // dismiss keyboard on mobile
-
+    inputEl.blur();
     addMessage('user', text);
     const thinking = addThinking();
-
     try {
       const res = await fetch('/chat', {
         method: 'POST',
@@ -598,27 +537,22 @@
       });
       const data = await res.json();
       thinking.remove();
-      if (data.error) {
-        addMessage('agent', `**Error:** ${data.error}`);
-      } else {
-        addMessage('agent', data.response);
-      }
-    } catch (err) {
+      addMessage('agent', data.error ? `**Error:** ${data.error}` : data.response);
+    } catch {
       thinking.remove();
-      addMessage('agent', `**Connection error.** Is the server running?`);
+      addMessage('agent', '**Connection error.** Is the server running?');
     }
-
     sendBtn.disabled = false;
-    if (!('ontouchstart' in window)) inputEl.focus();
+    if (!isStandalone) inputEl.focus();
   }
 
   sendBtn.addEventListener('click', sendMessage);
-
   inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 130) + 'px';
   });
 
   resetBtn.addEventListener('click', async () => {
@@ -631,17 +565,11 @@
     empty.innerHTML = `
       <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
       <div class="empty-name">FreeClaw</div>
-      <div class="empty-sub">search the web · run bash<br>control smart home · write files</div>
-    `;
+      <div class="empty-sub">search the web · run bash<br>control smart home · write files</div>`;
     messagesEl.appendChild(empty);
   });
 
-  inputEl.addEventListener('input', () => {
-    inputEl.style.height = 'auto';
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
-  });
-
-  // Keep scroll pinned when soft keyboard resizes viewport
+  // Keep messages scrolled when iOS keyboard resizes the viewport
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', () => {
       messagesEl.scrollTop = messagesEl.scrollHeight;
