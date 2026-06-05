@@ -80,6 +80,12 @@ def chat():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/reset')
+def reset():
+    agent.reset(groq_key, location)
+    return redirect(url_for('index'))
+
+
 @app.route('/agent/<path:text>')
 def serve_template(text):
     if not logged_in():
