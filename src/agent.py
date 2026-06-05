@@ -104,7 +104,7 @@ def reset(groq_key, location_innit,tts=False):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "contents": { "type": "string", "description": "Completely rewrites context.md" }
+                        "contents": { "type": "string", "description": "New entry for context.md" }
                     },
                     "required": ["contents"]
                 }
