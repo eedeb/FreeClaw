@@ -336,7 +336,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         user_indices = [i for i, m in enumerate(agent_messages) if m['role'] == 'user']
         # Start from 2 user messages ago, or the first user message if there aren't 2
         start_index = user_indices[-2] if len(user_indices) >= 2 else user_indices[0]
-        eco_messages = [agent_messages[0]] + agent_messages[start_index:]
+        eco_messages = [agent_messages[0], agent_messages[1]] + agent_messages[start_index:]
     else:
         raise Exception("You must have either user input or system input.")
     '''
