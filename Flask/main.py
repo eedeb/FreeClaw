@@ -81,9 +81,11 @@ def chat():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/reset')
+@app.route('/reset', methods=['GET', 'POST'])
 def reset():
     agent.reset(groq_key, location)
+    if request.method == 'POST':
+        return jsonify({'response': 'Agent reset successfully'})
     return redirect(url_for('index'))
 
 
