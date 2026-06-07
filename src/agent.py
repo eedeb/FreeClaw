@@ -542,6 +542,12 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             # Read and encode the image to base64
             with open(file_location, "rb") as image_file:
                 image_data = base64.b64encode(image_file.read()).decode("utf-8")
+            
+
+            # Detect MIME type from file extension
+            ext = filename.rsplit(".", 1)[-1].lower()
+            mime_types = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+            mime_type = mime_types.get(ext, "image/jpeg")
 
             completion = client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
