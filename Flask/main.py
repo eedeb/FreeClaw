@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session
 import src.agent as agent
+import uuid
 
 from dotenv import load_dotenv
 import os
@@ -84,6 +85,26 @@ def chat():
 def reset():
     agent.reset(groq_key, location)
     return redirect(url_for('index'))
+
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    file = request.files.get('file')
+    if not file or file.filename == '':
+        return jsonify({'error': 'No file provided'}), 400
+
+    # Save to static/uploads/, preserving extension, with a uuid prefix to avoid collisions
+    ext = os.path.splitext(file.filename)[1]
+    safe_name = uuid.uuid4().hex + ext
+    dest = os.path.join(STATIC_DIR, safe_name)
+    file.save(dest)
+
+    # Return the path the agent can reference (relative to app root)
+    rel_path = os.path.join('static', safe_name)
+    return jsonify({'path': rel_path, 'filename': file.filename})
 
 
 @app.route('/agent/<path:text>')

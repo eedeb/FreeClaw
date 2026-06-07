@@ -11,6 +11,8 @@ import src.smart_tv as tv
 import os
 
 
+import base64
+
  
 
 
@@ -212,6 +214,20 @@ def reset(groq_key, location_innit,tts=False):
                         "new_str": { "type": "string", "description": "The string to replace it with" }
                     },
                     "required": ["filename", "old_str", "new_str"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_image_desdcription",
+                "description": "Returns a very detailed description of an image in the static folder.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": { "type": "string", "description": "name_of_your_image.something" }
+                    },
+                    "required": ["filename"]
                 }
             }
         },
@@ -513,6 +529,49 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
                 return agent(tool_input=file_contents, tool_id=tool_call.id,tool_name=command_name)
             except FileNotFoundError:
                 return agent(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)            
+            
+        elif command_name == 'get_image_desdcription':
+            filename=args_dict.get('filename')
+            if "/" in filename or "\\" in filename:
+                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+            
+            file_location=static_dir+filename
+
+
+            # Read and encode the image to base64
+            with open(file_location, "rb") as image_file:
+                image_data = base64.b64encode(image_file.read()).decode("utf-8")
+
+            completion = client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Describe images that the user sends in extreme detail"
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{image_data}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                        "text": "Please describe this image in extreme detail."
+                            }
+                        ]
+                    }
+                ],
+                temperature=1,
+                top_p=1,
+            )
+
+            description=completion.choices[0].message.content
+            return agent(tool_input=description, tool_id=tool_call.id,tool_name=command_name)
+
         elif command_name == 'list_files':
             files = os.listdir(static_dir)
             return agent(tool_input="Files in static directory: "+", ".join(files), tool_id=tool_call.id,tool_name=command_name)
