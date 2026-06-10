@@ -1,6 +1,6 @@
 import json
 import Classy
-from groq import Groq
+from openai import OpenAI
 import subprocess
 import shlex
 import src.scraper as scraper
@@ -58,7 +58,7 @@ tools=[]
 
 def reset(groq_key, location_innit,tts=False):
     global client
-    client = Groq(api_key=groq_key)
+    client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
     global location
     location=location_innit
 

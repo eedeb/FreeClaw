@@ -133,7 +133,7 @@ _pip_install() {
 _pip_install "PyTorch (CPU)" torch --index-url https://download.pytorch.org/whl/cpu
 _pip_install "classy-ai" classy-ai
 _pip_install "sentence-transformers" sentence_transformers --no-deps
-_pip_install "web & API libs" flask groq ddgs beautifulsoup4 json-repair python-dotenv uvicorn
+_pip_install "web & API libs" flask openai ddgs beautifulsoup4 json-repair python-dotenv uvicorn
 _pip_install "FastAPI" fastapi
 
 section_gap
@@ -168,7 +168,7 @@ success "API key saved to .env"
 section_gap
 
 while true; do
-    read -s -p "$(echo -e "     ${LIME}?${RESET}  Web UI password: ")" fc_password < /dev/tty
+    read -s -p "$(echo -e "     ${LIME}?${RESET}  Set the Web UI password: ")" fc_password < /dev/tty
     echo ""
     read -s -p "$(echo -e "     ${LIME}?${RESET}  Confirm password: ")" fc_password_confirm < /dev/tty
     echo ""
