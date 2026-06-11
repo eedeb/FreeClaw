@@ -318,6 +318,8 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
     global messages
     global reset
     global tools
+    global groq
+    global client
     model="openai/gpt-oss-120b"
     temp=1
     check_tools=tools
@@ -447,7 +449,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         groq=True
     except Exception as e:
         groq=False
-        if nvidia_key != "None:":
+        if nvidia_key != "None":
             client = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
             completion = client.chat.completions.create(
                 model=model,
