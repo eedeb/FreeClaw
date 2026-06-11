@@ -1,7 +1,6 @@
 import json
 import Classy
 from openai import OpenAI
-from openai import RateLimitError
 import subprocess
 import shlex
 import src.scraper as scraper
@@ -435,6 +434,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
     '''
     print('Reveived: '+agent_input)
     try:
+        #raise Exception("Test")
         completion = client.chat.completions.create(
             model=model,
             messages=eco_messages,
@@ -445,9 +445,9 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             stop=None
         )
         groq=True
-    except RateLimitError as e:
+    except Exception as e:
         groq=False
-        if nvidia_key:
+        if nvidia_key != "None:":
             client = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
             completion = client.chat.completions.create(
                 model=model,
@@ -458,7 +458,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
                 stream=False,
                 stop=None
             )
-        elif openrouter_key:
+        elif openrouter_key != "None":
             client = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
             completion = client.chat.completions.create(
                 model=model,
