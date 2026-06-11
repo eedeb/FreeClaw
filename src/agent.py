@@ -584,10 +584,8 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             mime_type = mime_types.get(ext, "image/jpeg")
 
 
-            if groq:
-                model="meta-llama/llama-4-scout-17b-16e-instruct"
-            else:
-                model="meta/llama-4-maverick-17b-128e-instruct"
+            if not groq:
+                client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
             completion = client.chat.completions.create(
                 model=model,
                 messages=[
