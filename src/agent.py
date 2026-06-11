@@ -1,6 +1,7 @@
 import json
 import Classy
 from openai import OpenAI
+from openai import RateLimitError
 import subprocess
 import shlex
 import src.scraper as scraper
@@ -21,11 +22,17 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 html_dir=BASE_DIR+'/../Flask/templates/agent/'
 static_dir=BASE_DIR+'/../Flask/static/'
-
+location = BASE_DIR + "/../models/data.pth"
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+groq_key = os.getenv("API_KEY")
+nvidia_key = os.getenv("NVIDIA_KEY")
+openrouter_key = os.getenv("OPENROUTER_KEY")
+
+
 
 
 custom_domain = os.getenv("CUSTOM_DOMAIN")
@@ -49,16 +56,15 @@ else:
 
 
 
-location=None
 client = None
 
 agent_messages=[]
 tools=[]
+groq=True
 
-
-def reset(groq_key, location_innit,tts=False):
+def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.com/openai/v1", tts=False):
     global client
-    client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+    client = OpenAI(api_key=llm_key, base_url=base_url)
     global location
     location=location_innit
 
@@ -428,15 +434,43 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
     print('##########################################################################')
     '''
     print('Reveived: '+agent_input)
-    completion = client.chat.completions.create(
-        model=model,
-        messages=eco_messages,
-        temperature=temp,
-        tools=check_tools,
-        top_p=1,
-        stream=False,
-        stop=None
-    )
+    try:
+        completion = client.chat.completions.create(
+            model=model,
+            messages=eco_messages,
+            temperature=temp,
+            tools=check_tools,
+            top_p=1,
+            stream=False,
+            stop=None
+        )
+        groq=True
+    except RateLimitError as e:
+        groq=False
+        if nvidia_key:
+            client = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
+            completion = client.chat.completions.create(
+                model=model,
+                messages=eco_messages,
+                temperature=temp,
+                tools=check_tools,
+                top_p=1,
+                stream=False,
+                stop=None
+            )
+        elif openrouter_key:
+            client = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
+            completion = client.chat.completions.create(
+                model=model,
+                messages=eco_messages,
+                temperature=temp,
+                tools=check_tools,
+                top_p=1,
+                stream=False,
+                stop=None
+            )
+        else:
+            raise Exception("You hit your usage limits.")
     assistant_msg=completion.choices[0].message
     buffer=completion.choices[0].message.content
     print('Agent: '+buffer if buffer is not None else ' ')
@@ -549,8 +583,13 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             mime_types = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
             mime_type = mime_types.get(ext, "image/jpeg")
 
+
+            if groq:
+                model="meta-llama/llama-4-scout-17b-16e-instruct"
+            else:
+                model="meta/llama-4-maverick-17b-128e-instruct"
             completion = client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                model=model,
                 messages=[
                     {
                         "role": "system",

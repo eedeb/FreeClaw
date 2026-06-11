@@ -5,13 +5,12 @@ import uuid
 from dotenv import load_dotenv
 import os
 load_dotenv()
-groq_key = os.getenv("API_KEY")
 password  = os.getenv("FC_PASSWORD")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 location = BASE_DIR + "/../models/data.pth"
 
-agent.reset(groq_key, location)
+agent.reset()
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", os.urandom(24))
@@ -66,7 +65,7 @@ def chat():
 
     try:
         if user_input.lower() == '/reset':
-            agent.reset(groq_key, location)
+            agent.reset()
             return jsonify({'response': 'Agent reset successfully'})
         elif user_input.lower() == '/startapi':
             os.system("sudo systemctl start FreeClawAPI.service")
@@ -83,7 +82,7 @@ def chat():
 
 @app.route('/reset', methods=['GET', 'POST'])
 def reset():
-    agent.reset(groq_key, location)
+    agent.reset()
     if request.method == 'POST':
         return jsonify({'response': 'Agent reset successfully'})
     return redirect(url_for('index'))

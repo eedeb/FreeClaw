@@ -166,6 +166,20 @@ chmod 600 .env
 success "API key saved to .env"
 
 section_gap
+echo -e "     ${GRAY}Optional: NVIDIA NIM API key from${RESET} ${LIME}build.nvidia.com${RESET} ${GRAY}(press Enter to skip)${RESET}"
+section_gap
+
+read -p "$(echo -e "     ${LIME}?${RESET}  NVIDIA API key: ")" nvidia_key < /dev/tty
+if [[ -n "$nvidia_key" ]]; then
+    printf 'NVIDIA_KEY=%s\n' "$nvidia_key" >> .env
+    success "NVIDIA API key saved"
+else
+    printf 'NVIDIA_KEY=None\n' >> .env
+    info "No NVIDIA key provided — skipping"
+fi
+printf 'OPENROUTER_KEY=None\n' >> .env
+
+section_gap
 
 while true; do
     read -s -p "$(echo -e "     ${LIME}?${RESET}  Set the Web UI password: ")" fc_password < /dev/tty
