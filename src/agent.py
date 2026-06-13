@@ -392,52 +392,55 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
 #####################################################################################################################################
         print(tag)
         if tag == 'Greeting/goodbye':
-            eco_messages=[agent_messages[0], agent_messages[1], agent_messages[-1]]
+            if len(agent_messages) > 5:
+                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-3:]]
+            else:
+                eco_messages=agent_messages
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
-            if len(agent_messages) > 5:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-3:]]
+            if len(agent_messages) > 7:
+                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Search':
             temp=0.4
-            if len(agent_messages) > 5:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-3:]]
+            if len(agent_messages) > 7:
+                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
 
 
         elif tag == 'Context' or tag == 'Edit':
+            if len(agent_messages) > 11:
+                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-9:]]
+            else:
+                eco_messages=agent_messages
+
+
+        elif tag == 'Coding' or tag == 'Writing' or tag == 'List' or tag == 'Suggest':
             if len(agent_messages) > 9:
                 eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
 
 
-        elif tag == 'Coding' or tag == 'Writing' or tag == 'List' or tag == 'Suggest':
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
-            else:
-                eco_messages=agent_messages
-
-
         elif tag == 'Logic' or tag == 'Math' or tag == 'Explain':
             temp=0.2
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
+            if len(agent_messages) > 9:
+                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
         elif tag == 'Utility':
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
+            if len(agent_messages) > 9:
+                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
         else:
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
+            if len(agent_messages) > 9:
+                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
 
