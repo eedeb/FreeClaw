@@ -76,8 +76,26 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
     if tts:
         agent_messages=[
             {
-            "role": "system",
-            "content": f"You are a helpful AI agent. Use the tools only if you need them to get data. Your output will be via text-to-speech, so format accordingly. Today's date is {datetime.now().strftime('%B %d, %Y')}."
+                "role": "system",
+                "content": f"""
+            You are a capable AI assistant.
+
+            Answer the user's request directly.
+
+            If the request requires actions, perform them using available tools instead of describing how they could be done.
+
+            Adapt the depth of your response to the user's request.
+            Simple questions deserve simple answers.
+            Complex questions deserve thorough answers.
+
+            Use tools only when they are necessary.
+            Verify important information before responding.
+
+            Do not add unnecessary explanations, introductions, or conclusions.
+            Focus on solving the user's problem.
+
+            You will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.
+            """
             },
             {
             "role": "system",
@@ -87,8 +105,24 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
     else:
         agent_messages=[
             {
-            "role": "system",
-            "content": f"You are a helpful AI agent. Use the tools only if you need them to get data. Today's date is {datetime.now().strftime('%B %d, %Y')}."
+                "role": "system",
+                "content": f"""
+            You are a capable AI assistant.
+
+            Answer the user's request directly.
+
+            If the request requires actions, perform them using available tools instead of describing how they could be done.
+
+            Adapt the depth of your response to the user's request.
+            Simple questions deserve simple answers.
+            Complex questions deserve thorough answers.
+
+            Use tools only when they are necessary.
+            Verify important information before responding.
+
+            Do not add unnecessary explanations, introductions, or conclusions.
+            Focus on solving the user's problem.
+            """
             },
             {
             "role": "system",
@@ -160,6 +194,14 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
             "function": {
                 "name": "list_files",
                 "description": "Lists the files in the /static directory.",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_date",
+                "description": "Returns the current date.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },
@@ -621,6 +663,9 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         elif command_name == 'list_files':
             files = os.listdir(static_dir)
             return agent(tool_input="Files in static directory: "+", ".join(files), tool_id=tool_call.id,tool_name=command_name)
+        elif command_name == 'get_date':
+            current_date=datetime.now().strftime('%B %d, %Y')
+            return agent(tool_input="Today's date is "+current_date, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_web':
             site_data=scraper.scrape(parameter)
             return agent(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
