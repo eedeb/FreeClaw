@@ -117,6 +117,8 @@ def serve_template(text):
 
 @app.route('/static/<path:filename>')
 def serve_static(filename):
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
     return send_from_directory(STATIC_DIR, filename)
 
 
