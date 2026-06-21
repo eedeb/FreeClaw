@@ -6,8 +6,7 @@ import shlex
 import src.scraper as scraper
 from datetime import datetime
 from json_repair import repair_json
-import src.alexa_integration as alexa
-import src.smart_tv as tv
+import src.home_assistant as home_assistant
 import os
 
 
@@ -296,28 +295,33 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
         {
             "type": "function",
             "function": {
-                "name": "alexa",
-                "description": "Sends directions to an Alexa connected to my house. Use this command for common Alexa funcitons, such as smarthome tasks and music.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "string", "description": "Directions for Alexa" }
-                    },
-                    "required": ["command"]
-                }
+                "name": "List_Home_Assistant_Devices",
+                "description": "Returns all of the available devices connected to Home Assistant.",
+                "parameters": { "type": "object", "properties": {} }
             }
         },
         {
             "type": "function",
             "function": {
-                "name": "tv_control",
-                "description": "Sends directions to a smart TV",
+                "name": "Home_Assistant",
+                "description": "Sends directions to the Home Assistant API to control smart devices.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string", "description": "Either on, off, volume up, or volume down" }
+                        "domain": {
+                            "type": "string",
+                            "description": "switch, light, media_player, fan, lock, etc."
+                        },
+                        "service": {
+                            "type": "string",
+                            "description": "turn_on, turn_off, toggle, play_media, etc."
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": "The JSON header to be sent to the Home Assistant API. This should include the entity_id and any necessary parameters to run the command."
+                        }
                     },
-                    "required": ["command"]
+                    "required": ["domain","service","data"]
                 }
             }
         },
@@ -711,6 +715,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
                 return agent(tool_input="File edited successfully.", tool_id=tool_call.id, tool_name=command_name)
             except FileNotFoundError:
                 return agent(tool_input="File not found.", tool_id=tool_call.id, tool_name=command_name)
+            
         elif command_name == 'create_page':
 
             filename=args_dict.get('filename')
@@ -721,30 +726,17 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
                 f.write(contents)
             return agent(tool_input="Your site is live at "+url+"/agent/agent/"+filename.replace('.html',''), tool_id=tool_call.id,tool_name=command_name)
         
-        elif command_name == 'alexa':
-            alexa.send_to_alexa(parameter)
-            output='Command sent to alexa.'
+        elif command_name == 'List_Home_Assistant_Devices':
+            devices=home_assistant.get_entities()
+            return agent(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
+        
+        elif command_name == 'Home_Assistant':
+            domain=args_dict.get('domain')
+            service=args_dict.get('service')
+            data=args_dict.get('data')
+            output=home_assistant.execute_action(domain, service, data)
             return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         
-        elif command_name == 'tv_control':
-            if parameter.lower() == 'on':
-                tv.tv_on()
-                output='TV turned on.'
-            elif parameter.lower() == 'off':
-                tv.tv_off()
-                output='TV turned off.'
-            elif parameter.lower() == 'volume up':
-                tv.volume_up()
-                output='TV volume turned up.'
-            elif parameter.lower() == 'volume down':
-                tv.volume_down()
-                output='TV volume turned down.'
-            return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'youtube':
-            media_id=args_dict.get('media_id')
-            tv.play_youtube(media_id)
-            output='Playing video on TV.'
-            return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'run_bash_command':
             print(parameter)
             run_command='y'
