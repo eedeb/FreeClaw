@@ -250,6 +250,19 @@
     .bubble blockquote { border-left: 2px solid var(--accent); padding-left: 12px; color: var(--muted); margin: 6px 0; }
     .bubble a { color: var(--accent); text-decoration: underline; }
 
+    /* Uploaded image attachments */
+    .bubble .msg-image-link { display: block; cursor: zoom-in; }
+    .bubble .msg-image {
+      display: block;
+      max-width: 100%;
+      max-height: 360px;
+      width: auto;
+      height: auto;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+    }
+    .bubble .msg-caption { margin-top: 8px; text-decoration: none; }
+
     /* Thinking dots */
     .thinking .bubble { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
     .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s ease-in-out infinite; }
@@ -569,7 +582,7 @@
   }
 
   let totalTokens  = 0;
-  let pendingFile  = null;   // { name, path } after successful upload
+  let pendingFile  = null;   // { name, path, isImage } after successful upload
   let uploading    = false;
 
   const estimate = str => Math.ceil(str.length / 4);
@@ -584,9 +597,9 @@
     if (el) el.remove();
   }
 
-  function addMessage(role, text) {
+  function addMessage(role, text, imageUrl) {
     removeEmpty();
-    totalTokens += estimate(text);
+    totalTokens += estimate(text || '');
     updateCount();
     const wrap = document.createElement('div');
     wrap.className = `message ${role}`;
@@ -595,8 +608,31 @@
     label.textContent = role === 'user' ? 'you' : 'agent';
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    bubble.innerHTML = role === 'agent' ? marked.parse(text) : '';
-    if (role !== 'agent') bubble.textContent = text;
+
+    if (imageUrl) {
+      const link = document.createElement('a');
+      link.href = imageUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.className = 'msg-image-link';
+      const img = document.createElement('img');
+      img.src = imageUrl;
+      img.alt = 'Uploaded image';
+      img.className = 'msg-image';
+      img.loading = 'lazy';
+      link.appendChild(img);
+      bubble.appendChild(link);
+    }
+
+    if (role === 'agent') {
+      bubble.insertAdjacentHTML('beforeend', marked.parse(text));
+    } else if (text) {
+      const caption = document.createElement('div');
+      caption.className = imageUrl ? 'msg-caption' : '';
+      caption.textContent = text;
+      bubble.appendChild(caption);
+    }
+
     wrap.appendChild(label);
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
@@ -662,7 +698,7 @@
       } else {
         fileBar.style.width = '100%';
         fileStatus.textContent = 'ready';
-        pendingFile = { name: file.name, path: data.path };
+        pendingFile = { name: file.name, path: data.path, isImage: file.type.startsWith('image/') };
       }
     } catch (err) {
       fileStatus.textContent = 'failed';
@@ -681,6 +717,8 @@
     if (!text && !pendingFile) return;
     if (uploading) return;
 
+    const isImage = !!(pendingFile && pendingFile.isImage);
+
     // Build the message sent to the agent
     let agentMessage = text;
     if (pendingFile) {
@@ -688,10 +726,14 @@
       agentMessage = text ? `${tag}\n\n${text}` : tag;
     }
 
-    // Display text to user (show original input, not the tag)
-    const displayText = text
-      ? (pendingFile ? `📎 ${pendingFile.name}\n\n${text}` : text)
-      : `📎 ${pendingFile.name}`;
+    // Display to the user: render the actual image when one was attached,
+    // otherwise fall back to a filename pill
+    const imageUrl = isImage ? '/' + pendingFile.path : null;
+    const displayText = isImage
+      ? text
+      : (pendingFile
+          ? (text ? `📎 ${pendingFile.name}\n\n${text}` : `📎 ${pendingFile.name}`)
+          : text);
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
@@ -699,7 +741,7 @@
     inputEl.blur();
     clearFile();
 
-    addMessage('user', displayText);
+    addMessage('user', displayText, imageUrl);
     const thinking = addThinking();
 
     try {
