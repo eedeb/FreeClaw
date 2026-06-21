@@ -328,20 +328,6 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
         {
             "type": "function",
             "function": {
-                "name": "youtube",
-                "description": "Plays youtube videos on my smart TV.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "media_id": { "type": "string", "description": "The exact media id of the video to be played." }
-                    },
-                    "required": ["media_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "run_bash_command",
                 "description": "Allows you to run commands directly on this machine. If a user asks you to do something, immediately create a command and run it. Don't run multiple commands without reporting back to the user.",
                 "parameters": {
