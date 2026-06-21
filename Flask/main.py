@@ -12,7 +12,7 @@ location = BASE_DIR + "/../models/data.pth"
 
 agent.reset()
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=None)
 app.secret_key = os.getenv("SECRET_KEY", os.urandom(24))
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
