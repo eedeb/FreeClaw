@@ -18,7 +18,7 @@ import mimetypes
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-html_dir=BASE_DIR+'/../Flask/templates/agent/'
+html_dir=BASE_DIR+'/../Flask/static/'
 static_dir=BASE_DIR+'/../Flask/static/'
 location = BASE_DIR + "/../models/data.pth"
 
@@ -710,7 +710,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             contents=args_dict.get('contents')
             with open(html_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            return agent(tool_input="Your site is live at "+url+"/agent/agent/"+filename.replace('.html',''), tool_id=tool_call.id,tool_name=command_name)
+            return agent(tool_input="Your site is live at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
         
         elif command_name == 'List_Home_Assistant_Devices':
             devices=home_assistant.get_entities()
