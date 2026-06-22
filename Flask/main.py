@@ -74,8 +74,8 @@ def chat():
             os.system("sudo systemctl stop FreeClawAPI.service")
             return jsonify({'response': 'API stopped successfully'})
         else:
-            response = agent.agent(user_input=user_input)
-            return jsonify({'response': response})
+            conversation = agent.agent(user_input=user_input)
+            return jsonify({'conversation': conversation})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

@@ -497,6 +497,94 @@
       from { opacity: 1; }
       to   { opacity: 0; visibility: hidden; }
     }
+
+    /* ── Tool call blocks ── */
+    .tool-group {
+      align-self: flex-start;
+      max-width: 88%;
+      animation: fadeUp 0.22s ease forwards;
+      opacity: 0;
+      margin: 2px 0;
+    }
+    @media (min-width: 600px) { .tool-group { max-width: 78%; } }
+
+    .tool-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      padding: 5px 10px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: #0f0f12;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      user-select: none;
+      -webkit-user-select: none;
+      transition: border-color 0.15s, color 0.15s;
+      width: fit-content;
+    }
+    .tool-toggle:hover { border-color: rgba(200,240,74,0.3); color: var(--accent); }
+
+    .tool-toggle-arrow {
+      display: inline-block;
+      transition: transform 0.18s ease;
+      font-style: normal;
+      font-size: 9px;
+    }
+    .tool-toggle.open .tool-toggle-arrow { transform: rotate(90deg); }
+
+    .tool-details {
+      display: none;
+      margin-top: 4px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .tool-details.open { display: block; }
+
+    .tool-section {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tool-section:last-child { border-bottom: none; }
+
+    .tool-section-label {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+
+    .tool-name {
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .tool-code {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      line-height: 1.55;
+      color: #c8e6a0;
+      background: #0a0a0c;
+      border-radius: 3px;
+      padding: 8px 10px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      -webkit-overflow-scrolling: touch;
+      margin: 0;
+    }
+
+    .tool-result-ok   { color: #c8e6a0; }
+    .tool-result-err  { color: #e07070; }
   </style>
 </head>
 <body>
@@ -582,10 +670,10 @@
   }
 
   let totalTokens  = 0;
-  let pendingFile  = null;   // { name, path, isImage } after successful upload
+  let pendingFile  = null;
   let uploading    = false;
 
-  const estimate = str => Math.ceil(str.length / 4);
+  const estimate = str => Math.ceil((str || '').length / 4);
   marked.setOptions({ breaks: true, gfm: true });
 
   function updateCount() {
@@ -597,10 +685,19 @@
     if (el) el.remove();
   }
 
-  function addMessage(role, text, imageUrl) {
+  // ── Render a single user/agent text bubble ──────────────
+  // opts.countTokens (default true) controls whether this call bumps the
+  // running token estimate. When renderConversation() re-renders the full
+  // history from the server payload, it computes the token total itself
+  // (covering tool calls/results too), so bubble-level counting is skipped
+  // here to avoid double-counting.
+  function addMessage(role, text, imageUrl, opts) {
+    const countTokens = !opts || opts.countTokens !== false;
     removeEmpty();
-    totalTokens += estimate(text || '');
-    updateCount();
+    if (countTokens) {
+      totalTokens += estimate(text);
+      updateCount();
+    }
     const wrap = document.createElement('div');
     wrap.className = `message ${role}`;
     const label = document.createElement('div');
@@ -625,7 +722,7 @@
     }
 
     if (role === 'agent') {
-      bubble.insertAdjacentHTML('beforeend', marked.parse(text));
+      bubble.insertAdjacentHTML('beforeend', marked.parse(text || ''));
     } else if (text) {
       const caption = document.createElement('div');
       caption.className = imageUrl ? 'msg-caption' : '';
@@ -636,10 +733,162 @@
     wrap.appendChild(label);
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
     return wrap;
   }
 
+  // ── Render a collapsible tool-call + result block ────────
+  function addToolBlock(toolName, argsStr, resultStr, isError) {
+    removeEmpty();
+
+    const group = document.createElement('div');
+    group.className = 'tool-group';
+
+    // Toggle pill
+    const toggle = document.createElement('div');
+    toggle.className = 'tool-toggle';
+    toggle.innerHTML = `<i class="tool-toggle-arrow">▶</i><span>tool: ${toolName}</span>`;
+
+    // Details panel
+    const details = document.createElement('div');
+    details.className = 'tool-details';
+
+    // Call section
+    const callSec = document.createElement('div');
+    callSec.className = 'tool-section';
+    callSec.innerHTML = `<div class="tool-section-label">call · <span class="tool-name">${toolName}</span></div>`;
+    const callPre = document.createElement('pre');
+    callPre.className = 'tool-code';
+    try {
+      callPre.textContent = JSON.stringify(JSON.parse(argsStr), null, 2);
+    } catch {
+      callPre.textContent = argsStr || '';
+    }
+    callSec.appendChild(callPre);
+    details.appendChild(callSec);
+
+    // Result section
+    const resSec = document.createElement('div');
+    resSec.className = 'tool-section';
+    resSec.innerHTML = `<div class="tool-section-label">result</div>`;
+    const resPre = document.createElement('pre');
+    resPre.className = `tool-code ${isError ? 'tool-result-err' : 'tool-result-ok'}`;
+    resPre.textContent = resultStr || '';
+    resSec.appendChild(resPre);
+    details.appendChild(resSec);
+
+    // Toggle behaviour
+    toggle.addEventListener('click', () => {
+      const open = details.classList.toggle('open');
+      toggle.classList.toggle('open', open);
+    });
+
+    group.appendChild(toggle);
+    group.appendChild(details);
+    messagesEl.appendChild(group);
+    return group;
+  }
+
+  // ── Estimate total tokens for the FULL payload sent to/from the LLM ──
+  // Walks the raw conversation array (system prompt, user/assistant text,
+  // tool call arguments, and tool result content) rather than just what
+  // gets rendered as visible bubbles, since all of that counts against
+  // the context window / API usage.
+  function estimateConversationTokens(conversation) {
+    let total = 0;
+
+    for (const msg of conversation) {
+      // Role/structure overhead per message (rough, mirrors chat-template overhead)
+      total += 4;
+
+      if (msg.content) {
+        if (typeof msg.content === 'string') {
+          total += estimate(msg.content);
+        } else if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (typeof block === 'string') {
+              total += estimate(block);
+            } else if (block && typeof block === 'object') {
+              if (block.text) total += estimate(block.text);
+              // Non-text blocks (images, etc.) still cost tokens; use a flat
+              // estimate when we can't otherwise size them.
+              else if (block.type && block.type !== 'text') total += 85;
+            }
+          }
+        }
+      }
+
+      // Tool calls the assistant made: name + arguments JSON
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          const fn = tc.function || {};
+          total += estimate(fn.name || '');
+          total += estimate(fn.arguments || '');
+          total += 6; // per-call structural overhead (id, type, etc.)
+        }
+      }
+
+      // Tool result messages: the data fed back to the LLM
+      if (msg.role === 'tool') {
+        total += estimate(msg.content || '');
+        total += estimate(msg.name || '');
+      }
+    }
+
+    return total;
+  }
+
+  // ── Render full conversation returned by the agent ───────
+  function renderConversation(conversation) {
+    messagesEl.innerHTML = '';
+
+    // Token estimate covers the ENTIRE payload (system + user + assistant
+    // text + tool call args + tool results), not just visible bubbles.
+    totalTokens = estimateConversationTokens(conversation);
+    updateCount();
+
+    // Index tool results by tool_call_id for quick lookup
+    const toolResults = {};
+    for (const msg of conversation) {
+      if (msg.role === 'tool') {
+        toolResults[msg.tool_call_id] = { content: msg.content, name: msg.name };
+      }
+    }
+
+    for (const msg of conversation) {
+      // Skip system messages and tool result messages (rendered inline)
+      if (msg.role === 'system' || msg.role === 'tool') continue;
+
+      if (msg.role === 'user') {
+        // user content can be string or array
+        const text = typeof msg.content === 'string'
+          ? msg.content
+          : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+        addMessage('user', text, null, { countTokens: false });
+      } else if (msg.role === 'assistant') {
+        // Tool calls first (if any)
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
+            const fn = tc.function || {};
+            const result = toolResults[tc.id];
+            const resultText = result ? result.content : '(no result)';
+            const isError = resultText && resultText.toLowerCase().startsWith('error');
+            addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError);
+          }
+        }
+        // Then the assistant's text reply (if any)
+        const text = typeof msg.content === 'string'
+          ? msg.content
+          : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+        if (text && text.trim()) {
+          addMessage('agent', text, null, { countTokens: false });
+        }
+      }
+    }
+
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // ── Thinking indicator ───────────────────────────────────
   function addThinking() {
     removeEmpty();
     const wrap = document.createElement('div');
@@ -673,7 +922,6 @@
     const file = fileInput.files[0];
     if (!file) return;
 
-    // Show preview pill immediately
     fileName.textContent = file.name;
     fileStatus.textContent = 'uploading…';
     fileBar.style.width = '0%';
@@ -681,7 +929,6 @@
     uploading = true;
     sendBtn.disabled = true;
 
-    // Animate progress bar to 80% while uploading
     requestAnimationFrame(() => { fileBar.style.width = '80%'; });
 
     try {
@@ -700,7 +947,7 @@
         fileStatus.textContent = 'ready';
         pendingFile = { name: file.name, path: data.path, isImage: file.type.startsWith('image/') };
       }
-    } catch (err) {
+    } catch {
       fileStatus.textContent = 'failed';
       pendingFile = null;
     }
@@ -717,23 +964,13 @@
     if (!text && !pendingFile) return;
     if (uploading) return;
 
-    const isImage = !!(pendingFile && pendingFile.isImage);
-
-    // Build the message sent to the agent
     let agentMessage = text;
+    let displayImageUrl = null;
     if (pendingFile) {
       const tag = `[File uploaded: "${pendingFile.name}" → ${pendingFile.path}]`;
       agentMessage = text ? `${tag}\n\n${text}` : tag;
+      if (pendingFile.isImage) displayImageUrl = pendingFile.path;
     }
-
-    // Display to the user: render the actual image when one was attached,
-    // otherwise fall back to a filename pill
-    const imageUrl = isImage ? '/' + pendingFile.path : null;
-    const displayText = isImage
-      ? text
-      : (pendingFile
-          ? (text ? `📎 ${pendingFile.name}\n\n${text}` : `📎 ${pendingFile.name}`)
-          : text);
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
@@ -741,7 +978,12 @@
     inputEl.blur();
     clearFile();
 
-    addMessage('user', displayText, imageUrl);
+    // Show the user's message immediately so it doesn't feel like it
+    // vanished into the void while the agent is working. This is rendered
+    // optimistically; renderConversation() will replace it (and recompute
+    // token counts) once the real response comes back.
+    addMessage('user', text, displayImageUrl);
+
     const thinking = addThinking();
 
     try {
@@ -752,11 +994,20 @@
       });
       const data = await res.json();
       thinking.remove();
-      addMessage('agent', data.error ? `**Error:** ${data.error}` : data.response);
+
+      if (data.error) {
+        addMessage('agent', `**Error:** ${data.error}`);
+      } else if (data.conversation) {
+        renderConversation(data.conversation);
+      } else {
+        // Fallback for legacy string response
+        addMessage('agent', data.response || '');
+      }
     } catch {
       thinking.remove();
       addMessage('agent', '**Connection error.** Is the server running?');
     }
+
     sendBtn.disabled = false;
     if (!isStandalone) inputEl.focus();
   }

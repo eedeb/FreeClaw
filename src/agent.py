@@ -753,7 +753,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         print('\n')
     print(agent_messages)
     print('\n')
-    return buffer
+    return agent_messages
 
 
 '''
