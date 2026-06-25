@@ -267,7 +267,7 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
         {
             "type": "function",
             "function": {
-                "name": "get_image_desdcription",
+                "name": "get_image_description",
                 "description": "Returns a very detailed description of an image in the static folder.",
                 "parameters": {
                     "type": "object",
@@ -472,6 +472,8 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
     print('Reveived: '+agent_input)
     try:
         #raise Exception("Test")
+        if groq==False:
+            client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
         completion = client.chat.completions.create(
             model=model,
             messages=eco_messages,
@@ -602,7 +604,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             except FileNotFoundError:
                 return agent(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)            
             
-        elif command_name == 'get_image_desdcription':
+        elif command_name == 'get_image_description':
             filename=args_dict.get('filename')
             if "/" in filename or "\\" in filename:
                 return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
@@ -621,10 +623,11 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             mime_type = mime_types.get(ext, "image/jpeg")
 
 
-            if not groq:
-                client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+            if groq:
+                client = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
+                groq = False
             completion = client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                model="qwen/qwen3.5-397b-a17b",
                 messages=[
                     {
                         "role": "system",
