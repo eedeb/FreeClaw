@@ -207,7 +207,7 @@ section_gap
 
 # ── systemd ──────────────────────────────────
 
-step "6" "Registering systemd services..."
+step "6" "Registering systemd services and CLI..."
 section_gap
 
 INSTALL_DIR=$(pwd)
@@ -260,6 +260,15 @@ info "Enabling FreeClawAPI..."
 sudo systemctl enable FreeClawAPI.service
 success "FreeClawAPI service enabled"
 
+info "Installing freeclaw CLI to /usr/local/bin..."
+sudo tee /usr/local/bin/freeclaw > /dev/null <<EOF
+#!/bin/bash
+cd $INSTALL_DIR
+$INSTALL_DIR/venv/bin/python3 -m src.cli
+EOF
+sudo chmod +x /usr/local/bin/freeclaw
+success "CLI installed — run 'freeclaw' from anywhere"
+
 section_gap
 divider
 section_gap
@@ -302,6 +311,7 @@ echo -e "   ${GRAY}Open the web UI in your browser:${RESET}"
 echo ""
 echo -e "   ${BG_DARK}   ${LIME}${BOLD}http://${IP}:6767${RESET}${BG_DARK}   ${RESET}"
 echo ""
+echo -e "   ${DIM}${GRAY}To chat from the terminal:  ${RESET}${LIME}${BOLD}freeclaw${RESET}"
 echo -e "   ${DIM}${GRAY}To update later, run: ${RESET}${GRAY}./update.sh${RESET}"
 echo -e "   ${DIM}${GRAY}Logs: ${RESET}${GRAY}journalctl -u FreeClaw -f${RESET}"
 echo ""
