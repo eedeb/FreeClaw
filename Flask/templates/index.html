@@ -245,6 +245,7 @@
 
   <main>
     <div class="section-label">Users</div>
+    <div id="users-error" class="empty-hint" style="display:none; color:#e05555;"></div>
     <div id="users-grid"></div>
 
     <div id="add-user-card">+ Add a new user</div>
@@ -264,6 +265,7 @@
 
 <script>
   const usersGrid       = document.getElementById('users-grid');
+  const usersError      = document.getElementById('users-error');
   const addUserCard     = document.getElementById('add-user-card');
   const addUserForm     = document.getElementById('add-user-form');
   const addUserInput    = document.getElementById('add-user-input');
@@ -285,9 +287,22 @@
   }
 
   async function loadUsers() {
-    const res = await fetch('/api/users');
-    const data = await res.json();
+    usersError.style.display = 'none';
+    let data;
+    try {
+      const res = await fetch('/api/users');
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+    } catch (e) {
+      usersError.textContent = `Couldn't load users: ${e.message}`;
+      usersError.style.display = 'block';
+      usersGrid.innerHTML = '';
+      return;
+    }
     usersGrid.innerHTML = '';
+    if ((data.users || []).length === 0) {
+      usersGrid.innerHTML = `<div class="empty-hint">No users yet — add one below.${data.static_dir ? ' (looking in ' + escapeHtml(data.static_dir) + ')' : ''}</div>`;
+    }
     (data.users || []).forEach(u => {
       const card = document.createElement('div');
       card.className = 'user-card';
@@ -334,6 +349,7 @@
         convList.innerHTML = '';
       }
     } catch (_) { /* ignore */ }
+  }
 
   async function selectUser(name, cardEl) {
     selectedUser = name;
@@ -437,9 +453,14 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
       });
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(`Server returned ${res.status} (non-JSON response)`);
+      }
       if (!res.ok) {
-        userFormError.textContent = data.error || 'Could not create user.';
+        userFormError.textContent = data.error || `Could not create user (${res.status}).`;
         userFormError.style.display = 'block';
         return;
       }
@@ -447,8 +468,8 @@
       addUserForm.classList.remove('visible');
       addUserCard.style.display = 'flex';
       await loadUsers();
-    } catch {
-      userFormError.textContent = 'Connection error.';
+    } catch (e) {
+      userFormError.textContent = e.message || 'Connection error.';
       userFormError.style.display = 'block';
     } finally {
       addUserSubmit.disabled = false;

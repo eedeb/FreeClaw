@@ -25,13 +25,20 @@ app = Flask(__name__, static_folder=None)
 _secret_key = os.getenv("SECRET_KEY")
 if not _secret_key:
     _secret_key_path = os.path.join(BASE_DIR, ".secret_key")
-    if os.path.exists(_secret_key_path):
-        with open(_secret_key_path, "r") as f:
-            _secret_key = f.read().strip()
-    if not _secret_key:
+    try:
+        if os.path.exists(_secret_key_path):
+            with open(_secret_key_path, "r") as f:
+                _secret_key = f.read().strip()
+        if not _secret_key:
+            _secret_key = os.urandom(24).hex()
+            with open(_secret_key_path, "w") as f:
+                f.write(_secret_key)
+    except OSError as e:
+        # Read-only filesystem, permissions issue, etc. — fall back to an
+        # in-memory key rather than crashing the whole app at import time.
+        print(f"[freeclaw] Warning: couldn't persist secret key to {_secret_key_path} ({e}); "
+              f"sessions won't survive a restart. Set SECRET_KEY to fix this.")
         _secret_key = os.urandom(24).hex()
-        with open(_secret_key_path, "w") as f:
-            f.write(_secret_key)
 app.secret_key = _secret_key
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
@@ -110,9 +117,14 @@ def list_users():
         return []
     users = []
     for entry in sorted(os.listdir(STATIC_DIR)):
+        if entry.lower() in RESERVED_NAMES or entry.startswith('.'):
+            continue
         full = os.path.join(STATIC_DIR, entry)
-        if os.path.isdir(full) and entry.lower() not in RESERVED_NAMES:
-            users.append(entry)
+        try:
+            if os.path.isdir(full):
+                users.append(entry)
+        except OSError:
+            continue
     return users
 
 
@@ -262,10 +274,13 @@ def index():
 def api_list_users():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
-    users = []
-    for name in list_users():
-        users.append({'name': name, 'chat_count': len(list_conversations(name))})
-    return jsonify({'users': users})
+    try:
+        users = []
+        for name in list_users():
+            users.append({'name': name, 'chat_count': len(list_conversations(name))})
+        return jsonify({'users': users, 'static_dir': STATIC_DIR})
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
 
 @app.route('/api/users', methods=['POST'])
@@ -278,7 +293,10 @@ def api_create_user():
         return jsonify({'error': 'Invalid name. Use 1-40 letters, numbers, spaces, - or _.'}), 400
     if user_exists(name):
         return jsonify({'error': 'A user with that name already exists.'}), 409
-    create_user(name)
+    try:
+        create_user(name)
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
     return jsonify({'name': name})
 
 
