@@ -74,7 +74,38 @@ def render_tool_call(tc, tool_results):
         print(clr(f"  └─ {line}", result_color))
     print()
 
-def render_conversation(conversation):
+def stream_silent(gen):
+    """Advance a generator one step at a time, suppressing stdout only
+    while the generator itself is *running* (i.e. while agent.py's debug
+    prints would fire). stdout is restored before each event is handed
+    back to the caller, so the caller's own prints (streamed tokens, tool
+    indicators, etc.) show up normally."""
+    while True:
+        with silence():
+            try:
+                event = next(gen)
+            except StopIteration:
+                return
+        yield event
+
+def render_tool_blocks(new_messages):
+    """Render only the tool-call/result blocks contained in a slice of
+    freshly-added conversation messages. Assistant *text* is skipped here
+    since it has already been streamed live to the terminal."""
+    tool_results = {}
+    for msg in new_messages:
+        if msg.get("role") == "tool":
+            tool_results[msg.get("tool_call_id", "")] = {
+                "content": msg.get("content", ""),
+                "name":    msg.get("name", ""),
+            }
+
+    for msg in new_messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                render_tool_call(tc, tool_results)
+
+
     tool_results = {}
     for msg in conversation:
         if msg.get("role") == "tool":
@@ -108,7 +139,7 @@ def main():
     with silence():
         agent.reset()
 
-    printed_user_count = 0
+    last_rendered_index = 0
 
     while True:
         try:
@@ -127,7 +158,7 @@ def main():
         if user_input.lower() == "/reset":
             with silence():
                 agent.reset()
-            printed_user_count = 0
+            last_rendered_index = 0
             print(clr("  conversation reset\n", GREY))
             continue
 
@@ -141,21 +172,42 @@ def main():
             print(clr("  API stopped\n", GREY))
             continue
 
-        print(clr("  thinking…", GREY), end="\r", flush=True)
+        agent_label_printed = False
+        buffer = ""
 
         try:
-            with silence():
-                conversation = agent.agent(user_input=user_input)
+            for event in stream_silent(agent.agent_stream(user_input=user_input)):
+                etype = event.get("type")
+
+                if etype == "token":
+                    if not agent_label_printed:
+                        sys.stdout.write(clr("agent › ", GREEN, BOLD))
+                        agent_label_printed = True
+                    sys.stdout.write(event.get("text", ""))
+                    sys.stdout.flush()
+                    buffer += event.get("text", "")
+
+                elif etype == "tool_call":
+                    if agent_label_printed:
+                        print()  # close out any partial streamed line
+                        agent_label_printed = False
+                        buffer = ""
+                    name = event.get("name", "unknown")
+                    print(clr(f"  … calling tool: {name}", GREY))
+
         except Exception as exc:
+            if agent_label_printed:
+                print()
             print(clr(f"  error: {exc}\n", RED))
             continue
 
-        print(" " * 20, end="\r")
+        if agent_label_printed:
+            print()
+            print()
 
-        user_msgs = [m for m in conversation if m.get("role") == "user"]
-        printed_user_count = len(user_msgs)
-
-        render_conversation(conversation)
+        conversation = agent.agent_messages
+        render_tool_blocks(conversation[last_rendered_index:])
+        last_rendered_index = len(conversation)
 
 if __name__ == "__main__":
     main()

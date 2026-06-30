@@ -1,4 +1,5 @@
 import json
+import types
 import Classy
 from openai import OpenAI
 import subprocess
@@ -343,7 +344,16 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
 
 
 
-def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
+def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
+    """Generator version of the agent loop. Yields small dict events as the
+    model produces output, so callers (e.g. the Flask route) can stream
+    them to the browser in real time:
+      {"type": "token", "text": "..."}            - a chunk of assistant text
+      {"type": "tool_call", "name": "...", "arguments": {...}} - tool invocation started
+      {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
+    The full, final conversation is still available afterwards via
+    agent_messages (module-level), same as before.
+    """
     global agent_messages
     global scrape
     global tags
@@ -361,7 +371,8 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
 
         if user_input.lower() == 'reset':
             reset()
-            return "Agent reset."
+            yield {"type": "token", "text": "Agent reset."}
+            return
 
 
         intent, certainty = Classy.classify(user_input,location)
@@ -474,45 +485,72 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         #raise Exception("Test")
         if groq==False:
             client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-        completion = client.chat.completions.create(
+        stream = client.chat.completions.create(
             model=model,
             messages=eco_messages,
             temperature=temp,
             tools=check_tools,
             top_p=1,
-            stream=False,
+            stream=True,
             stop=None
         )
-        groq=True
+        groq = True
     except Exception as e:
-        groq=False
+        groq = False
         if nvidia_key != "None":
             client = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
-            completion = client.chat.completions.create(
+            stream = client.chat.completions.create(
                 model=model,
                 messages=eco_messages,
                 temperature=temp,
                 tools=check_tools,
                 top_p=1,
-                stream=False,
+                stream=True,
                 stop=None
             )
         elif openrouter_key != "None":
             client = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
-            completion = client.chat.completions.create(
+            stream = client.chat.completions.create(
                 model=model,
                 messages=eco_messages,
                 temperature=temp,
                 tools=check_tools,
                 top_p=1,
-                stream=False,
+                stream=True,
                 stop=None
             )
         else:
             raise Exception("You hit your usage limits.")
-    assistant_msg=completion.choices[0].message
-    buffer=completion.choices[0].message.content
-    print('Agent: '+buffer if buffer is not None else ' ')
+
+    # Consume the stream, forwarding text chunks to the caller in real
+    # time and reassembling any tool calls (which always arrive as
+    # incremental argument-string fragments when streamed).
+    buffer = ""
+    tool_calls_acc = {}
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta is None:
+            continue
+        if getattr(delta, "content", None):
+            buffer += delta.content
+            yield {"type": "token", "text": delta.content}
+        if getattr(delta, "tool_calls", None):
+            for tc_delta in delta.tool_calls:
+                idx = tc_delta.index
+                if idx not in tool_calls_acc:
+                    tool_calls_acc[idx] = {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+                if tc_delta.id:
+                    tool_calls_acc[idx]["id"] = tc_delta.id
+                if tc_delta.function:
+                    if tc_delta.function.name:
+                        tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
+                    if tc_delta.function.arguments:
+                        tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+
+    tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
+    print('Agent: '+buffer if buffer else ' ')
 
 
 
@@ -522,30 +560,30 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
 
 
 
-    if assistant_msg.tool_calls:
+    if tool_calls_list:
 
         agent_messages.append(
             {
             "role": "assistant",
             "tool_calls": [
                 {
-                    "id": tc.id,
-                    "type": tc.type,
+                    "id": tc["id"],
+                    "type": tc["type"],
                     "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"]
                     }
                 }
-                for tc in assistant_msg.tool_calls
+                for tc in tool_calls_list
             ]
             }
         )
     
 
         
-        tool_call = assistant_msg.tool_calls[0]
-        command_name = tool_call.function.name
-        tool_args = tool_call.function.arguments  # JSON string
+        tool_call = types.SimpleNamespace(id=tool_calls_list[0]["id"])
+        command_name = tool_calls_list[0]["function"]["name"]
+        tool_args = tool_calls_list[0]["function"]["arguments"]  # JSON string
 
         fixed_tool_args = repair_json(tool_args)
 
@@ -553,15 +591,16 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
         print('Agent called tool: '+command_name)
         print('Agent parameter: '+parameter if parameter else ' ')
+        yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
         if command_name == 'save_context':
             contents=args_dict.get('contents')
             with open(static_dir+"context.md", "a", encoding="utf-8") as f:
                 f.write(contents.strip()+'\n')
-            return agent(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_context':
             with open(static_dir+"context.md", "r", encoding="utf-8") as f:
                 content = f.read()
-            return agent(tool_input=content, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input=content, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'search':
 
 
@@ -591,23 +630,23 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
 
             '''
             
-            #return agent(tool_input=report+" - "+web_data[1], tool_id=tool_call.id,tool_name=command_name)
-            return agent(tool_input=web_data, tool_id=tool_call.id,tool_name=command_name)
+            #yield from agent_stream(tool_input=report+" - "+web_data[1], tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input=web_data, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_file':
             filename=args_dict.get('filename')
             if "/" in filename or "\\" in filename:
-                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
             try:
                 with open(static_dir+filename, "r", encoding="utf-8") as f:
                     file_contents = f.read()
-                return agent(tool_input=file_contents, tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input=file_contents, tool_id=tool_call.id,tool_name=command_name)
             except FileNotFoundError:
-                return agent(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)            
+                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)            
             
         elif command_name == 'get_image_description':
             filename=args_dict.get('filename')
             if "/" in filename or "\\" in filename:
-                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
             
             file_location=static_dir+filename
 
@@ -654,77 +693,77 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             )
 
             description=completion.choices[0].message.content
-            return agent(tool_input=description, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input=description, tool_id=tool_call.id,tool_name=command_name)
 
         elif command_name == 'list_files':
             files = os.listdir(static_dir)
-            return agent(tool_input="Files in static directory: "+", ".join(files), tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="Files in static directory: "+", ".join(files), tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'get_date':
             current_date=datetime.now().strftime('%B %d, %Y')
-            return agent(tool_input="Today's date is "+current_date, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="Today's date is "+current_date, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_web':
             site_data=scraper.scrape(parameter)
-            return agent(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
 
         elif command_name == 'create_file':
 
             filename=args_dict.get('filename')
             if "/" in filename or "\\" in filename:
-                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
             contents=args_dict.get('contents')
             with open(static_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            return agent(tool_input="Your file is accessable at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="Your file is accessable at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
         
 
         elif command_name == 'delete_file':
             filename=args_dict.get('filename')
             if "/" in filename or "\\" in filename:
-                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
             file_path = static_dir + filename
             if os.path.exists(file_path):
                 os.remove(file_path)
-                return agent(tool_input="File deleted.", tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input="File deleted.", tool_id=tool_call.id,tool_name=command_name)
             else:
-                return agent(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'edit_file':
             filename = args_dict.get('filename')
             if "/" in filename or "\\" in filename:
-                return agent(tool_input="Invalid filename.", tool_id=tool_call.id, tool_name=command_name)
+                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id, tool_name=command_name)
             old_str = args_dict.get('old_str')
             new_str = args_dict.get('new_str')
             try:
                 with open(static_dir + filename, "r", encoding="utf-8") as f:
                     contents = f.read()
                 if old_str not in contents:
-                    return agent(tool_input="String not found in file.", tool_id=tool_call.id, tool_name=command_name)
+                    yield from agent_stream(tool_input="String not found in file.", tool_id=tool_call.id, tool_name=command_name)
                 updated = contents.replace(old_str, new_str, 1)  # replace only first occurrence
                 with open(static_dir + filename, "w", encoding="utf-8") as f:
                     f.write(updated)
-                return agent(tool_input="File edited successfully.", tool_id=tool_call.id, tool_name=command_name)
+                yield from agent_stream(tool_input="File edited successfully.", tool_id=tool_call.id, tool_name=command_name)
             except FileNotFoundError:
-                return agent(tool_input="File not found.", tool_id=tool_call.id, tool_name=command_name)
+                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id, tool_name=command_name)
             
         elif command_name == 'create_page':
 
             filename=args_dict.get('filename')
             if "/" in filename or "\\" in filename:
-                return agent(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
             contents=args_dict.get('contents')
             with open(html_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            return agent(tool_input="Your site is live at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="Your site is live at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
         
         elif command_name == 'List_Home_Assistant_Devices':
             devices=home_assistant.get_entities()
-            return agent(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
         
         elif command_name == 'Home_Assistant':
             domain=args_dict.get('domain')
             service=args_dict.get('service')
             data=args_dict.get('data')
             output=home_assistant.execute_action(domain, service, data)
-            return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         
         elif command_name == 'run_bash_command':
             print(parameter)
@@ -745,7 +784,7 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
             if output is None or output == '':
                 output='Command was run successfully, Report back to the user.'
             print(output)
-            return agent(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
     elif buffer is not None:
         agent_messages.append(
             {
@@ -756,6 +795,16 @@ def agent(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_n
         print('\n')
     print(agent_messages)
     print('\n')
+    return
+
+
+def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):
+    """Backward-compatible, non-streaming entry point. Drains the
+    agent_stream() generator and returns the full conversation, exactly
+    like the old synchronous agent() used to."""
+    for _ in agent_stream(user_input=user_input, system_input=system_input,
+                           tool_input=tool_input, tool_id=tool_id, tool_name=tool_name):
+        pass
     return agent_messages
 
 

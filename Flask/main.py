@@ -1,6 +1,7 @@
-from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session, Response, stream_with_context
 import src.agent as agent
 import uuid
+import json
 
 from dotenv import load_dotenv
 import os
@@ -63,21 +64,30 @@ def chat():
     if not user_input:
         return jsonify({'error': 'Empty message'}), 400
 
-    try:
-        if user_input.lower() == '/reset':
-            agent.reset()
-            return jsonify({'response': 'Agent reset successfully'})
-        elif user_input.lower() == '/startapi':
-            os.system("sudo systemctl start FreeClawAPI.service")
-            return jsonify({'response': 'API started successfully on port 8080'})
-        elif user_input.lower() == '/stopapi':
-            os.system("sudo systemctl stop FreeClawAPI.service")
-            return jsonify({'response': 'API stopped successfully'})
-        else:
-            conversation = agent.agent(user_input=user_input)
-            return jsonify({'conversation': conversation})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    # Slash-commands stay as quick, plain JSON responses — no need to stream these.
+    if user_input.lower() == '/reset':
+        agent.reset()
+        return jsonify({'response': 'Agent reset successfully'})
+    elif user_input.lower() == '/startapi':
+        os.system("sudo systemctl start FreeClawAPI.service")
+        return jsonify({'response': 'API started successfully on port 8080'})
+    elif user_input.lower() == '/stopapi':
+        os.system("sudo systemctl stop FreeClawAPI.service")
+        return jsonify({'response': 'API stopped successfully'})
+
+    def generate():
+        try:
+            for event in agent.agent_stream(user_input=user_input):
+                yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation': agent.agent_messages})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 
 @app.route('/reset', methods=['GET', 'POST'])

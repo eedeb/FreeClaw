@@ -984,7 +984,15 @@
     // token counts) once the real response comes back.
     addMessage('user', text, displayImageUrl);
 
-    const thinking = addThinking();
+    let thinking = addThinking();
+    let liveWrap = null, liveBubble = null, liveText = '';
+
+    const dropLiveBubble = () => {
+      if (liveWrap) liveWrap.remove();
+      liveWrap = null;
+      liveBubble = null;
+      liveText = '';
+    };
 
     try {
       const res = await fetch('/chat', {
@@ -992,19 +1000,84 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: agentMessage })
       });
-      const data = await res.json();
-      thinking.remove();
 
-      if (data.error) {
-        addMessage('agent', `**Error:** ${data.error}`);
-      } else if (data.conversation) {
-        renderConversation(data.conversation);
-      } else {
-        // Fallback for legacy string response
-        addMessage('agent', data.response || '');
+      const contentType = res.headers.get('Content-Type') || '';
+
+      // Slash-commands (and errors before streaming starts) come back as
+      // plain JSON rather than an event-stream.
+      if (!contentType.includes('text/event-stream')) {
+        const data = await res.json();
+        if (thinking.parentNode) thinking.remove();
+        if (data.error) addMessage('agent', `**Error:** ${data.error}`);
+        else if (data.conversation) renderConversation(data.conversation);
+        else addMessage('agent', data.response || '');
+        sendBtn.disabled = false;
+        if (!isStandalone) inputEl.focus();
+        return;
       }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        const chunks = buf.split('\n\n');
+        buf = chunks.pop(); // keep any incomplete trailing chunk for next read
+
+        for (const chunk of chunks) {
+          const line = chunk.trim();
+          if (!line.startsWith('data:')) continue;
+
+          let evt;
+          try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+          if (evt.type === 'token') {
+            if (thinking.parentNode) thinking.remove();
+            if (!liveWrap) {
+              liveWrap = document.createElement('div');
+              liveWrap.className = 'message agent';
+              const label = document.createElement('div');
+              label.className = 'msg-label';
+              label.textContent = 'agent';
+              liveBubble = document.createElement('div');
+              liveBubble.className = 'bubble';
+              liveWrap.appendChild(label);
+              liveWrap.appendChild(liveBubble);
+              messagesEl.appendChild(liveWrap);
+            }
+            liveText += evt.text;
+            liveBubble.innerHTML = marked.parse(liveText);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+
+          } else if (evt.type === 'tool_call') {
+            // The model is about to run a tool — clear any in-progress
+            // streamed text bubble (it'll be re-rendered properly, with the
+            // tool block, once the full conversation comes back) and show
+            // the thinking indicator again while it runs.
+            dropLiveBubble();
+            if (!thinking.parentNode) thinking = addThinking();
+
+          } else if (evt.type === 'error') {
+            if (thinking.parentNode) thinking.remove();
+            dropLiveBubble();
+            addMessage('agent', `**Error:** ${evt.error}`);
+
+          } else if (evt.type === 'done') {
+            if (thinking.parentNode) thinking.remove();
+            dropLiveBubble();
+            renderConversation(evt.conversation);
+          }
+        }
+      }
+
+      if (thinking.parentNode) thinking.remove();
     } catch {
-      thinking.remove();
+      if (thinking.parentNode) thinking.remove();
+      dropLiveBubble();
       addMessage('agent', '**Connection error.** Is the server running?');
     }
 
