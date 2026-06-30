@@ -16,10 +16,27 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 location = BASE_DIR + "/../models/data.pth"
 
 app = Flask(__name__, static_folder=None)
-app.secret_key = os.getenv("SECRET_KEY", os.urandom(24))
+
+# Persist the session-signing secret across restarts (in a gitignored local
+# file) instead of regenerating a random one every run — otherwise every
+# restart invalidates existing session cookies, logging everyone out and
+# clearing their "current user / current chat" selection, which looks like
+# data loss even though nothing on disk actually changed.
+_secret_key = os.getenv("SECRET_KEY")
+if not _secret_key:
+    _secret_key_path = os.path.join(BASE_DIR, ".secret_key")
+    if os.path.exists(_secret_key_path):
+        with open(_secret_key_path, "r") as f:
+            _secret_key = f.read().strip()
+    if not _secret_key:
+        _secret_key = os.urandom(24).hex()
+        with open(_secret_key_path, "w") as f:
+            f.write(_secret_key)
+app.secret_key = _secret_key
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 STATIC_DIR    = os.path.join(os.path.dirname(__file__), 'static')
+os.makedirs(STATIC_DIR, exist_ok=True)
 
 CONVERSATIONS_SUBDIR = "conversations"
 RESERVED_NAMES = {"conversations", "uploads"}
@@ -32,7 +49,14 @@ RESERVED_NAMES = {"conversations", "uploads"}
 # under it.
 agent_lock = threading.Lock()
 
-agent.reset()  # one-time startup: builds the OpenAI client + tool list
+# NOTE: we deliberately do NOT call agent.reset() here at startup. reset()
+# both builds the OpenAI client AND reads/creates a context.md at whatever
+# path agent.context_path currently points to — calling it before a user/
+# chat has been selected would create a stray context.md directly in
+# static/ instead of inside a user's folder. The client + tool list get
+# initialized lazily, scoped correctly, the first time new_conversation()
+# or activate_session() runs (both call set_static_dir/set_context_path
+# before reset()).
 
 
 def logged_in():
