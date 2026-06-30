@@ -195,6 +195,10 @@ def main():
                     name = event.get("name", "unknown")
                     print(clr(f"  … calling tool: {name}", GREY))
 
+                elif etype == "tool_result":
+                    name = event.get("name", "unknown")
+                    print(clr(f"  ✓ {name} done", GREY))
+
         except Exception as exc:
             if agent_label_printed:
                 print()

@@ -457,6 +457,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         eco_messages=agent_messages
     elif tool_input:
         temp=0.2
+        yield {"type": "tool_result", "name": tool_name, "result": tool_input}
         agent_messages.append(
             {
             "role": "tool",

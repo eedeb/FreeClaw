@@ -537,6 +537,14 @@
     }
     .tool-toggle.open .tool-toggle-arrow { transform: rotate(90deg); }
 
+    .tool-live-dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--accent);
+      animation: blink 1.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    .tool-live.done .tool-live-dot { animation: none; background: var(--muted); }
+
     .tool-details {
       display: none;
       margin-top: 4px;
@@ -888,6 +896,27 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
+  // ── Live tool-call indicator (shown while a tool is running) ─────
+  function addToolLive(name) {
+    removeEmpty();
+    const wrap = document.createElement('div');
+    wrap.className = 'tool-group tool-live';
+    const pill = document.createElement('div');
+    pill.className = 'tool-toggle';
+    pill.innerHTML = `<span class="tool-live-dot"></span><span class="tool-live-label">running tool: ${name}</span>`;
+    wrap.appendChild(pill);
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return wrap;
+  }
+
+  function markToolLiveDone(wrap, name) {
+    if (!wrap || !wrap.parentNode) return;
+    wrap.classList.add('done');
+    const label = wrap.querySelector('.tool-live-label');
+    if (label) label.textContent = `ran tool: ${name}`;
+  }
+
   // ── Thinking indicator ───────────────────────────────────
   function addThinking() {
     removeEmpty();
@@ -986,6 +1015,7 @@
 
     let thinking = addThinking();
     let liveWrap = null, liveBubble = null, liveText = '';
+    let activeToolIndicator = null;
 
     const dropLiveBubble = () => {
       if (liveWrap) liveWrap.remove();
@@ -1056,19 +1086,31 @@
           } else if (evt.type === 'tool_call') {
             // The model is about to run a tool — clear any in-progress
             // streamed text bubble (it'll be re-rendered properly, with the
-            // tool block, once the full conversation comes back) and show
-            // the thinking indicator again while it runs.
+            // full tool block, once the conversation comes back) and show
+            // a live indicator so the user can see what's happening.
             dropLiveBubble();
+            if (thinking.parentNode) thinking.remove();
+            activeToolIndicator = addToolLive(evt.name);
+
+          } else if (evt.type === 'tool_result') {
+            if (activeToolIndicator) {
+              markToolLiveDone(activeToolIndicator, evt.name);
+              activeToolIndicator = null;
+            }
+            // The model still has to turn the tool result into a reply —
+            // show the thinking dots again while that happens.
             if (!thinking.parentNode) thinking = addThinking();
 
           } else if (evt.type === 'error') {
             if (thinking.parentNode) thinking.remove();
             dropLiveBubble();
+            if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
             addMessage('agent', `**Error:** ${evt.error}`);
 
           } else if (evt.type === 'done') {
             if (thinking.parentNode) thinking.remove();
             dropLiveBubble();
+            if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
             renderConversation(evt.conversation);
           }
         }
@@ -1078,6 +1120,7 @@
     } catch {
       if (thinking.parentNode) thinking.remove();
       dropLiveBubble();
+      if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
       addMessage('agent', '**Connection error.** Is the server running?');
     }
 
