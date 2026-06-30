@@ -120,6 +120,21 @@
     .user-meta { font-family: var(--mono); font-size: 10px; color: var(--muted); }
     .user-card .chevron { margin-left: auto; color: var(--muted); font-size: 12px; flex-shrink: 0; }
 
+    .user-delete-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 5px 8px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .user-delete-btn:active { transform: scale(0.95); }
+    .user-delete-btn.confirm { border-color: rgba(224,85,85,0.5); color: #e05555; }
+
     #add-user-card {
       display: flex; align-items: center; gap: 10px;
       padding: 13px 14px;
@@ -179,6 +194,22 @@
     .conv-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
     .conv-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .conv-meta { font-family: var(--mono); font-size: 9px; color: var(--muted); }
+
+    .conv-delete-btn {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 5px 8px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .conv-delete-btn:active { transform: scale(0.95); }
+    .conv-delete-btn.confirm { border-color: rgba(224,85,85,0.5); color: #e05555; }
 
     #new-chat-btn {
       width: 100%;
@@ -266,11 +297,43 @@
           <div class="user-name">${escapeHtml(u.name)}</div>
           <div class="user-meta">${u.chat_count} chat${u.chat_count === 1 ? '' : 's'}</div>
         </div>
+        <button class="user-delete-btn" type="button">delete</button>
         <div class="chevron">›</div>`;
       card.addEventListener('click', () => selectUser(u.name, card));
+
+      const delBtn = card.querySelector('.user-delete-btn');
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // don't trigger selectUser
+        if (!delBtn.classList.contains('confirm')) {
+          delBtn.classList.add('confirm');
+          delBtn.textContent = 'confirm?';
+          // Revert back to "delete" if they don't follow through
+          setTimeout(() => {
+            if (delBtn.classList.contains('confirm')) {
+              delBtn.classList.remove('confirm');
+              delBtn.textContent = 'delete';
+            }
+          }, 3000);
+          return;
+        }
+        deleteUser(u.name, card);
+      });
+
       usersGrid.appendChild(card);
     });
   }
+
+  async function deleteUser(name, cardEl) {
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (!res.ok) return;
+      cardEl.remove();
+      if (selectedUser === name) {
+        selectedUser = null;
+        convPanel.classList.remove('visible');
+        convList.innerHTML = '';
+      }
+    } catch (_) { /* ignore */ }
 
   async function selectUser(name, cardEl) {
     selectedUser = name;
@@ -299,12 +362,46 @@
         <div class="conv-info">
           <div class="conv-title">${escapeHtml(c.title)}</div>
           <div class="conv-meta">${escapeHtml(when)}</div>
-        </div>`;
+        </div>
+        <button class="conv-delete-btn" type="button">delete</button>`;
       card.addEventListener('click', () => {
         window.location.href = `/chat?user=${encodeURIComponent(name)}&conv=${encodeURIComponent(c.id)}`;
       });
+
+      const delBtn = card.querySelector('.conv-delete-btn');
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // don't trigger opening the chat
+        if (!delBtn.classList.contains('confirm')) {
+          delBtn.classList.add('confirm');
+          delBtn.textContent = 'confirm?';
+          setTimeout(() => {
+            if (delBtn.classList.contains('confirm')) {
+              delBtn.classList.remove('confirm');
+              delBtn.textContent = 'delete';
+            }
+          }, 3000);
+          return;
+        }
+        deleteConversation(name, c.id, card);
+      });
+
       convList.appendChild(card);
     });
+  }
+
+  async function deleteConversation(userName, convId, cardEl) {
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(userName)}/conversations/${encodeURIComponent(convId)}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) return;
+      cardEl.remove();
+      if (!convList.querySelector('.conv-card')) {
+        convList.innerHTML = '<div class="empty-hint">No chats yet — start one above.</div>';
+      }
+      // Keep the user-card's chat count in sync without a full reload.
+      loadUsers();
+    } catch (_) { /* ignore */ }
   }
 
   newChatBtn.addEventListener('click', async () => {

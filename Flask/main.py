@@ -5,6 +5,7 @@ import json
 import re
 import time
 import threading
+import shutil
 
 from dotenv import load_dotenv
 import os
@@ -65,6 +66,19 @@ def conversations_dir(name):
 
 def conversation_path(name, conv_id):
     return os.path.join(conversations_dir(name), conv_id + ".json")
+
+
+def conv_files_dir(name, conv_id):
+    """Folder where this specific chat's created/uploaded files live, e.g.
+    static/<user>/conversations/<conv_id>/. Kept separate from the
+    conversation's metadata JSON file."""
+    path = os.path.join(conversations_dir(name), conv_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def user_context_path(name):
+    return os.path.join(user_dir(name), "context.md")
 
 
 def list_users():
@@ -151,20 +165,24 @@ def derive_title(messages):
 
 def new_conversation(name):
     """Creates a fresh conversation for `name`, builds its system-prompt
-    messages via agent.reset() (scoped to that user's static folder), and
+    messages via agent.reset() (file tools scoped to this chat's own
+    folder, long-term memory scoped to the user's context.md), and
     persists it to disk. Returns the new conversation id."""
     conv_id = uuid.uuid4().hex[:12]
-    agent.set_static_dir(user_dir(name))
+    agent.set_static_dir(conv_files_dir(name, conv_id))
+    agent.set_context_path(user_context_path(name))
     agent.reset()
     save_conversation(name, conv_id, agent.get_messages(), title="New chat")
     return conv_id
 
 
 def activate_session(name, conv_id):
-    """Point the agent module's globals at this user's folder and load this
-    conversation's saved messages so the next agent_stream() call continues
-    the right thread of conversation."""
-    agent.set_static_dir(user_dir(name))
+    """Point the agent module's globals at this chat's file folder and
+    this user's long-term context.md, and load this conversation's saved
+    messages so the next agent_stream() call continues the right thread
+    of conversation."""
+    agent.set_static_dir(conv_files_dir(name, conv_id))
+    agent.set_context_path(user_context_path(name))
     data = load_conversation(name, conv_id)
     agent.set_messages(data.get("messages", []))
 
@@ -240,6 +258,22 @@ def api_create_user():
     return jsonify({'name': name})
 
 
+@app.route('/api/users/<name>', methods=['DELETE'])
+def api_delete_user(name):
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not user_exists(name):
+        return jsonify({'error': 'No such user'}), 404
+    with agent_lock:
+        shutil.rmtree(user_dir(name), ignore_errors=True)
+        # If the deleted user was active in this browser session, clear it
+        # so we don't keep pointing at a now-missing conversation.
+        if session.get('current_user') == name:
+            session.pop('current_user', None)
+            session.pop('current_conv', None)
+    return jsonify({'ok': True})
+
+
 @app.route('/api/users/<name>/conversations', methods=['GET'])
 def api_list_conversations(name):
     if not logged_in():
@@ -258,6 +292,24 @@ def api_create_conversation(name):
     with agent_lock:
         conv_id = new_conversation(name)
     return jsonify({'id': conv_id})
+
+
+@app.route('/api/users/<name>/conversations/<conv_id>', methods=['DELETE'])
+def api_delete_conversation(name, conv_id):
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not user_exists(name):
+        return jsonify({'error': 'No such user'}), 404
+    path = conversation_path(name, conv_id)
+    if not os.path.exists(path):
+        return jsonify({'error': 'No such chat'}), 404
+    with agent_lock:
+        # Remove the metadata file and this chat's own files/ folder.
+        os.remove(path)
+        shutil.rmtree(conv_files_dir(name, conv_id), ignore_errors=True)
+        if session.get('current_user') == name and session.get('current_conv') == conv_id:
+            session.pop('current_conv', None)
+    return jsonify({'ok': True})
 
 
 @app.route('/api/conversation', methods=['GET'])
@@ -371,21 +423,23 @@ def upload():
         return jsonify({'error': 'Unauthorized'}), 401
 
     name = current_user()
-    if not name:
-        return jsonify({'error': 'No active user selected'}), 400
+    conv_id = current_conv()
+    if not name or not conv_id:
+        return jsonify({'error': 'No active conversation selected'}), 400
 
     file = request.files.get('file')
     if not file or file.filename == '':
         return jsonify({'error': 'No file provided'}), 400
 
-    # Save to static/<user>/, preserving extension, with a uuid prefix to avoid collisions
+    # Save into this chat's own files folder, preserving extension, with a
+    # uuid prefix to avoid collisions.
     ext = os.path.splitext(file.filename)[1]
     safe_name = uuid.uuid4().hex + ext
-    dest = os.path.join(user_dir(name), safe_name)
+    dest = os.path.join(conv_files_dir(name, conv_id), safe_name)
     file.save(dest)
 
     # Return the path the agent can reference (relative to app root)
-    rel_path = os.path.join('static', name, safe_name)
+    rel_path = os.path.join('static', name, CONVERSATIONS_SUBDIR, conv_id, safe_name)
     return jsonify({'path': rel_path, 'filename': file.filename})
 
 

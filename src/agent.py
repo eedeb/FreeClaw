@@ -21,6 +21,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 html_dir=BASE_DIR+'/../Flask/static/'
 static_dir=BASE_DIR+'/../Flask/static/'
+context_path=BASE_DIR+'/../Flask/static/context.md'
 location = BASE_DIR + "/../models/data.pth"
 
 from dotenv import load_dotenv
@@ -63,21 +64,31 @@ groq=True
 
 
 def set_static_dir(path):
-    """Point the agent's file tools (save_context, read_file, list_files,
-    create_file, create_page, etc.) at a specific user's folder, e.g.
-    static/<username>/. Creates the folder and an empty context.md if
-    they don't exist yet."""
+    """Point the agent's file tools (read_file, list_files, create_file,
+    create_page, get_image_description, etc.) at a specific folder — e.g.
+    static/<username>/conversations/<conv_id>/ for a single chat's files.
+    Creates the folder if it doesn't exist yet."""
     global static_dir, html_dir
     if not path.endswith(os.sep):
         path = path + os.sep
     os.makedirs(path, exist_ok=True)
     static_dir = path
     html_dir = path
-    ctx_path = path + "context.md"
-    if not os.path.exists(ctx_path):
-        with open(ctx_path, "w", encoding="utf-8") as f:
-            f.write("")
     return static_dir
+
+
+def set_context_path(path):
+    """Point save_context/read_context (the agent's long-term, cross-chat
+    memory) at a specific context.md file — independent of static_dir, so
+    the same user's memory persists across all of their separate chats.
+    Creates the file (and its parent folder) if missing."""
+    global context_path
+    context_path = path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("")
+    return context_path
 
 
 def get_messages():
@@ -102,12 +113,11 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
 
     global agent_messages
     global tools
-    ctx_path = static_dir + "context.md"
-    if not os.path.exists(ctx_path):
-        os.makedirs(static_dir, exist_ok=True)
-        with open(ctx_path, "w", encoding="utf-8") as f:
+    if not os.path.exists(context_path):
+        os.makedirs(os.path.dirname(context_path), exist_ok=True)
+        with open(context_path, "w", encoding="utf-8") as f:
             f.write("")
-    with open(ctx_path, "r", encoding="utf-8") as f:
+    with open(context_path, "r", encoding="utf-8") as f:
         content = f.read()
     if tts:
         agent_messages=[
@@ -631,11 +641,11 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
         if command_name == 'save_context':
             contents=args_dict.get('contents')
-            with open(static_dir+"context.md", "a", encoding="utf-8") as f:
+            with open(context_path, "a", encoding="utf-8") as f:
                 f.write(contents.strip()+'\n')
             yield from agent_stream(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_context':
-            with open(static_dir+"context.md", "r", encoding="utf-8") as f:
+            with open(context_path, "r", encoding="utf-8") as f:
                 content = f.read()
             yield from agent_stream(tool_input=content, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'search':
