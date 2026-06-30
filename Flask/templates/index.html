@@ -230,6 +230,73 @@
       font-family: var(--mono); font-size: 11px; color: var(--muted);
       text-align: center; padding: 20px 0;
     }
+
+    /* ── Settings panel ── */
+    #settings-toggle {
+      display: flex; align-items: center; gap: 8px;
+      font-family: var(--mono); font-size: 10px; color: var(--muted);
+      cursor: pointer; user-select: none;
+      margin: 28px 0 0;
+      padding: 10px 0 10px;
+      border-top: 1px solid var(--border);
+    }
+    #settings-toggle .caret { transition: transform 0.2s; font-size: 10px; }
+    #settings-toggle.open .caret { transform: rotate(90deg); }
+
+    #settings-panel { display: none; }
+    #settings-panel.visible { display: block; }
+
+    .setting-row {
+      display: flex; flex-direction: column; gap: 4px;
+      margin-bottom: 12px;
+    }
+    .setting-label {
+      font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: 0.06em;
+    }
+    .setting-input-wrap { display: flex; gap: 6px; }
+    .setting-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 8px 10px;
+      outline: none;
+    }
+    .setting-input:focus { border-color: var(--accent-dim); }
+    .setting-reveal {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 0 8px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #settings-save {
+      width: 100%;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      color: #0d0d0f;
+      font-weight: 700;
+      font-size: 12px;
+      padding: 11px;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    #settings-save:active { transform: scale(0.98); }
+    #settings-save:disabled { opacity: 0.5; cursor: not-allowed; }
+    #settings-msg {
+      font-family: var(--mono); font-size: 11px;
+      margin-top: 8px; display: none; text-align: center;
+    }
+    #settings-msg.ok  { color: var(--accent); }
+    #settings-msg.err { color: #e05555; }
   </style>
 </head>
 <body>
@@ -259,6 +326,15 @@
       <div class="section-label" id="conv-section-label">Chats</div>
       <button id="new-chat-btn">+ New chat</button>
       <div id="conv-list"></div>
+    </div>
+
+    <div id="settings-toggle">
+      <span class="caret">›</span> Settings
+    </div>
+    <div id="settings-panel">
+      <div id="settings-fields"></div>
+      <button id="settings-save">Save</button>
+      <div id="settings-msg"></div>
     </div>
   </main>
 </div>
@@ -478,6 +554,82 @@
 
   addUserSubmit.addEventListener('click', submitNewUser);
   addUserInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitNewUser(); });
+
+  // ── Settings ──
+  const settingsToggle = document.getElementById('settings-toggle');
+  const settingsPanel  = document.getElementById('settings-panel');
+  const settingsFields = document.getElementById('settings-fields');
+  const settingsSave   = document.getElementById('settings-save');
+  const settingsMsg    = document.getElementById('settings-msg');
+
+  let settingsLoaded = false;
+
+  settingsToggle.addEventListener('click', async () => {
+    const open = settingsToggle.classList.toggle('open');
+    settingsPanel.classList.toggle('visible', open);
+    if (open && !settingsLoaded) {
+      await loadSettings();
+    }
+  });
+
+  async function loadSettings() {
+    settingsFields.innerHTML = '<div class="empty-hint">loading…</div>';
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      settingsFields.innerHTML = '';
+      (data.settings || []).forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'setting-row';
+        const inputType = s.secret ? 'password' : 'text';
+        row.innerHTML = `
+          <div class="setting-label">${escapeHtml(s.label)} <span style="opacity:.4">(${escapeHtml(s.key)})</span></div>
+          <div class="setting-input-wrap">
+            <input class="setting-input" type="${inputType}" data-key="${escapeHtml(s.key)}" value="${escapeHtml(s.value)}" autocomplete="off" spellcheck="false"/>
+            ${s.secret ? `<button class="setting-reveal" type="button" data-showing="false">show</button>` : ''}
+          </div>`;
+        if (s.secret) {
+          const btn = row.querySelector('.setting-reveal');
+          const inp = row.querySelector('.setting-input');
+          btn.addEventListener('click', () => {
+            const showing = btn.dataset.showing === 'true';
+            inp.type = showing ? 'password' : 'text';
+            btn.textContent = showing ? 'show' : 'hide';
+            btn.dataset.showing = String(!showing);
+          });
+        }
+        settingsFields.appendChild(row);
+      });
+      settingsLoaded = true;
+    } catch (e) {
+      settingsFields.innerHTML = `<div class="empty-hint" style="color:#e05555">Failed to load settings: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  settingsSave.addEventListener('click', async () => {
+    settingsSave.disabled = true;
+    settingsMsg.style.display = 'none';
+    const inputs = settingsFields.querySelectorAll('.setting-input');
+    const payload = {};
+    inputs.forEach(inp => { payload[inp.dataset.key] = inp.value; });
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      settingsMsg.textContent = 'Saved. Restart the server for changes to take effect.';
+      settingsMsg.className = 'ok';
+    } catch (e) {
+      settingsMsg.textContent = e.message;
+      settingsMsg.className = 'err';
+    } finally {
+      settingsMsg.style.display = 'block';
+      settingsSave.disabled = false;
+    }
+  });
 
   loadUsers();
 </script>

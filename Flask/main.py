@@ -7,7 +7,7 @@ import time
 import threading
 import shutil
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 import os
 load_dotenv()
 password  = os.getenv("FC_PASSWORD")
@@ -517,6 +517,97 @@ def serve_static(filename):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     return send_from_directory(STATIC_DIR, filename)
+
+
+# ── SETTINGS (env file) ──────────────────────────────────────
+
+# Known .env keys shown in the settings UI, in display order.
+SETTINGS_KEYS = [
+    ("FC_PASSWORD",      "Login Password",          False),
+    ("SECRET_KEY",       "Session Secret Key",      False),
+    ("API_KEY",          "Groq API Key",            True),
+    ("NVIDIA_KEY",       "NVIDIA API Key",          True),
+    ("OPENROUTER_KEY",   "OpenRouter API Key",      True),
+    ("CUSTOM_DOMAIN",    "Custom Domain",           False),
+    ("HA_TOKEN",         "Home Assistant Token",    True),
+    ("HA_URL",           "Home Assistant URL",      False),
+]
+KNOWN_KEYS = {k for k, _, _ in SETTINGS_KEYS}
+
+def _env_path():
+    """Return path to .env file two directories up from Flask/."""
+    return os.path.join(os.path.dirname(BASE_DIR), '.env')
+
+
+def _read_env():
+    """Read the .env file and return a dict of key→value."""
+    path = _env_path()
+    if not os.path.exists(path):
+        return {}
+    return dict(dotenv_values(path))
+
+
+def _write_env(updates: dict):
+    """Write only the known keys back into the .env file, preserving unknown lines."""
+    path = _env_path()
+    # Read existing lines
+    lines = []
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+    written = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#') or '=' not in stripped:
+            new_lines.append(line)
+            continue
+        key = stripped.split('=', 1)[0].strip()
+        if key in updates:
+            new_lines.append(f'{key}={updates[key]}\n')
+            written.add(key)
+        else:
+            new_lines.append(line)
+
+    # Append any new keys not already in the file
+    for key, value in updates.items():
+        if key not in written:
+            new_lines.append(f'{key}={value}\n')
+
+    with open(path, 'w', encoding='utf-8') as f:
+        f.writelines(new_lines)
+
+
+@app.route('/api/settings', methods=['GET'])
+def api_get_settings():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    current = _read_env()
+    result = []
+    for key, label, is_secret in SETTINGS_KEYS:
+        result.append({
+            'key': key,
+            'label': label,
+            'value': current.get(key, ''),
+            'secret': is_secret,
+        })
+    return jsonify({'settings': result})
+
+
+@app.route('/api/settings', methods=['POST'])
+def api_update_settings():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    updates = {k: str(v) for k, v in data.items() if k in KNOWN_KEYS}
+    if not updates:
+        return jsonify({'error': 'No valid keys provided'}), 400
+    try:
+        _write_env(updates)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    return jsonify({'ok': True})
 
 
 if __name__ == '__main__':
