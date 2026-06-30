@@ -105,7 +105,7 @@ def render_tool_blocks(new_messages):
             for tc in msg.get("tool_calls") or []:
                 render_tool_call(tc, tool_results)
 
-
+def render_conversation(conversation):
     tool_results = {}
     for msg in conversation:
         if msg.get("role") == "tool":
