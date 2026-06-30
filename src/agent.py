@@ -899,6 +899,48 @@ def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, too
     return agent_messages
 
 
+def api_complete(messages, model=None, stream=False, temperature=1.0, max_tokens=None):
+    """Stateless LLM call for the OpenAI-compatible API endpoint.
+    Does not touch agent_messages or any session state.
+    Tries providers in order: Groq → NVIDIA → OpenRouter."""
+    req_model = model or "openai/gpt-oss-120b"
+    kwargs = dict(
+        model=req_model,
+        messages=messages,
+        temperature=temperature,
+        top_p=1,
+        stream=stream,
+        stop=None,
+    )
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+    errors = []
+
+    if groq_key and groq_key not in ("None", ""):
+        try:
+            c = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+            return c.chat.completions.create(**kwargs)
+        except Exception as e:
+            errors.append(f"Groq: {e}")
+
+    if nvidia_key and nvidia_key not in ("None", ""):
+        try:
+            c = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
+            return c.chat.completions.create(**kwargs)
+        except Exception as e:
+            errors.append(f"NVIDIA: {e}")
+
+    if openrouter_key and openrouter_key not in ("None", ""):
+        try:
+            c = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
+            return c.chat.completions.create(**kwargs)
+        except Exception as e:
+            errors.append(f"OpenRouter: {e}")
+
+    raise RuntimeError("All providers failed: " + "; ".join(errors))
+
+
 '''
 while True:
     output=agent(user_input=input(': '))

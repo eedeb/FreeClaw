@@ -133,8 +133,7 @@ _pip_install() {
 _pip_install "PyTorch (CPU)" torch --index-url https://download.pytorch.org/whl/cpu
 _pip_install "classy-ai" classy-ai
 _pip_install "sentence-transformers" sentence_transformers --no-deps
-_pip_install "web & API libs" flask openai ddgs beautifulsoup4 json-repair python-dotenv uvicorn
-_pip_install "FastAPI" fastapi
+_pip_install "web & API libs" flask openai ddgs beautifulsoup4 json-repair python-dotenv
 
 section_gap
 divider
@@ -231,34 +230,12 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-info "Writing FreeClawAPI.service"
-sudo tee /etc/systemd/system/FreeClawAPI.service > /dev/null <<EOF
-[Unit]
-Description=FreeClaw API service
-After=network.target
-
-[Service]
-Type=simple
-User=$USER_NAME
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/venv/bin/uvicorn src.api:app --host 0.0.0.0 --port 8080
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 sudo systemctl daemon-reload
 
 info "Enabling and starting FreeClaw..."
 sudo systemctl enable FreeClaw.service
 sudo systemctl start FreeClaw.service
 success "FreeClaw service running"
-
-info "Enabling FreeClawAPI..."
-sudo systemctl enable FreeClawAPI.service
-success "FreeClawAPI service enabled"
 
 info "Installing freeclaw CLI to /usr/local/bin..."
 sudo tee /usr/local/bin/freeclaw > /dev/null <<EOF
@@ -310,6 +287,10 @@ echo -e "   ${GRAY}FreeClaw is running and will auto-start on boot.${RESET}"
 echo -e "   ${GRAY}Open the web UI in your browser:${RESET}"
 echo ""
 echo -e "   ${BG_DARK}   ${LIME}${BOLD}http://${IP}:6767${RESET}${BG_DARK}   ${RESET}"
+echo ""
+echo -e "   ${DIM}${GRAY}The built-in OpenAI-compatible API is available at:${RESET}"
+echo -e "   ${DIM}${GRAY}  http://${IP}:6767/v1  (toggle on/off from the homepage)${RESET}"
+echo -e "   ${DIM}${GRAY}  Use your FreeClaw password as the Bearer token.${RESET}"
 echo ""
 echo -e "   ${DIM}${GRAY}To chat from the terminal:  ${RESET}${LIME}${BOLD}freeclaw${RESET}"
 echo -e "   ${DIM}${GRAY}To update later, run: ${RESET}${GRAY}./update.sh${RESET}"

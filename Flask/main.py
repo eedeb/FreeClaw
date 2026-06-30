@@ -6,6 +6,7 @@ import re
 import time
 import threading
 import shutil
+import functools
 
 from dotenv import load_dotenv, dotenv_values
 import os
@@ -434,11 +435,12 @@ def chat():
             save_conversation(name, conv_id, agent.get_messages())
         return jsonify({'response': 'Agent reset successfully'})
     elif user_input.lower() == '/startapi':
-        os.system("sudo systemctl start FreeClawAPI.service")
-        return jsonify({'response': 'API started successfully on port 8080'})
+        open(_API_FLAG, 'w').close()
+        return jsonify({'response': 'API enabled. Use your FreeClaw password as the Bearer token at /v1/chat/completions'})
     elif user_input.lower() == '/stopapi':
-        os.system("sudo systemctl stop FreeClawAPI.service")
-        return jsonify({'response': 'API stopped successfully'})
+        if os.path.exists(_API_FLAG):
+            os.remove(_API_FLAG)
+        return jsonify({'response': 'API disabled'})
 
     def generate():
         with agent_lock:
@@ -517,6 +519,144 @@ def serve_static(filename):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     return send_from_directory(STATIC_DIR, filename)
+
+
+# ── OPENAI-COMPATIBLE API ────────────────────────────────────
+
+_API_FLAG = os.path.join(BASE_DIR, '.api_enabled')
+
+
+def api_is_enabled():
+    return os.path.exists(_API_FLAG)
+
+
+def _require_api_auth(f):
+    """Decorator: checks Bearer token == FC_PASSWORD and that the API is enabled."""
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if not api_is_enabled():
+            return jsonify({"error": {"message": "API is disabled", "type": "api_disabled", "code": 503}}), 503
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return jsonify({"error": {"message": "Missing Bearer token", "type": "invalid_request_error", "code": 401}}), 401
+        token = auth[len('Bearer '):]
+        if token != password:
+            return jsonify({"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": 401}}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+
+@app.route('/api/api-status', methods=['GET'])
+def api_get_api_status():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    return jsonify({'enabled': api_is_enabled()})
+
+
+@app.route('/api/api-status', methods=['POST'])
+def api_toggle_api():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    enable = data.get('enabled', not api_is_enabled())
+    if enable:
+        open(_API_FLAG, 'w').close()
+    elif os.path.exists(_API_FLAG):
+        os.remove(_API_FLAG)
+    return jsonify({'enabled': api_is_enabled()})
+
+
+@app.route('/v1/models', methods=['GET'])
+@_require_api_auth
+def v1_models():
+    return jsonify({
+        "object": "list",
+        "data": [
+            {"id": "freeclaw", "object": "model", "created": 0, "owned_by": "freeclaw"},
+            {"id": "openai/gpt-oss-120b", "object": "model", "created": 0, "owned_by": "freeclaw"},
+            {"id": "openai/gpt-oss-20b", "object": "model", "created": 0, "owned_by": "freeclaw"},
+        ]
+    })
+
+
+@app.route('/v1/chat/completions', methods=['POST'])
+@_require_api_auth
+def v1_chat_completions():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}}), 400
+
+    messages = data.get('messages')
+    if not messages or not isinstance(messages, list):
+        return jsonify({"error": {"message": "messages field is required", "type": "invalid_request_error"}}), 400
+
+    req_model = data.get('model', 'openai/gpt-oss-120b')
+    stream = bool(data.get('stream', False))
+    temperature = float(data.get('temperature', 1.0))
+    max_tokens = data.get('max_tokens')
+    completion_id = 'chatcmpl-' + uuid.uuid4().hex[:12]
+    created = int(time.time())
+
+    try:
+        result = agent.api_complete(
+            messages=messages,
+            model=req_model,
+            stream=stream,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    except Exception as e:
+        return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
+
+    if stream:
+        def generate():
+            try:
+                for chunk in result:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    finish = chunk.choices[0].finish_reason
+                    payload = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": req_model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": delta.content or ""} if getattr(delta, "content", None) else {},
+                            "finish_reason": finish,
+                        }]
+                    }
+                    yield f"data: {json.dumps(payload)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+        )
+    else:
+        choice = result.choices[0]
+        content = choice.message.content or ""
+        usage = result.usage
+        return jsonify({
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": req_model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": choice.finish_reason or "stop",
+            }],
+            "usage": {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                "total_tokens": getattr(usage, "total_tokens", 0),
+            } if usage else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        })
 
 
 # ── SETTINGS (env file) ──────────────────────────────────────

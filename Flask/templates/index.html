@@ -87,6 +87,23 @@
       border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px;
     }
 
+    /* ── API toggle chip ── */
+    #api-toggle-btn {
+      display: flex; align-items: center; gap: 5px;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono); font-size: 10px;
+      padding: 6px 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #api-toggle-btn.enabled { border-color: rgba(200,240,74,0.35); color: var(--accent); }
+    .api-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background 0.15s; }
+    #api-toggle-btn.enabled .api-dot { background: var(--accent); }
+
     main { padding: 18px 16px 40px; }
 
     .section-label {
@@ -307,6 +324,9 @@
       <h1>FreeClaw</h1>
       <div class="header-tagline">pick a user, pick a chat</div>
     </div>
+    <button id="api-toggle-btn" type="button" title="Toggle OpenAI-compatible API">
+      <span class="api-dot"></span>API
+    </button>
     <a id="logout-link" href="/logout">log out</a>
   </header>
 
@@ -554,6 +574,37 @@
 
   addUserSubmit.addEventListener('click', submitNewUser);
   addUserInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitNewUser(); });
+
+  // ── API toggle ──
+  const apiToggleBtn = document.getElementById('api-toggle-btn');
+
+  async function loadApiStatus() {
+    try {
+      const res = await fetch('/api/api-status');
+      const data = await res.json();
+      setApiToggleState(data.enabled);
+    } catch (_) {}
+  }
+
+  function setApiToggleState(enabled) {
+    apiToggleBtn.classList.toggle('enabled', enabled);
+    apiToggleBtn.title = enabled ? 'API enabled — click to disable' : 'API disabled — click to enable';
+  }
+
+  apiToggleBtn.addEventListener('click', async () => {
+    const enabling = !apiToggleBtn.classList.contains('enabled');
+    try {
+      const res = await fetch('/api/api-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabling })
+      });
+      const data = await res.json();
+      setApiToggleState(data.enabled);
+    } catch (_) {}
+  });
+
+  loadApiStatus();
 
   // ── Settings ──
   const settingsToggle = document.getElementById('settings-toggle');
