@@ -112,6 +112,26 @@ def user_context_path(name):
     return os.path.join(user_dir(name), "context.md")
 
 
+def create_user_with_context(name, context=None):
+    """Used by the agent's create_user tool (registered below via
+    agent.set_user_creator) so the assistant itself can spin up new
+    FreeClaw users. Raises ValueError with a user-facing message on bad
+    input; the agent surfaces that message back to whoever asked."""
+    safe_name = safe_username(name)
+    if not safe_name:
+        raise ValueError("Invalid name — use 1-40 letters, numbers, spaces, - or _.")
+    if user_exists(safe_name):
+        raise ValueError(f"A user named '{safe_name}' already exists.")
+    create_user(safe_name)
+    if context and str(context).strip():
+        with open(user_context_path(safe_name), "w", encoding="utf-8") as f:
+            f.write(str(context).strip() + "\n")
+    return safe_name
+
+
+agent.set_user_creator(create_user_with_context)
+
+
 def list_users():
     if not os.path.isdir(STATIC_DIR):
         return []

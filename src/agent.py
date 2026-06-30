@@ -91,6 +91,19 @@ def set_context_path(path):
     return context_path
 
 
+user_creator = None
+
+
+def set_user_creator(fn):
+    """Registers the function the create_user tool calls to actually create
+    a new FreeClaw user. main.py wires this up at startup (rather than
+    agent.py importing main.py directly, which would be circular) — fn must
+    accept (name, context=None) and return the created user's name, raising
+    an exception (with a clear message) on failure."""
+    global user_creator
+    user_creator = fn
+
+
 def get_messages():
     return agent_messages
 
@@ -204,6 +217,21 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
                 "name": "read_context",
                 "description": "Shows contents of the context.md file.",
                 "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_user",
+                "description": "Creates a brand new FreeClaw user with their own folder, chats, and long-term memory. Only use this when the person explicitly asks to add/create a new user — never to switch context for the current conversation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "The new user's name. Used as their folder name, so keep it short and simple (letters, numbers, spaces, - or _)." },
+                        "context": { "type": ["string", "null"], "description": "Optional starting content for the new user's context.md (long-term memory) — e.g. known preferences or background info. Leave null/omit for a blank context.md." }
+                    },
+                    "required": ["name"]
+                }
             }
         },
         {
@@ -648,6 +676,22 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             with open(context_path, "r", encoding="utf-8") as f:
                 content = f.read()
             yield from agent_stream(tool_input=content, tool_id=tool_call.id,tool_name=command_name)
+        elif command_name == 'create_user':
+            new_name = args_dict.get('name')
+            new_context = args_dict.get('context')
+            if not new_name or not str(new_name).strip():
+                result = "Error: a name is required to create a user."
+            elif user_creator is None:
+                result = "Error: user creation isn't available in this context."
+            else:
+                try:
+                    created_name = user_creator(new_name, new_context)
+                    result = f"User '{created_name}' created successfully."
+                    if new_context:
+                        result += " Their context.md was set with the provided content."
+                except Exception as e:
+                    result = f"Error creating user: {e}"
+            yield from agent_stream(tool_input=result, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'search':
 
 
