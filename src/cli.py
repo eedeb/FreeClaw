@@ -6,7 +6,8 @@ import json
 from contextlib import contextmanager
 
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(os.path.realpath(__file__)), ".env"))
+# .env lives at the project root, one level above src/
+load_dotenv(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".env"))
 
 print("\033[38;5;242m  loading FreeClaw…\033[0m", flush=True)
 
@@ -163,13 +164,16 @@ def main():
             continue
 
         if user_input.lower() == "/startapi":
-            os.system("sudo systemctl start FreeClawAPI.service")
-            print(clr("  API started on port 8080\n", GREY))
+            flag = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "Flask", ".api_enabled")
+            open(flag, 'w').close()
+            print(clr("  API enabled at /v1/chat/completions (use your FreeClaw password as the Bearer token)\n", GREY))
             continue
 
         if user_input.lower() == "/stopapi":
-            os.system("sudo systemctl stop FreeClawAPI.service")
-            print(clr("  API stopped\n", GREY))
+            flag = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "Flask", ".api_enabled")
+            if os.path.exists(flag):
+                os.remove(flag)
+            print(clr("  API disabled\n", GREY))
             continue
 
         agent_label_printed = False
