@@ -254,6 +254,7 @@ section_gap
 
 chmod +x ha_setup.sh
 chmod +x update.sh
+chmod +x uninstall.sh
 
 step "7" "Optional: Home Assistant integration..."
 section_gap
