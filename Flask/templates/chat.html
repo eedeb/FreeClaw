@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="FreeClaw"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="theme-color" content="#0d0d0f"/>
+  <meta name="description" content="An AI agent that doesn't burn your money."/>
+
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0d0f;
+      --surface: #141416;
+      --border: #222228;
+      --accent: #c8f04a;
+      --accent-dim: #a8cc38;
+      --text: #e8e8ec;
+      --muted: #666672;
+      --user-bg: #1a1f10;
+      --agent-bg: #141416;
+      --radius: 4px;
+      --mono: 'IBM Plex Mono', monospace;
+      --sans: 'Syne', sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 15px;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px;
+      opacity: 0.35;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Full-screen app shell ── */
+    #app {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      padding-top: env(safe-area-inset-top);
+      /* No bottom padding here — handled in #input-area only */
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px 11px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: rgba(13,13,15,0.97);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      min-height: 52px;
+    }
+
+    .header-icon {
+      width: 30px; height: 30px;
+      border-radius: 7px;
+      overflow: hidden;
+      flex-shrink: 0;
+      border: 1px solid rgba(200,240,74,0.2);
+    }
+    .header-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    .header-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      animation: pulse 2.5s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent); }
+      50% { opacity: 0.4; box-shadow: 0 0 3px var(--accent); }
+    }
+
+    .header-title {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0; /* allow text to truncate */
+    }
+    .header-title h1 {
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .header-tagline {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--muted);
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    #token-count {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    @media (max-width: 380px) { #token-count { display: none; } }
+
+    #reset-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 7px 11px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      -webkit-user-select: none;
+      user-select: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    #reset-btn:active { border-color: rgba(192,57,57,0.5); color: #e05555; transform: scale(0.96); }
+
+    #home-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-size: 13px;
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      -webkit-user-select: none;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    #home-btn:active { border-color: var(--accent-dim); color: var(--accent); transform: scale(0.96); }
+
+    /* ── Messages ── */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 18px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      scroll-behavior: smooth;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
+
+    #messages::-webkit-scrollbar { width: 3px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .message {
+      display: flex;
+      flex-direction: column;
+      max-width: 88%;
+      animation: fadeUp 0.22s ease forwards;
+      opacity: 0;
+    }
+    @media (min-width: 600px) { .message { max-width: 78%; } }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.user  { align-self: flex-end;   align-items: flex-end; }
+    .message.agent { align-self: flex-start; align-items: flex-start; }
+
+    .msg-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+      color: var(--muted);
+    }
+    .message.user .msg-label { color: var(--accent-dim); }
+
+    .bubble {
+      padding: 11px 14px;
+      border-radius: var(--radius);
+      line-height: 1.65;
+      border: 1px solid var(--border);
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
+    .message.user .bubble  { background: var(--user-bg); border-color: #2a3318; color: #d8f0a0; }
+    .message.agent .bubble { background: var(--agent-bg); border-color: var(--border); }
+
+    /* Markdown */
+    .bubble p { margin-bottom: 0.6em; }
+    .bubble p:last-child { margin-bottom: 0; }
+    .bubble code {
+      font-family: var(--mono); font-size: 0.82em;
+      background: #1e1e24; border: 1px solid var(--border);
+      padding: 1px 5px; border-radius: 3px; color: var(--accent); word-break: break-all;
+    }
+    .bubble pre {
+      background: #0a0a0c; border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px;
+      overflow-x: auto; margin: 8px 0; -webkit-overflow-scrolling: touch;
+    }
+    .bubble pre code { background: none; border: none; padding: 0; color: #c8e6a0; font-size: 0.82em; word-break: normal; }
+    .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
+    .bubble li { margin-bottom: 3px; }
+    .bubble h1, .bubble h2, .bubble h3 { font-family: var(--sans); font-weight: 700; margin: 10px 0 5px; color: var(--accent); }
+    .bubble h1 { font-size: 1.1em; } .bubble h2 { font-size: 1em; } .bubble h3 { font-size: 0.92em; }
+    .bubble strong { color: #fff; font-weight: 600; }
+    .bubble blockquote { border-left: 2px solid var(--accent); padding-left: 12px; color: var(--muted); margin: 6px 0; }
+    .bubble a { color: var(--accent); text-decoration: underline; }
+
+    /* Uploaded image attachments */
+    .bubble .msg-image-link { display: block; cursor: zoom-in; }
+    .bubble .msg-image {
+      display: block;
+      max-width: 100%;
+      max-height: 360px;
+      width: auto;
+      height: auto;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+    }
+    .bubble .msg-caption { margin-top: 8px; text-decoration: none; }
+
+    /* Thinking dots */
+    .thinking .bubble { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s ease-in-out infinite; }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink {
+      0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
+      40% { opacity: 1; transform: scale(1); }
+    }
+
+    /* Empty state */
+    #empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      pointer-events: none;
+      text-align: center;
+      padding: 0 32px;
+    }
+    #empty-state .eagle-wrap {
+      width: 68px; height: 68px;
+      border-radius: 16px;
+      overflow: hidden;
+      opacity: 0.2;
+      border: 1px solid rgba(200,240,74,0.15);
+    }
+    #empty-state .eagle-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    #empty-state .empty-name {
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      opacity: 0.45;
+    }
+    #empty-state .empty-sub {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.9;
+      opacity: 0.4;
+    }
+
+    /* ── Input area ── */
+    #input-area {
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      padding: 12px 16px 10px;
+      border-top: 1px solid var(--border);
+      background: rgba(13,13,15,0.97);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    #input-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    #user-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 16px; /* prevents iOS zoom */
+      padding: 11px 14px;
+      resize: none;
+      min-height: 44px;
+      max-height: 130px;
+      outline: none;
+      transition: border-color 0.15s;
+      line-height: 1.5;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    #user-input:focus { border-color: #3a3a44; }
+    #user-input::placeholder { color: var(--muted); }
+
+    #send-btn {
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      width: 44px; height: 44px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s, transform 0.1s;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #send-btn:active { transform: scale(0.92); background: var(--accent-dim); }
+    #send-btn:disabled { background: #2a2a30; cursor: not-allowed; }
+    #send-btn svg { width: 18px; height: 18px; }
+
+    /* ── Upload button ── */
+    #upload-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 44px; height: 44px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: border-color 0.15s, background 0.15s, transform 0.1s;
+      color: var(--muted);
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #upload-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #upload-btn:active { transform: scale(0.92); background: rgba(200,240,74,0.07); }
+    #upload-btn svg { width: 20px; height: 20px; }
+
+    /* ── File preview pill ── */
+    #file-preview {
+      display: none;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 10px;
+      background: #1a1f10;
+      border: 1px solid #2a3318;
+      border-radius: var(--radius);
+      margin-bottom: 6px;
+      position: relative;
+      overflow: hidden;
+      animation: fadeUp 0.18s ease forwards;
+    }
+    #file-preview.visible { display: flex; }
+    #file-preview-bar {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      background: rgba(200,240,74,0.08);
+      border-radius: var(--radius);
+      width: 0%;
+      transition: width 0.25s ease;
+      pointer-events: none;
+    }
+    #file-preview-name {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: #d8f0a0;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #file-preview-status {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    #file-remove-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: 14px;
+      line-height: 1;
+      transition: color 0.15s;
+      flex-shrink: 0;
+    }
+    #file-remove-btn:hover { color: #e05555; }
+
+    /* ── PWA Splash ── */
+    #splash {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      z-index: 9999;
+      display: none; /* hidden by default, shown only in standalone via JS */
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      pointer-events: none;
+    }
+    #splash.visible { display: flex; }
+    #splash.hide { animation: splashOut 0.35s ease forwards; }
+
+    .splash-icon {
+      width: 100px; height: 100px;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 1px solid rgba(200,240,74,0.25);
+      box-shadow: 0 0 50px rgba(200,240,74,0.1);
+      animation: splashIconIn 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards;
+      opacity: 0;
+    }
+    .splash-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .splash-name {
+      font-family: var(--sans);
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent);
+      opacity: 0;
+      animation: splashTextIn 0.4s ease 0.35s forwards;
+    }
+    .splash-sub {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      opacity: 0;
+      margin-top: -8px;
+      animation: splashTextIn 0.4s ease 0.5s forwards;
+    }
+
+    @keyframes splashIconIn {
+      from { opacity: 0; transform: scale(0.75) translateY(12px); }
+      to   { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    @keyframes splashTextIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes splashOut {
+      from { opacity: 1; }
+      to   { opacity: 0; visibility: hidden; }
+    }
+
+    /* ── Tool call blocks ── */
+    .tool-group {
+      align-self: flex-start;
+      max-width: 88%;
+      animation: fadeUp 0.22s ease forwards;
+      opacity: 0;
+      margin: 2px 0;
+    }
+    @media (min-width: 600px) { .tool-group { max-width: 78%; } }
+
+    .tool-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      padding: 5px 10px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: #0f0f12;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      user-select: none;
+      -webkit-user-select: none;
+      transition: border-color 0.15s, color 0.15s;
+      width: fit-content;
+    }
+    .tool-toggle:hover { border-color: rgba(200,240,74,0.3); color: var(--accent); }
+
+    .tool-toggle-arrow {
+      display: inline-block;
+      transition: transform 0.18s ease;
+      font-style: normal;
+      font-size: 9px;
+    }
+    .tool-toggle.open .tool-toggle-arrow { transform: rotate(90deg); }
+
+    .tool-live-dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--accent);
+      animation: blink 1.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    .tool-live.done .tool-live-dot { animation: none; background: var(--muted); }
+
+    .tool-details {
+      display: none;
+      margin-top: 4px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .tool-details.open { display: block; }
+
+    .tool-section {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tool-section:last-child { border-bottom: none; }
+
+    .tool-section-label {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+
+    .tool-name {
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .tool-code {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      line-height: 1.55;
+      color: #c8e6a0;
+      background: #0a0a0c;
+      border-radius: 3px;
+      padding: 8px 10px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      -webkit-overflow-scrolling: touch;
+      margin: 0;
+    }
+
+    .tool-result-ok   { color: #c8e6a0; }
+    .tool-result-err  { color: #e07070; }
+  </style>
+</head>
+<body>
+
+<div id="splash">
+  <div class="splash-icon"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
+  <div class="splash-name">FreeClaw</div>
+  <div class="splash-sub">an AI agent that doesn't burn your money</div>
+</div>
+
+<div id="app">
+  <header>
+    <div class="header-icon">
+      <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
+    </div>
+    <div class="header-dot"></div>
+    <div class="header-title">
+      <h1 id="chat-user-name">FreeClaw</h1>
+      <span class="header-tagline" id="chat-title">an AI agent that doesn't burn your money</span>
+    </div>
+    <div class="header-right">
+      <span id="token-count">~0 tokens</span>
+      <button id="home-btn" title="Back to users">⌂</button>
+      <button id="reset-btn">reset</button>
+    </div>
+  </header>
+
+  <div id="messages">
+    <div id="empty-state">
+      <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+      <div class="empty-name">FreeClaw</div>
+      <div class="empty-sub">search the web · run bash<br>control smart home · write files</div>
+    </div>
+  </div>
+
+  <div id="input-area">
+    <div id="file-preview">
+      <div id="file-preview-bar"></div>
+      <span id="file-preview-name">filename.txt</span>
+      <span id="file-preview-status">ready</span>
+      <button id="file-remove-btn" title="Remove file">✕</button>
+    </div>
+    <div id="input-row">
+      <button id="upload-btn" title="Attach file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+      </button>
+      <input type="file" id="file-input" style="display:none"/>
+      <textarea id="user-input" placeholder="Ask anything…" rows="1"></textarea>
+      <button id="send-btn" title="Send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#0d0d0f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="19" x2="12" y2="5"/>
+          <polyline points="5 12 12 5 19 12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const messagesEl  = document.getElementById('messages');
+  const inputEl     = document.getElementById('user-input');
+  const sendBtn     = document.getElementById('send-btn');
+  const countEl     = document.getElementById('token-count');
+  const resetBtn    = document.getElementById('reset-btn');
+  const homeBtn     = document.getElementById('home-btn');
+  const chatUserEl  = document.getElementById('chat-user-name');
+  const chatTitleEl = document.getElementById('chat-title');
+  const splash      = document.getElementById('splash');
+  const uploadBtn   = document.getElementById('upload-btn');
+  const fileInput   = document.getElementById('file-input');
+  const filePreview = document.getElementById('file-preview');
+  const fileBar     = document.getElementById('file-preview-bar');
+  const fileName    = document.getElementById('file-preview-name');
+  const fileStatus  = document.getElementById('file-preview-status');
+  const fileRemove  = document.getElementById('file-remove-btn');
+
+  // Show splash only when running as installed PWA
+  const isStandalone = window.navigator.standalone === true
+    || window.matchMedia('(display-mode: standalone)').matches;
+
+  if (isStandalone) {
+    splash.classList.add('visible');
+    setTimeout(() => splash.classList.add('hide'), 1100);
+  }
+
+  let totalTokens  = 0;
+  let pendingFile  = null;
+  let uploading    = false;
+
+  const estimate = str => Math.ceil((str || '').length / 4);
+  marked.setOptions({ breaks: true, gfm: true });
+
+  function updateCount() {
+    countEl.textContent = '~' + totalTokens.toLocaleString() + ' tokens';
+  }
+
+  function removeEmpty() {
+    const el = document.getElementById('empty-state');
+    if (el) el.remove();
+  }
+
+  // ── Render a single user/agent text bubble ──────────────
+  // opts.countTokens (default true) controls whether this call bumps the
+  // running token estimate. When renderConversation() re-renders the full
+  // history from the server payload, it computes the token total itself
+  // (covering tool calls/results too), so bubble-level counting is skipped
+  // here to avoid double-counting.
+  function addMessage(role, text, imageUrl, opts) {
+    const countTokens = !opts || opts.countTokens !== false;
+    removeEmpty();
+    if (countTokens) {
+      totalTokens += estimate(text);
+      updateCount();
+    }
+    const wrap = document.createElement('div');
+    wrap.className = `message ${role}`;
+    const label = document.createElement('div');
+    label.className = 'msg-label';
+    label.textContent = role === 'user' ? 'you' : 'agent';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    if (imageUrl) {
+      const link = document.createElement('a');
+      link.href = imageUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.className = 'msg-image-link';
+      const img = document.createElement('img');
+      img.src = imageUrl;
+      img.alt = 'Uploaded image';
+      img.className = 'msg-image';
+      img.loading = 'lazy';
+      link.appendChild(img);
+      bubble.appendChild(link);
+    }
+
+    if (role === 'agent') {
+      bubble.insertAdjacentHTML('beforeend', marked.parse(text || ''));
+    } else if (text) {
+      const caption = document.createElement('div');
+      caption.className = imageUrl ? 'msg-caption' : '';
+      caption.textContent = text;
+      bubble.appendChild(caption);
+    }
+
+    wrap.appendChild(label);
+    wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+    return wrap;
+  }
+
+  // ── Render a collapsible tool-call + result block ────────
+  function addToolBlock(toolName, argsStr, resultStr, isError) {
+    removeEmpty();
+
+    const group = document.createElement('div');
+    group.className = 'tool-group';
+
+    // Toggle pill
+    const toggle = document.createElement('div');
+    toggle.className = 'tool-toggle';
+    toggle.innerHTML = `<i class="tool-toggle-arrow">▶</i><span>tool: ${toolName}</span>`;
+
+    // Details panel
+    const details = document.createElement('div');
+    details.className = 'tool-details';
+
+    // Call section
+    const callSec = document.createElement('div');
+    callSec.className = 'tool-section';
+    callSec.innerHTML = `<div class="tool-section-label">call · <span class="tool-name">${toolName}</span></div>`;
+    const callPre = document.createElement('pre');
+    callPre.className = 'tool-code';
+    try {
+      callPre.textContent = JSON.stringify(JSON.parse(argsStr), null, 2);
+    } catch {
+      callPre.textContent = argsStr || '';
+    }
+    callSec.appendChild(callPre);
+    details.appendChild(callSec);
+
+    // Result section
+    const resSec = document.createElement('div');
+    resSec.className = 'tool-section';
+    resSec.innerHTML = `<div class="tool-section-label">result</div>`;
+    const resPre = document.createElement('pre');
+    resPre.className = `tool-code ${isError ? 'tool-result-err' : 'tool-result-ok'}`;
+    resPre.textContent = resultStr || '';
+    resSec.appendChild(resPre);
+    details.appendChild(resSec);
+
+    // Toggle behaviour
+    toggle.addEventListener('click', () => {
+      const open = details.classList.toggle('open');
+      toggle.classList.toggle('open', open);
+    });
+
+    group.appendChild(toggle);
+    group.appendChild(details);
+    messagesEl.appendChild(group);
+    return group;
+  }
+
+  // ── Estimate total tokens for the FULL payload sent to/from the LLM ──
+  // Walks the raw conversation array (system prompt, user/assistant text,
+  // tool call arguments, and tool result content) rather than just what
+  // gets rendered as visible bubbles, since all of that counts against
+  // the context window / API usage.
+  function estimateConversationTokens(conversation) {
+    let total = 0;
+
+    for (const msg of conversation) {
+      // Role/structure overhead per message (rough, mirrors chat-template overhead)
+      total += 4;
+
+      if (msg.content) {
+        if (typeof msg.content === 'string') {
+          total += estimate(msg.content);
+        } else if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (typeof block === 'string') {
+              total += estimate(block);
+            } else if (block && typeof block === 'object') {
+              if (block.text) total += estimate(block.text);
+              // Non-text blocks (images, etc.) still cost tokens; use a flat
+              // estimate when we can't otherwise size them.
+              else if (block.type && block.type !== 'text') total += 85;
+            }
+          }
+        }
+      }
+
+      // Tool calls the assistant made: name + arguments JSON
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          const fn = tc.function || {};
+          total += estimate(fn.name || '');
+          total += estimate(fn.arguments || '');
+          total += 6; // per-call structural overhead (id, type, etc.)
+        }
+      }
+
+      // Tool result messages: the data fed back to the LLM
+      if (msg.role === 'tool') {
+        total += estimate(msg.content || '');
+        total += estimate(msg.name || '');
+      }
+    }
+
+    return total;
+  }
+
+  // ── Render full conversation returned by the agent ───────
+  function renderConversation(conversation) {
+    messagesEl.innerHTML = '';
+
+    // Token estimate covers the ENTIRE payload (system + user + assistant
+    // text + tool call args + tool results), not just visible bubbles.
+    totalTokens = estimateConversationTokens(conversation);
+    updateCount();
+
+    // Index tool results by tool_call_id for quick lookup
+    const toolResults = {};
+    for (const msg of conversation) {
+      if (msg.role === 'tool') {
+        toolResults[msg.tool_call_id] = { content: msg.content, name: msg.name };
+      }
+    }
+
+    for (const msg of conversation) {
+      // Skip system messages and tool result messages (rendered inline)
+      if (msg.role === 'system' || msg.role === 'tool') continue;
+
+      if (msg.role === 'user') {
+        // user content can be string or array
+        const text = typeof msg.content === 'string'
+          ? msg.content
+          : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+        addMessage('user', text, null, { countTokens: false });
+      } else if (msg.role === 'assistant') {
+        // Tool calls first (if any)
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
+            const fn = tc.function || {};
+            const result = toolResults[tc.id];
+            const resultText = result ? result.content : '(no result)';
+            const isError = resultText && resultText.toLowerCase().startsWith('error');
+            addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError);
+          }
+        }
+        // Then the assistant's text reply (if any)
+        const text = typeof msg.content === 'string'
+          ? msg.content
+          : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+        if (text && text.trim()) {
+          addMessage('agent', text, null, { countTokens: false });
+        }
+      }
+    }
+
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // ── Live tool-call indicator (shown while a tool is running) ─────
+  function addToolLive(name) {
+    removeEmpty();
+    const wrap = document.createElement('div');
+    wrap.className = 'tool-group tool-live';
+    const pill = document.createElement('div');
+    pill.className = 'tool-toggle';
+    pill.innerHTML = `<span class="tool-live-dot"></span><span class="tool-live-label">running tool: ${name}</span>`;
+    wrap.appendChild(pill);
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return wrap;
+  }
+
+  function markToolLiveDone(wrap, name) {
+    if (!wrap || !wrap.parentNode) return;
+    wrap.classList.add('done');
+    const label = wrap.querySelector('.tool-live-label');
+    if (label) label.textContent = `ran tool: ${name}`;
+  }
+
+  // ── Thinking indicator ───────────────────────────────────
+  function addThinking() {
+    removeEmpty();
+    const wrap = document.createElement('div');
+    wrap.className = 'message agent thinking';
+    const label = document.createElement('div');
+    label.className = 'msg-label';
+    label.textContent = 'agent';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+    wrap.appendChild(label);
+    wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return wrap;
+  }
+
+  // ── File upload helpers ──────────────────────────────────
+
+  function clearFile() {
+    pendingFile = null;
+    filePreview.classList.remove('visible');
+    fileBar.style.width = '0%';
+    fileInput.value = '';
+  }
+
+  uploadBtn.addEventListener('click', () => fileInput.click());
+  fileRemove.addEventListener('click', clearFile);
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    fileName.textContent = file.name;
+    fileStatus.textContent = 'uploading…';
+    fileBar.style.width = '0%';
+    filePreview.classList.add('visible');
+    uploading = true;
+    sendBtn.disabled = true;
+
+    requestAnimationFrame(() => { fileBar.style.width = '80%'; });
+
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res  = await fetch('/upload', { method: 'POST', body: form });
+      const data = await res.json();
+
+      if (data.error) {
+        fileStatus.textContent = 'error';
+        fileBar.style.background = 'rgba(224,85,85,0.15)';
+        fileBar.style.width = '100%';
+        pendingFile = null;
+      } else {
+        fileBar.style.width = '100%';
+        fileStatus.textContent = 'ready';
+        pendingFile = { name: file.name, path: data.path, isImage: file.type.startsWith('image/') };
+      }
+    } catch {
+      fileStatus.textContent = 'failed';
+      pendingFile = null;
+    }
+
+    uploading = false;
+    sendBtn.disabled = false;
+    if (!isStandalone) inputEl.focus();
+  });
+
+  // ── Send ────────────────────────────────────────────────
+
+  async function sendMessage() {
+    const text = inputEl.value.trim();
+    if (!text && !pendingFile) return;
+    if (uploading) return;
+
+    let agentMessage = text;
+    let displayImageUrl = null;
+    if (pendingFile) {
+      const tag = `[File uploaded: "${pendingFile.name}" → ${pendingFile.path}]`;
+      agentMessage = text ? `${tag}\n\n${text}` : tag;
+      if (pendingFile.isImage) displayImageUrl = pendingFile.path;
+    }
+
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    sendBtn.disabled = true;
+    inputEl.blur();
+    clearFile();
+
+    // Show the user's message immediately so it doesn't feel like it
+    // vanished into the void while the agent is working. This is rendered
+    // optimistically; renderConversation() will replace it (and recompute
+    // token counts) once the real response comes back.
+    addMessage('user', text, displayImageUrl);
+
+    let thinking = addThinking();
+    let liveWrap = null, liveBubble = null, liveText = '';
+    let activeToolIndicator = null;
+
+    const dropLiveBubble = () => {
+      if (liveWrap) liveWrap.remove();
+      liveWrap = null;
+      liveBubble = null;
+      liveText = '';
+    };
+
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: agentMessage })
+      });
+
+      const contentType = res.headers.get('Content-Type') || '';
+
+      // Slash-commands (and errors before streaming starts) come back as
+      // plain JSON rather than an event-stream.
+      if (!contentType.includes('text/event-stream')) {
+        const data = await res.json();
+        if (thinking.parentNode) thinking.remove();
+        if (data.error) addMessage('agent', `**Error:** ${data.error}`);
+        else if (data.conversation) renderConversation(data.conversation);
+        else addMessage('agent', data.response || '');
+        sendBtn.disabled = false;
+        if (!isStandalone) inputEl.focus();
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        const chunks = buf.split('\n\n');
+        buf = chunks.pop(); // keep any incomplete trailing chunk for next read
+
+        for (const chunk of chunks) {
+          const line = chunk.trim();
+          if (!line.startsWith('data:')) continue;
+
+          let evt;
+          try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+          if (evt.type === 'token') {
+            if (thinking.parentNode) thinking.remove();
+            if (!liveWrap) {
+              liveWrap = document.createElement('div');
+              liveWrap.className = 'message agent';
+              const label = document.createElement('div');
+              label.className = 'msg-label';
+              label.textContent = 'agent';
+              liveBubble = document.createElement('div');
+              liveBubble.className = 'bubble';
+              liveWrap.appendChild(label);
+              liveWrap.appendChild(liveBubble);
+              messagesEl.appendChild(liveWrap);
+            }
+            liveText += evt.text;
+            liveBubble.innerHTML = marked.parse(liveText);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+
+          } else if (evt.type === 'tool_call') {
+            // The model is about to run a tool — clear any in-progress
+            // streamed text bubble (it'll be re-rendered properly, with the
+            // full tool block, once the conversation comes back) and show
+            // a live indicator so the user can see what's happening.
+            dropLiveBubble();
+            if (thinking.parentNode) thinking.remove();
+            activeToolIndicator = addToolLive(evt.name);
+
+          } else if (evt.type === 'tool_result') {
+            if (activeToolIndicator) {
+              markToolLiveDone(activeToolIndicator, evt.name);
+              activeToolIndicator = null;
+            }
+            // The model still has to turn the tool result into a reply —
+            // show the thinking dots again while that happens.
+            if (!thinking.parentNode) thinking = addThinking();
+
+          } else if (evt.type === 'error') {
+            if (thinking.parentNode) thinking.remove();
+            dropLiveBubble();
+            if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+            addMessage('agent', `**Error:** ${evt.error}`);
+
+          } else if (evt.type === 'done') {
+            if (thinking.parentNode) thinking.remove();
+            dropLiveBubble();
+            if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+            renderConversation(evt.conversation);
+          }
+        }
+      }
+
+      if (thinking.parentNode) thinking.remove();
+    } catch {
+      if (thinking.parentNode) thinking.remove();
+      dropLiveBubble();
+      if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+      addMessage('agent', '**Connection error.** Is the server running?');
+    }
+
+    sendBtn.disabled = false;
+    if (!isStandalone) inputEl.focus();
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 130) + 'px';
+  });
+
+  resetBtn.addEventListener('click', async () => {
+    try { await fetch('/reset', { method: 'POST' }); } catch (_) {}
+    messagesEl.innerHTML = '';
+    totalTokens = 0;
+    updateCount();
+    clearFile();
+    const empty = document.createElement('div');
+    empty.id = 'empty-state';
+    empty.innerHTML = `
+      <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+      <div class="empty-name">FreeClaw</div>
+      <div class="empty-sub">search the web · run bash<br>control smart home · write files</div>`;
+    messagesEl.appendChild(empty);
+  });
+
+  homeBtn.addEventListener('click', () => { window.location.href = '/'; });
+
+  // ── Load the conversation this session is currently pointed at ───
+  (async function loadConversation() {
+    try {
+      const res = await fetch('/api/conversation');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
+      if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
+      const msgs = data.messages || [];
+      const hasVisible = msgs.some(m => m.role === 'user' || (m.role === 'assistant' && m.content));
+      if (hasVisible) renderConversation(msgs);
+    } catch (_) { /* ignore — stay on empty state */ }
+  })();
+
+  // Keep messages scrolled when iOS keyboard resizes the viewport
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+  }
+</script>
+</body>
+</html>

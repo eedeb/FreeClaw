@@ -61,6 +61,37 @@ agent_messages=[]
 tools=[]
 groq=True
 
+
+def set_static_dir(path):
+    """Point the agent's file tools (save_context, read_file, list_files,
+    create_file, create_page, etc.) at a specific user's folder, e.g.
+    static/<username>/. Creates the folder and an empty context.md if
+    they don't exist yet."""
+    global static_dir, html_dir
+    if not path.endswith(os.sep):
+        path = path + os.sep
+    os.makedirs(path, exist_ok=True)
+    static_dir = path
+    html_dir = path
+    ctx_path = path + "context.md"
+    if not os.path.exists(ctx_path):
+        with open(ctx_path, "w", encoding="utf-8") as f:
+            f.write("")
+    return static_dir
+
+
+def get_messages():
+    return agent_messages
+
+
+def set_messages(messages):
+    """Load a previously-saved conversation (a plain list of OpenAI-style
+    message dicts) as the active conversation for subsequent agent_stream
+    calls."""
+    global agent_messages
+    agent_messages = messages
+
+
 def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.com/openai/v1", tts=False):
     global client
     client = OpenAI(api_key=llm_key, base_url=base_url)
@@ -71,7 +102,12 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
 
     global agent_messages
     global tools
-    with open(static_dir+"context.md", "r", encoding="utf-8") as f:
+    ctx_path = static_dir + "context.md"
+    if not os.path.exists(ctx_path):
+        os.makedirs(static_dir, exist_ok=True)
+        with open(ctx_path, "w", encoding="utf-8") as f:
+            f.write("")
+    with open(ctx_path, "r", encoding="utf-8") as f:
         content = f.read()
     if tts:
         agent_messages=[
