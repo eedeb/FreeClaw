@@ -725,27 +725,31 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             yield from agent_stream(tool_input=web_data, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'read_file':
             filename=args_dict.get('filename')
-            if "/" in filename or "\\" in filename:
-                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
+            # Uploaded files are referenced by their full "static/..." path
+            # in the chat tag, not a bare filename; take just the basename
+            # so both forms resolve against this session's static_dir.
+            filename=os.path.basename(filename)
             try:
                 with open(static_dir+filename, "r", encoding="utf-8") as f:
                     file_contents = f.read()
                 yield from agent_stream(tool_input=file_contents, tool_id=tool_call.id,tool_name=command_name)
             except FileNotFoundError:
-                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)            
-            
+                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
+            return
+
         elif command_name == 'get_image_description':
             filename=args_dict.get('filename')
-            if "/" in filename or "\\" in filename:
-                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
-            
+            filename=os.path.basename(filename)
             file_location=static_dir+filename
 
+            try:
+                # Read and encode the image to base64
+                with open(file_location, "rb") as image_file:
+                    image_data = base64.b64encode(image_file.read()).decode("utf-8")
+            except FileNotFoundError:
+                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
+                return
 
-            # Read and encode the image to base64
-            with open(file_location, "rb") as image_file:
-                image_data = base64.b64encode(image_file.read()).decode("utf-8")
-            
 
             # Detect MIME type from file extension
             ext = filename.rsplit(".", 1)[-1].lower()

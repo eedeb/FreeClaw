@@ -864,6 +864,22 @@
     return total;
   }
 
+  // ── Pull an uploaded-file tag out of a message's text and, if it points
+  // at an image, return the image URL so it can be re-rendered as a
+  // bubble image (renderConversation() rebuilds bubbles from raw message
+  // text, which is where sendMessage() embeds this tag).
+  const FILE_TAG_RE = /^\[File uploaded: "(.*?)" → (.*?)\]\n?\n?/;
+  const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+  function extractFileTag(text) {
+    const m = text.match(FILE_TAG_RE);
+    if (!m) return { text, imageUrl: null };
+    const path = m[2];
+    return {
+      text: text.slice(m[0].length),
+      imageUrl: IMAGE_EXT_RE.test(path) ? path : null
+    };
+  }
+
   // ── Render full conversation returned by the agent ───────
   function renderConversation(conversation) {
     messagesEl.innerHTML = '';
@@ -887,10 +903,11 @@
 
       if (msg.role === 'user') {
         // user content can be string or array
-        const text = typeof msg.content === 'string'
+        const rawText = typeof msg.content === 'string'
           ? msg.content
           : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
-        addMessage('user', text, null, { countTokens: false });
+        const { text, imageUrl } = extractFileTag(rawText);
+        addMessage('user', text, imageUrl, { countTokens: false });
       } else if (msg.role === 'assistant') {
         // Tool calls first (if any)
         if (msg.tool_calls && msg.tool_calls.length > 0) {

@@ -502,8 +502,10 @@ def upload():
     dest = os.path.join(conv_files_dir(name, conv_id), safe_name)
     file.save(dest)
 
-    # Return the path the agent can reference (relative to app root)
-    rel_path = os.path.join('static', name, CONVERSATIONS_SUBDIR, conv_id, safe_name)
+    # Return the path the agent can reference (relative to app root). Use
+    # forward slashes explicitly since this is a URL, not an OS file path
+    # (os.path.join would emit backslashes on Windows, breaking <img src>).
+    rel_path = '/'.join(['static', name, CONVERSATIONS_SUBDIR, conv_id, safe_name])
     return jsonify({'path': rel_path, 'filename': file.filename})
 
 
