@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 import UniformTypeIdentifiers
 
 /// The main chat screen: loads history for a conversation, streams new
@@ -24,7 +25,7 @@ struct ChatView: View {
 
     @State private var pendingAttachment: PendingAttachment?
     @State private var isUploading = false
-    @State private var showFileImporter = false
+    @State private var photoPickerItem: PhotosPickerItem?
     @State private var showResetConfirm = false
 
     @FocusState private var inputFocused: Bool
@@ -59,8 +60,8 @@ struct ChatView: View {
             Button("Reset", role: .destructive) { Task { await resetConversation() } }
             Button("Cancel", role: .cancel) {}
         }
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
-            Task { await handleFileImport(result) }
+        .onChange(of: photoPickerItem) { _ in
+            Task { await handlePhotoPickerSelection() }
         }
         .task { await load() }
     }
@@ -112,9 +113,11 @@ struct ChatView: View {
 
     private var emptyState: some View {
         VStack(spacing: 14) {
-            Image(systemName: "bolt.horizontal.circle")
-                .font(.system(size: 40))
-                .foregroundStyle(FCTheme.muted.opacity(0.5))
+            Image("EagleLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 56, height: 56)
+                .opacity(0.5)
             Text("FREECLAW")
                 .font(.system(.footnote, design: .rounded).weight(.bold))
                 .tracking(2)
@@ -138,10 +141,8 @@ struct ChatView: View {
                 }
             }
             HStack(alignment: .bottom, spacing: 10) {
-                Button {
-                    showFileImporter = true
-                } label: {
-                    Image(systemName: "paperclip")
+                PhotosPicker(selection: $photoPickerItem, matching: .images) {
+                    Image(systemName: "photo")
                         .font(.system(size: 17))
                         .foregroundStyle(FCTheme.muted)
                         .frame(width: 40, height: 40)
@@ -292,31 +293,27 @@ struct ChatView: View {
         }
     }
 
-    private func handleFileImport(_ result: Result<[URL], Error>) async {
-        guard case .success(let urls) = result, let url = urls.first else { return }
+    private func handlePhotoPickerSelection() async {
+        guard let item = photoPickerItem else { return }
         isUploading = true
-
-        let accessed = url.startAccessingSecurityScopedResource()
         defer {
-            if accessed { url.stopAccessingSecurityScopedResource() }
             isUploading = false
+            photoPickerItem = nil
         }
 
         do {
-            let data = try Data(contentsOf: url)
-            let filename = url.lastPathComponent
-            let mime = mimeType(for: url)
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                sendError = "Couldn't load the selected photo."
+                return
+            }
+            let type = item.supportedContentTypes.first ?? .jpeg
+            let ext = type.preferredFilenameExtension ?? "jpg"
+            let mime = type.preferredMIMEType ?? "image/jpeg"
+            let filename = "photo-\(Int(Date().timeIntervalSince1970)).\(ext)"
             let path = try await store.client.uploadFile(data: data, filename: filename, mimeType: mime)
-            pendingAttachment = PendingAttachment(filename: filename, path: path, isImage: mime.hasPrefix("image/"))
+            pendingAttachment = PendingAttachment(filename: filename, path: path, isImage: true)
         } catch {
             sendError = "Upload failed: \(error.localizedDescription)"
         }
-    }
-
-    private func mimeType(for url: URL) -> String {
-        if let type = UTType(filenameExtension: url.pathExtension), let mime = type.preferredMIMEType {
-            return mime
-        }
-        return "application/octet-stream"
     }
 }

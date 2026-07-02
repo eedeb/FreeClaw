@@ -54,6 +54,10 @@ a "log in again" screen if the session ever expires server-side.
   keys, HA integration, OpenAI-compatible API toggle) isn't exposed here;
   that's server administration, not something you want editable from a
   phone. Everything user-facing — chat, users, conversations — is native.
-- No app icon is bundled yet; only `AccentColor` is defined in
-  `Assets.xcassets`. Drop your own icon images into a new `AppIcon`
-  image set before shipping to TestFlight/App Store.
+- The app icon and in-app logo (`AppIcon` / `EagleLogo` in
+  `Assets.xcassets`) are generated from `freeclaw.eedeb.dev/eagle.png` —
+  the icon is flattened onto the app's dark background since App Store
+  icons can't have transparency. Replace those image files if the source
+  logo ever changes.
+- The attach button opens the Photos library (`PhotosPicker`), so it only
+  handles images — there's no general Files-app document picker.

@@ -52,9 +52,10 @@ struct ConnectView: View {
                 .fill(FCTheme.surface)
                 .frame(width: 72, height: 72)
                 .overlay(
-                    Image(systemName: "bolt.horizontal.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(FCTheme.accent)
+                    Image("EagleLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .padding(14)
                 )
                 .overlay(RoundedRectangle(cornerRadius: 20).stroke(FCTheme.accent.opacity(0.25), lineWidth: 1))
             Text("FREECLAW")
