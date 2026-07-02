@@ -38,6 +38,12 @@ From there:
   it uploads immediately and renders inline in the bubble (both your own
   outgoing message and, after a reload, the same bubble reconstructed from
   the server's saved conversation) — tap an image to view it full-screen.
+- **Voice mode** — tap the waveform icon in the chat toolbar to switch the
+  input bar to push-to-talk: hold the mic button to record, release to
+  transcribe and send. The agent's reply is read back automatically as it
+  streams in; tool calls are never spoken, only shown on screen as usual.
+  Fully on-device (Apple's `Speech` framework + `AVSpeechSynthesizer`) —
+  no audio, transcript, or server changes involved.
 - **Settings** (gear icon on the home screen) — log out, or forget the
   server entirely to connect to a different one.
 
@@ -67,3 +73,13 @@ a "log in again" screen if the session ever expires server-side.
   requires the session cookie — that works because `AsyncImage` and the
   app's own API client both read/write `HTTPCookieStorage.shared`, so the
   login cookie is visible to both automatically.
+- Voice mode's speech-to-text prefers on-device recognition
+  (`requiresOnDeviceRecognition`) whenever the device/locale supports it.
+  Where it doesn't (older hardware, some languages), iOS transparently
+  falls back to its own server-based recognizer — still never touches the
+  FreeClaw server, but isn't strictly on-device in that fallback case.
+  Text-to-speech (`AVSpeechSynthesizer`) is always on-device. Streamed
+  reply tokens are buffered and spoken sentence-by-sentence, with light
+  markdown stripping (code fences, `**`/`` ` ``/`#`/bullets) so the
+  synthesizer doesn't read punctuation aloud — see
+  `SpeechCoordinator.cleanedForSpeech`.

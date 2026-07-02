@@ -45,6 +45,10 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>FreeClaw connects to your agent server running on your local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FreeClaw uses the microphone for push-to-talk voice mode, so you can talk to your agent instead of typing.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>FreeClaw uses on-device speech recognition to turn what you say in voice mode into text for your agent.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- FreeClaw agents are typically self-hosted on a LAN over plain HTTP

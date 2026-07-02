@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// The main chat screen: loads history for a conversation, streams new
@@ -28,6 +29,9 @@ struct ChatView: View {
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var showResetConfirm = false
 
+    @StateObject private var speech = SpeechCoordinator()
+    @State private var isVoiceModeEnabled = false
+
     @FocusState private var inputFocused: Bool
 
     private var canSend: Bool {
@@ -40,7 +44,11 @@ struct ChatView: View {
             FCTheme.background.ignoresSafeArea()
             VStack(spacing: 0) {
                 messageList
-                inputBar
+                if isVoiceModeEnabled {
+                    voiceInputBar
+                } else {
+                    inputBar
+                }
             }
         }
         .navigationTitle(title)
@@ -48,6 +56,14 @@ struct ChatView: View {
         .toolbarBackground(FCTheme.background, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    toggleVoiceMode()
+                } label: {
+                    Image(systemName: isVoiceModeEnabled ? "waveform.circle.fill" : "waveform.circle")
+                }
+                .disabled(isSending)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showResetConfirm = true
@@ -64,6 +80,20 @@ struct ChatView: View {
             Task { await handlePhotoPickerSelection() }
         }
         .task { await load() }
+        .onDisappear { speech.deactivateSession() }
+    }
+
+    private func toggleVoiceMode() {
+        if isVoiceModeEnabled {
+            isVoiceModeEnabled = false
+            speech.deactivateSession()
+        } else {
+            Task {
+                if await speech.requestPermissions() {
+                    isVoiceModeEnabled = true
+                }
+            }
+        }
     }
 
     // MARK: - Message list
@@ -186,6 +216,105 @@ struct ChatView: View {
         .overlay(Rectangle().frame(height: 1).foregroundStyle(FCTheme.border), alignment: .top)
     }
 
+    // MARK: - Voice input bar
+
+    private var voiceInputBar: some View {
+        VStack(spacing: 10) {
+            if speech.permissionState == .denied {
+                permissionDeniedBanner
+            } else {
+                if speech.isRecording, !speech.liveTranscript.isEmpty {
+                    Text(speech.liveTranscript)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(FCTheme.text)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .padding(.horizontal, 24)
+                }
+
+                pushToTalkButton
+
+                Text(voiceStatusLabel)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(FCTheme.muted)
+
+                if let speechError = speech.errorMessage {
+                    Text(speechError)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(FCTheme.danger)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+            }
+            if let sendError {
+                Text(sendError)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(FCTheme.danger)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity)
+        .background(FCTheme.background.opacity(0.97))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(FCTheme.border), alignment: .top)
+    }
+
+    private var voiceStatusLabel: String {
+        if isSending { return "Thinking…" }
+        if speech.isRecording { return "Listening — release to send" }
+        if speech.isSpeaking { return "Speaking…" }
+        return "Hold to talk"
+    }
+
+    private var pushToTalkButton: some View {
+        Circle()
+            .fill(speech.isRecording ? FCTheme.accent : FCTheme.surface)
+            .frame(width: 76, height: 76)
+            .overlay(
+                Image(systemName: speech.isRecording ? "mic.fill" : "mic")
+                    .font(.system(size: 26))
+                    .foregroundStyle(speech.isRecording ? FCTheme.background : FCTheme.accent)
+            )
+            .overlay(Circle().stroke(FCTheme.accent.opacity(speech.isRecording ? 0 : 0.3), lineWidth: 1.5))
+            .scaleEffect(speech.isRecording ? 1.08 : 1.0)
+            .animation(.easeInOut(duration: 0.15), value: speech.isRecording)
+            .opacity(isSending ? 0.4 : 1)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !isSending, !speech.isRecording else { return }
+                        speech.startRecording()
+                    }
+                    .onEnded { _ in
+                        guard speech.isRecording else { return }
+                        Task { await finishVoiceTurn() }
+                    }
+            )
+    }
+
+    private var permissionDeniedBanner: some View {
+        VStack(spacing: 8) {
+            Text("Voice mode needs microphone and speech-recognition access.")
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(FCTheme.muted)
+                .multilineTextAlignment(.center)
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            .font(.system(.footnote, design: .monospaced).weight(.semibold))
+            .foregroundStyle(FCTheme.accent)
+        }
+        .padding(.horizontal, 24)
+    }
+
+    private func finishVoiceTurn() async {
+        guard let transcript = await speech.stopRecordingAndGetTranscript() else { return }
+        await send(overrideText: transcript)
+    }
+
     // MARK: - Networking
 
     private func load() async {
@@ -208,8 +337,8 @@ struct ChatView: View {
         isLoading = false
     }
 
-    private func send() async {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func send(overrideText: String? = nil) async {
+        let text = (overrideText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || pendingAttachment != nil else { return }
 
         var messageToSend = text
@@ -236,6 +365,7 @@ struct ChatView: View {
             isThinking = false
             isStreamingText = false
             isToolRunning = false
+            if isVoiceModeEnabled { speech.discardPendingReply() }
             if case FreeClawError.unauthorized = error {
                 store.sessionExpired()
             } else {
@@ -253,12 +383,18 @@ struct ChatView: View {
             isToolRunning = false
             isStreamingText = true
             streamingText += piece
+            if isVoiceModeEnabled { speech.appendReplyToken(piece) }
         case .toolCall(let name):
             isStreamingText = false
             streamingText = ""
             isThinking = false
             isToolRunning = true
             liveToolName = name
+            // Tool calls are never spoken — only shown on screen via the
+            // live indicator/collapsible card below — and any reply text
+            // buffered before this point belongs to a bubble the chat UI
+            // itself discards, so drop it rather than speak it.
+            if isVoiceModeEnabled { speech.discardPendingReply() }
         case .toolResult:
             isToolRunning = false
             liveToolName = nil
@@ -269,6 +405,7 @@ struct ChatView: View {
             streamingText = ""
             isToolRunning = false
             sendError = message
+            if isVoiceModeEnabled { speech.discardPendingReply() }
         case .done(let conversation):
             isThinking = false
             isStreamingText = false
@@ -278,6 +415,7 @@ struct ChatView: View {
             if !conversation.isEmpty {
                 items = buildDisplayItems(from: conversation)
             }
+            if isVoiceModeEnabled { speech.finishReply() }
         }
     }
 

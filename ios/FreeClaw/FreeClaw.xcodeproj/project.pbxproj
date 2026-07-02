@@ -7,53 +7,55 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AC45A291F2B64C59A39BB5B0 /* FreeClawApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A60A2D4253E49D194340DC9 /* FreeClawApp.swift */; };
-		6A613CCDD34F4CCBADA3790B /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41C91E95D836491B8E585163 /* Theme.swift */; };
-		37C4205B5CA9442D90FAF86A /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84DD4392D1734B0EBEB81185 /* ChatModels.swift */; };
-		013259080871494F9D9A1198 /* ServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACA4FECB9BD34600B23396D9 /* ServerConfig.swift */; };
-		09683DEF447941C8A0F19535 /* APITypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D4450A6FAD44C79BE53B3A /* APITypes.swift */; };
-		20EE69F9BC094FD29FBC4D56 /* FreeClawClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF1847CA4ABB4EF9BAB54B07 /* FreeClawClient.swift */; };
-		19E6C365626847CE940094F6 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F57A16EC88B4F97A8796FC3 /* KeychainStore.swift */; };
-		63582AF387C44185B20CF782 /* ServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB6B3C62563D46BEB9E54D6B /* ServerStore.swift */; };
-		EA44791B21AF4ED383810A1E /* ChatComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AA16315452F4499993FD903 /* ChatComponents.swift */; };
-		7CE69B9875354CC5950BD61A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6D254B77D2B48CF8FE04B40 /* ChatView.swift */; };
-		0BE3E86686304F049CE2B565 /* CommonComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40A962E23F234AD58D404E63 /* CommonComponents.swift */; };
-		5CB586616B104C6B8CEBEBC6 /* ConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B094D523A10428491526953 /* ConnectView.swift */; };
-		C5E8A0AF09014A7FB3A728DE /* ConversationsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB6BE84B6553457184AB9E7E /* ConversationsListView.swift */; };
-		CC90E55639454DDF8253B049 /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9D617949BCA442F8E99EA3F /* MarkdownText.swift */; };
-		8D808BA43849420AB57BA5B9 /* ReauthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5DDE651549C4D12B61D7D0C /* ReauthView.swift */; };
-		21E5C9294E15425BA59601E1 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4888D4060704BFEAD2F3F8C /* RootView.swift */; };
-		62E0A2022DD64B5A90180124 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C40C4122EE74C848CF2A3F8 /* SettingsView.swift */; };
-		B8E754F31FA64B74912C5A09 /* UsersListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD509AA6830478E848D88E0 /* UsersListView.swift */; };
-		6F5C5507484E4F228E28FF10 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6A547C77E8624CD08C4BDFC0 /* Assets.xcassets */; };
+		71DFC3B9EB324966B91CA164 /* FreeClawApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3257B5A1104F452581BA69E1 /* FreeClawApp.swift */; };
+		541BF6943B6E4F6EAB2ACC26 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAB469CC19734893A0ECADD8 /* Theme.swift */; };
+		790681BDB52C4AF8A34BDCC6 /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1107D7F6334FFBBD51A575 /* ChatModels.swift */; };
+		34C1198D044540F18A8D8FEA /* ServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = D041B2DAD0CD48ECB1AC332C /* ServerConfig.swift */; };
+		48BDD620E1C4460388020076 /* APITypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AE8A90BC7304CBEBF1045E7 /* APITypes.swift */; };
+		C1ADBD20168647949F474FBC /* FreeClawClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75A8643194B54F42B80288B4 /* FreeClawClient.swift */; };
+		B23BEC1BADB24C33A8EA1AD5 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16BB3F6085904FB2B05D3D72 /* KeychainStore.swift */; };
+		4B2C869F6C5943E0980C5BF0 /* ServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7DC9A6D0796485C94B3D76A /* ServerStore.swift */; };
+		BBA37DDE50E84DC29FB223D4 /* SpeechCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C571D92B6F04A8C999D6816 /* SpeechCoordinator.swift */; };
+		D792A51B66EA4A84BE8D2031 /* ChatComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B3B2754AACC47DD978C4792 /* ChatComponents.swift */; };
+		C8071DD968DA437B89EAFB48 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D89265BA96ED4F969BE1AF4A /* ChatView.swift */; };
+		FA96F4B738F54EB5B946F812 /* CommonComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09D631B1F3D14173831D6D79 /* CommonComponents.swift */; };
+		E27F3AB3AA514B768E70B01B /* ConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A4B45CC76AF4943A85A99B9 /* ConnectView.swift */; };
+		7BB6D11B58C94DD594B08534 /* ConversationsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0FFB7F59EF946738D7095F2 /* ConversationsListView.swift */; };
+		A1DE9B9BDDDD40A88B9951A2 /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAF31EE7E7414D54A27E8F5B /* MarkdownText.swift */; };
+		F56BB04D0B6047608B209432 /* ReauthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B49BFA03E8427DA8B829DE /* ReauthView.swift */; };
+		78081D4D53BC4917BB8B72D8 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3425DD1CDDDE462E9C2B9DA3 /* RootView.swift */; };
+		2E7872EF3A4A49839875F187 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DADFEE3B8544C4C9371469A /* SettingsView.swift */; };
+		76CCD424B2644BEE9E39A4D8 /* UsersListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F34CFDC0816B4305BF6EDB66 /* UsersListView.swift */; };
+		7FEA9B9EBF8046D29ECC74B3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3632DEC829A5497CA6DEF91E /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		6A60A2D4253E49D194340DC9 /* FreeClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeClawApp.swift; sourceTree = "<group>"; };
-		41C91E95D836491B8E585163 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		84DD4392D1734B0EBEB81185 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
-		ACA4FECB9BD34600B23396D9 /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
-		02D4450A6FAD44C79BE53B3A /* APITypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APITypes.swift; sourceTree = "<group>"; };
-		DF1847CA4ABB4EF9BAB54B07 /* FreeClawClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeClawClient.swift; sourceTree = "<group>"; };
-		7F57A16EC88B4F97A8796FC3 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
-		CB6B3C62563D46BEB9E54D6B /* ServerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerStore.swift; sourceTree = "<group>"; };
-		0AA16315452F4499993FD903 /* ChatComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComponents.swift; sourceTree = "<group>"; };
-		D6D254B77D2B48CF8FE04B40 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
-		40A962E23F234AD58D404E63 /* CommonComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonComponents.swift; sourceTree = "<group>"; };
-		7B094D523A10428491526953 /* ConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectView.swift; sourceTree = "<group>"; };
-		FB6BE84B6553457184AB9E7E /* ConversationsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationsListView.swift; sourceTree = "<group>"; };
-		E9D617949BCA442F8E99EA3F /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
-		F5DDE651549C4D12B61D7D0C /* ReauthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReauthView.swift; sourceTree = "<group>"; };
-		C4888D4060704BFEAD2F3F8C /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
-		0C40C4122EE74C848CF2A3F8 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		9CD509AA6830478E848D88E0 /* UsersListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsersListView.swift; sourceTree = "<group>"; };
-		6A547C77E8624CD08C4BDFC0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		08F33E7F727E4316BC32BF69 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		0BCFD6E182054FC58096239C /* FreeClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FreeClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3257B5A1104F452581BA69E1 /* FreeClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeClawApp.swift; sourceTree = "<group>"; };
+		FAB469CC19734893A0ECADD8 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		7B1107D7F6334FFBBD51A575 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
+		D041B2DAD0CD48ECB1AC332C /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
+		2AE8A90BC7304CBEBF1045E7 /* APITypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APITypes.swift; sourceTree = "<group>"; };
+		75A8643194B54F42B80288B4 /* FreeClawClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeClawClient.swift; sourceTree = "<group>"; };
+		16BB3F6085904FB2B05D3D72 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		F7DC9A6D0796485C94B3D76A /* ServerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerStore.swift; sourceTree = "<group>"; };
+		5C571D92B6F04A8C999D6816 /* SpeechCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechCoordinator.swift; sourceTree = "<group>"; };
+		4B3B2754AACC47DD978C4792 /* ChatComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComponents.swift; sourceTree = "<group>"; };
+		D89265BA96ED4F969BE1AF4A /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		09D631B1F3D14173831D6D79 /* CommonComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonComponents.swift; sourceTree = "<group>"; };
+		4A4B45CC76AF4943A85A99B9 /* ConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectView.swift; sourceTree = "<group>"; };
+		B0FFB7F59EF946738D7095F2 /* ConversationsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationsListView.swift; sourceTree = "<group>"; };
+		CAF31EE7E7414D54A27E8F5B /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
+		A2B49BFA03E8427DA8B829DE /* ReauthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReauthView.swift; sourceTree = "<group>"; };
+		3425DD1CDDDE462E9C2B9DA3 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		2DADFEE3B8544C4C9371469A /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		F34CFDC0816B4305BF6EDB66 /* UsersListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsersListView.swift; sourceTree = "<group>"; };
+		3632DEC829A5497CA6DEF91E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		FEBADB9C73B144679376FBFB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C788AB8899534E79BC762200 /* FreeClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FreeClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		A82D46D3F6FD467D81749B1E /* Frameworks */ = {
+		952D3FB7C8374D17AF325443 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -63,83 +65,92 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		6954CC6E4E0A404385429930 /* Models */ = {
+		C76C026EEB664233B8B37088 /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				84DD4392D1734B0EBEB81185 /* ChatModels.swift */,
-				ACA4FECB9BD34600B23396D9 /* ServerConfig.swift */,
+				7B1107D7F6334FFBBD51A575 /* ChatModels.swift */,
+				D041B2DAD0CD48ECB1AC332C /* ServerConfig.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
 		};
-		9805F2C74B014DCABF7AA929 /* Networking */ = {
+		7E69F1BA3CA24AAD9C25C1E9 /* Networking */ = {
 			isa = PBXGroup;
 			children = (
-				02D4450A6FAD44C79BE53B3A /* APITypes.swift */,
-				DF1847CA4ABB4EF9BAB54B07 /* FreeClawClient.swift */,
-				7F57A16EC88B4F97A8796FC3 /* KeychainStore.swift */,
-				CB6B3C62563D46BEB9E54D6B /* ServerStore.swift */,
+				2AE8A90BC7304CBEBF1045E7 /* APITypes.swift */,
+				75A8643194B54F42B80288B4 /* FreeClawClient.swift */,
+				16BB3F6085904FB2B05D3D72 /* KeychainStore.swift */,
+				F7DC9A6D0796485C94B3D76A /* ServerStore.swift */,
 			);
 			path = Networking;
 			sourceTree = "<group>";
 		};
-		611F54216A33457085ADFF97 /* Views */ = {
+		24EAB190AC7F411E92C6DB0C /* Speech */ = {
 			isa = PBXGroup;
 			children = (
-				0AA16315452F4499993FD903 /* ChatComponents.swift */,
-				D6D254B77D2B48CF8FE04B40 /* ChatView.swift */,
-				40A962E23F234AD58D404E63 /* CommonComponents.swift */,
-				7B094D523A10428491526953 /* ConnectView.swift */,
-				FB6BE84B6553457184AB9E7E /* ConversationsListView.swift */,
-				E9D617949BCA442F8E99EA3F /* MarkdownText.swift */,
-				F5DDE651549C4D12B61D7D0C /* ReauthView.swift */,
-				C4888D4060704BFEAD2F3F8C /* RootView.swift */,
-				0C40C4122EE74C848CF2A3F8 /* SettingsView.swift */,
-				9CD509AA6830478E848D88E0 /* UsersListView.swift */,
+				5C571D92B6F04A8C999D6816 /* SpeechCoordinator.swift */,
+			);
+			path = Speech;
+			sourceTree = "<group>";
+		};
+		ED07E3A7810341DF865B472A /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				4B3B2754AACC47DD978C4792 /* ChatComponents.swift */,
+				D89265BA96ED4F969BE1AF4A /* ChatView.swift */,
+				09D631B1F3D14173831D6D79 /* CommonComponents.swift */,
+				4A4B45CC76AF4943A85A99B9 /* ConnectView.swift */,
+				B0FFB7F59EF946738D7095F2 /* ConversationsListView.swift */,
+				CAF31EE7E7414D54A27E8F5B /* MarkdownText.swift */,
+				A2B49BFA03E8427DA8B829DE /* ReauthView.swift */,
+				3425DD1CDDDE462E9C2B9DA3 /* RootView.swift */,
+				2DADFEE3B8544C4C9371469A /* SettingsView.swift */,
+				F34CFDC0816B4305BF6EDB66 /* UsersListView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
 		};
-		AA3794079CCB44C288A46766 /* FreeClaw */ = {
+		D5C2FD21E20F4FE09E390A19 /* FreeClaw */ = {
 			isa = PBXGroup;
 			children = (
-				6A60A2D4253E49D194340DC9 /* FreeClawApp.swift */,
-				41C91E95D836491B8E585163 /* Theme.swift */,
-				6954CC6E4E0A404385429930 /* Models */,
-				9805F2C74B014DCABF7AA929 /* Networking */,
-				611F54216A33457085ADFF97 /* Views */,
-				6A547C77E8624CD08C4BDFC0 /* Assets.xcassets */,
-				08F33E7F727E4316BC32BF69 /* Info.plist */,
+				3257B5A1104F452581BA69E1 /* FreeClawApp.swift */,
+				FAB469CC19734893A0ECADD8 /* Theme.swift */,
+				C76C026EEB664233B8B37088 /* Models */,
+				7E69F1BA3CA24AAD9C25C1E9 /* Networking */,
+				24EAB190AC7F411E92C6DB0C /* Speech */,
+				ED07E3A7810341DF865B472A /* Views */,
+				3632DEC829A5497CA6DEF91E /* Assets.xcassets */,
+				FEBADB9C73B144679376FBFB /* Info.plist */,
 			);
 			path = FreeClaw;
 			sourceTree = "<group>";
 		};
-		B9091CB0BCFA4ADF927E2C02 /* Products */ = {
+		FA33A9F3906A47B98E0ABB89 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				0BCFD6E182054FC58096239C /* FreeClaw.app */,
+				C788AB8899534E79BC762200 /* FreeClaw.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
-		4BA3063B58C54829A08598EB = {
+		84686F0D05164165BD1A8AF7 = {
 			isa = PBXGroup;
 			children = (
-				AA3794079CCB44C288A46766 /* FreeClaw */,
-				B9091CB0BCFA4ADF927E2C02 /* Products */,
+				D5C2FD21E20F4FE09E390A19 /* FreeClaw */,
+				FA33A9F3906A47B98E0ABB89 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		5DB11232251E41AA925EBA55 /* FreeClaw */ = {
+		200DAD1DA56541D8AD721478 /* FreeClaw */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 5DAAB636ACEB43D0BBAF760F /* Build configuration list for PBXNativeTarget "FreeClaw" */;
+			buildConfigurationList = 0DE1CDBB6B6C4A22A712C3AC /* Build configuration list for PBXNativeTarget "FreeClaw" */;
 			buildPhases = (
-				86B85DE6899D49BBBBA0E011 /* Sources */,
-				A82D46D3F6FD467D81749B1E /* Frameworks */,
-				55054FDE6FDE4CEBB1BE9CAF /* Resources */,
+				57C6B9A7D46C42C88CE573B6 /* Sources */,
+				952D3FB7C8374D17AF325443 /* Frameworks */,
+				9246675DB4C3455CAB1BB160 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -147,25 +158,25 @@
 			);
 			name = FreeClaw;
 			productName = FreeClaw;
-			productReference = 0BCFD6E182054FC58096239C /* FreeClaw.app */;
+			productReference = C788AB8899534E79BC762200 /* FreeClaw.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		BE49F6053EE045628397AD4B /* Project object */ = {
+		CBBD187F49C54E5B97E9542C /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1500;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
-					5DB11232251E41AA925EBA55 = {
+					200DAD1DA56541D8AD721478 = {
 						CreatedOnToolsVersion = 15.0;
 					};
 				};
 			};
-			buildConfigurationList = 4A4740F91D2E4C01968082E8 /* Build configuration list for PBXProject "FreeClaw" */;
+			buildConfigurationList = 0D071603BBF74CED99467FAD /* Build configuration list for PBXProject "FreeClaw" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -173,57 +184,58 @@
 				en,
 				Base,
 			);
-			mainGroup = 4BA3063B58C54829A08598EB;
-			productRefGroup = B9091CB0BCFA4ADF927E2C02 /* Products */;
+			mainGroup = 84686F0D05164165BD1A8AF7;
+			productRefGroup = FA33A9F3906A47B98E0ABB89 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				5DB11232251E41AA925EBA55 /* FreeClaw */,
+				200DAD1DA56541D8AD721478 /* FreeClaw */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		55054FDE6FDE4CEBB1BE9CAF /* Resources */ = {
+		9246675DB4C3455CAB1BB160 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				6F5C5507484E4F228E28FF10 /* Assets.xcassets in Resources */,
+				7FEA9B9EBF8046D29ECC74B3 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		86B85DE6899D49BBBBA0E011 /* Sources */ = {
+		57C6B9A7D46C42C88CE573B6 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AC45A291F2B64C59A39BB5B0 /* FreeClawApp.swift in Sources */,
-				6A613CCDD34F4CCBADA3790B /* Theme.swift in Sources */,
-				37C4205B5CA9442D90FAF86A /* ChatModels.swift in Sources */,
-				013259080871494F9D9A1198 /* ServerConfig.swift in Sources */,
-				09683DEF447941C8A0F19535 /* APITypes.swift in Sources */,
-				20EE69F9BC094FD29FBC4D56 /* FreeClawClient.swift in Sources */,
-				19E6C365626847CE940094F6 /* KeychainStore.swift in Sources */,
-				63582AF387C44185B20CF782 /* ServerStore.swift in Sources */,
-				EA44791B21AF4ED383810A1E /* ChatComponents.swift in Sources */,
-				7CE69B9875354CC5950BD61A /* ChatView.swift in Sources */,
-				0BE3E86686304F049CE2B565 /* CommonComponents.swift in Sources */,
-				5CB586616B104C6B8CEBEBC6 /* ConnectView.swift in Sources */,
-				C5E8A0AF09014A7FB3A728DE /* ConversationsListView.swift in Sources */,
-				CC90E55639454DDF8253B049 /* MarkdownText.swift in Sources */,
-				8D808BA43849420AB57BA5B9 /* ReauthView.swift in Sources */,
-				21E5C9294E15425BA59601E1 /* RootView.swift in Sources */,
-				62E0A2022DD64B5A90180124 /* SettingsView.swift in Sources */,
-				B8E754F31FA64B74912C5A09 /* UsersListView.swift in Sources */,
+				71DFC3B9EB324966B91CA164 /* FreeClawApp.swift in Sources */,
+				541BF6943B6E4F6EAB2ACC26 /* Theme.swift in Sources */,
+				790681BDB52C4AF8A34BDCC6 /* ChatModels.swift in Sources */,
+				34C1198D044540F18A8D8FEA /* ServerConfig.swift in Sources */,
+				48BDD620E1C4460388020076 /* APITypes.swift in Sources */,
+				C1ADBD20168647949F474FBC /* FreeClawClient.swift in Sources */,
+				B23BEC1BADB24C33A8EA1AD5 /* KeychainStore.swift in Sources */,
+				4B2C869F6C5943E0980C5BF0 /* ServerStore.swift in Sources */,
+				BBA37DDE50E84DC29FB223D4 /* SpeechCoordinator.swift in Sources */,
+				D792A51B66EA4A84BE8D2031 /* ChatComponents.swift in Sources */,
+				C8071DD968DA437B89EAFB48 /* ChatView.swift in Sources */,
+				FA96F4B738F54EB5B946F812 /* CommonComponents.swift in Sources */,
+				E27F3AB3AA514B768E70B01B /* ConnectView.swift in Sources */,
+				7BB6D11B58C94DD594B08534 /* ConversationsListView.swift in Sources */,
+				A1DE9B9BDDDD40A88B9951A2 /* MarkdownText.swift in Sources */,
+				F56BB04D0B6047608B209432 /* ReauthView.swift in Sources */,
+				78081D4D53BC4917BB8B72D8 /* RootView.swift in Sources */,
+				2E7872EF3A4A49839875F187 /* SettingsView.swift in Sources */,
+				76CCD424B2644BEE9E39A4D8 /* UsersListView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		AA4EAFF83BBE43A7B2A01546 /* Debug */ = {
+		DB51FA33CD0C4FFAB730A881 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -254,7 +266,7 @@
 			};
 			name = Debug;
 		};
-		C50F4C63C2314B1FBDD23626 /* Release */ = {
+		41912865B3394103BF55EA2F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -279,7 +291,7 @@
 			};
 			name = Release;
 		};
-		CE9B693795254D6CADB03B6A /* Debug */ = {
+		9320F8D8D7ED4E49BD1CEA9C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -304,7 +316,7 @@
 			};
 			name = Debug;
 		};
-		CAFF4694A97B448B9F80908C /* Release */ = {
+		44480AB6CEB8453188B4F326 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -332,25 +344,25 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		4A4740F91D2E4C01968082E8 /* Build configuration list for PBXProject "FreeClaw" */ = {
+		0D071603BBF74CED99467FAD /* Build configuration list for PBXProject "FreeClaw" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AA4EAFF83BBE43A7B2A01546 /* Debug */,
-				C50F4C63C2314B1FBDD23626 /* Release */,
+				DB51FA33CD0C4FFAB730A881 /* Debug */,
+				41912865B3394103BF55EA2F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		5DAAB636ACEB43D0BBAF760F /* Build configuration list for PBXNativeTarget "FreeClaw" */ = {
+		0DE1CDBB6B6C4A22A712C3AC /* Build configuration list for PBXNativeTarget "FreeClaw" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				CE9B693795254D6CADB03B6A /* Debug */,
-				CAFF4694A97B448B9F80908C /* Release */,
+				9320F8D8D7ED4E49BD1CEA9C /* Debug */,
+				44480AB6CEB8453188B4F326 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = BE49F6053EE045628397AD4B /* Project object */;
+	rootObject = CBBD187F49C54E5B97E9542C /* Project object */;
 }
