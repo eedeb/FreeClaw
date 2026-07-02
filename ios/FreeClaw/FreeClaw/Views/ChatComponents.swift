@@ -4,10 +4,17 @@ enum BubbleRole { case user, agent }
 
 /// A single chat bubble. Used both for finished messages (from
 /// buildDisplayItems) and, with `.agent`, the live-streaming reply in
-/// progress.
+/// progress. `imagePath` is a server-relative path (e.g.
+/// "static/Elliot/conversations/<id>/<file>.jpg") resolved against the
+/// current server's base URL — the request rides on the same shared cookie
+/// jar as the rest of the app, so the authenticated /static/ route just works.
 struct MessageBubble: View {
+    @EnvironmentObject private var store: ServerStore
     var role: BubbleRole
     var text: String
+    var imagePath: String? = nil
+
+    @State private var isShowingFullImage = false
 
     var body: some View {
         VStack(alignment: role == .user ? .trailing : .leading, spacing: 4) {
@@ -16,18 +23,88 @@ struct MessageBubble: View {
                 .tracking(1)
                 .foregroundStyle(role == .user ? FCTheme.accentDim : FCTheme.muted)
 
-            MarkdownText(text)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 10)
-                .background(role == .user ? FCTheme.userBubble : FCTheme.agentBubble)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(role == .user ? FCTheme.userBorder : FCTheme.border, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+            VStack(alignment: .leading, spacing: text.isEmpty ? 0 : 8) {
+                if let imagePath, let url = imageURL(for: imagePath) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .empty:
+                            imagePlaceholder { ProgressView().tint(FCTheme.accent) }
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: 240, maxHeight: 300)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .onTapGesture { isShowingFullImage = true }
+                        case .failure:
+                            imagePlaceholder {
+                                Image(systemName: "photo.badge.exclamationmark")
+                                    .foregroundStyle(FCTheme.muted)
+                            }
+                        @unknown default:
+                            EmptyView()
+                        }
+                    }
+                    .fullScreenCover(isPresented: $isShowingFullImage) {
+                        FullScreenImageView(url: url)
+                    }
+                }
+                if !text.isEmpty {
+                    MarkdownText(text)
+                }
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .background(role == .user ? FCTheme.userBubble : FCTheme.agentBubble)
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(role == .user ? FCTheme.userBorder : FCTheme.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .frame(maxWidth: 320, alignment: role == .user ? .trailing : .leading)
         .frame(maxWidth: .infinity, alignment: role == .user ? .trailing : .leading)
+    }
+
+    private func imageURL(for path: String) -> URL? {
+        store.client.baseURL.appendingPathComponent(path)
+    }
+
+    private func imagePlaceholder<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(FCTheme.surface)
+            .frame(width: 160, height: 160)
+            .overlay(content())
+    }
+}
+
+/// Full-screen, tap-to-dismiss viewer for a bubble's attached image.
+private struct FullScreenImageView: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            AsyncImage(url: url) { phase in
+                if case .success(let image) = phase {
+                    image.resizable().scaledToFit()
+                } else {
+                    ProgressView().tint(.white)
+                }
+            }
+        }
+        .onTapGesture { dismiss() }
+        .overlay(alignment: .topTrailing) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.white, .black.opacity(0.4))
+            }
+            .padding()
+        }
     }
 }
 
@@ -37,8 +114,8 @@ struct ChatItemView: View {
 
     var body: some View {
         switch item {
-        case .user(_, let text):
-            MessageBubble(role: .user, text: text)
+        case .user(_, let text, let imagePath):
+            MessageBubble(role: .user, text: text, imagePath: imagePath)
         case .agent(_, let text):
             MessageBubble(role: .agent, text: text)
         case .tool(_, let name, let argsJSON, let resultText, let isError):
@@ -180,14 +257,27 @@ struct ThinkingBubble: View {
 
 /// Pill shown above the input bar while a file is attached/uploading.
 struct AttachmentPreview: View {
+    @EnvironmentObject private var store: ServerStore
     var attachment: PendingAttachment
     var isUploading: Bool
     var onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: attachment.isImage ? "photo" : "doc")
-                .foregroundStyle(FCTheme.accent)
+            if attachment.isImage {
+                AsyncImage(url: store.client.baseURL.appendingPathComponent(attachment.path)) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "photo").foregroundStyle(FCTheme.accent)
+                    }
+                }
+                .frame(width: 28, height: 28)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else {
+                Image(systemName: "doc")
+                    .foregroundStyle(FCTheme.accent)
+            }
             Text(attachment.filename)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color(hex: 0xD8F0A0))

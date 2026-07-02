@@ -213,6 +213,7 @@ struct ChatView: View {
         guard !text.isEmpty || pendingAttachment != nil else { return }
 
         var messageToSend = text
+        let attachmentImagePath = pendingAttachment?.isImage == true ? pendingAttachment?.path : nil
         if let attachment = pendingAttachment {
             let tag = "[File uploaded: \"\(attachment.filename)\" \u{2192} \(attachment.path)]"
             messageToSend = text.isEmpty ? tag : "\(tag)\n\n\(text)"
@@ -224,7 +225,7 @@ struct ChatView: View {
         sendError = nil
         isSending = true
 
-        items.append(.user(id: "local-\(UUID().uuidString)", text: text))
+        items.append(.user(id: "local-\(UUID().uuidString)", text: text, imagePath: attachmentImagePath))
         isThinking = true
 
         do {

@@ -67,13 +67,13 @@ struct RawFunctionCall: Decodable {
 // full conversation snapshot comes back from the server.
 
 enum ChatDisplayItem: Identifiable {
-    case user(id: String, text: String)
+    case user(id: String, text: String, imagePath: String?)
     case agent(id: String, text: String)
     case tool(id: String, name: String, argsJSON: String, resultText: String, isError: Bool)
 
     var id: String {
         switch self {
-        case .user(let id, _), .agent(let id, _):
+        case .user(let id, _, _), .agent(let id, _):
             return id
         case .tool(let id, _, _, _, _):
             return id
@@ -95,7 +95,8 @@ func buildDisplayItems(from messages: [RawMessage]) -> [ChatDisplayItem] {
         counter += 1
 
         if message.role == "user" {
-            items.append(.user(id: "u\(counter)", text: message.content?.plainText ?? ""))
+            let (caption, imagePath) = parseAttachmentTag(message.content?.plainText ?? "")
+            items.append(.user(id: "u\(counter)", text: caption, imagePath: imagePath))
         } else if message.role == "assistant" {
             for call in message.toolCalls ?? [] {
                 let resultText = toolResults[call.id] ?? "(no result)"
@@ -123,4 +124,34 @@ struct PendingAttachment: Equatable {
     var filename: String
     var path: String
     var isImage: Bool
+}
+
+private let attachmentTagPrefix = "[File uploaded: \""
+private let attachmentImageExtensions: Set<String> = [
+    "jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "bmp", "tiff", "tif"
+]
+
+/// Recognizes the `[File uploaded: "name" → path]` tag ChatView embeds when
+/// sending an attachment (see ChatView.send()), and — if the path looks
+/// like an image — pulls the path out so the bubble can render it inline
+/// instead of showing the raw tag text. Falls back to the original text
+/// untouched for anything that doesn't match (non-image attachments, plain
+/// messages, or chats created from the web UI with other file types).
+func parseAttachmentTag(_ text: String) -> (caption: String, imagePath: String?) {
+    guard text.hasPrefix(attachmentTagPrefix) else { return (text, nil) }
+    let afterPrefix = text.dropFirst(attachmentTagPrefix.count)
+    guard let arrowRange = afterPrefix.range(of: "\" \u{2192} ") else { return (text, nil) }
+
+    let afterArrow = afterPrefix[arrowRange.upperBound...]
+    guard let closeBracket = afterArrow.firstIndex(of: "]") else { return (text, nil) }
+    let path = String(afterArrow[afterArrow.startIndex..<closeBracket])
+
+    let ext = path.split(separator: ".").last.map { $0.lowercased() } ?? ""
+    guard attachmentImageExtensions.contains(ext) else { return (text, nil) }
+
+    var caption = String(afterArrow[afterArrow.index(after: closeBracket)...])
+    if caption.hasPrefix("\n\n") { caption.removeFirst(2) }
+    caption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    return (caption, path)
 }

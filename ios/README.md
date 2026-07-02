@@ -33,9 +33,11 @@ From there:
 - **Chats** — tap a user to see their conversations; swipe to delete, tap
   the compose icon for a new chat.
 - **Chat** — streams responses token-by-token exactly like the web UI,
-  shows tool calls as collapsible cards you can tap open, supports
-  attaching a file (including images) via the paperclip button, and has a
-  reset button in the toolbar.
+  shows tool calls as collapsible cards you can tap open, and has a reset
+  button in the toolbar. Attach a photo via the photo-library button;
+  it uploads immediately and renders inline in the bubble (both your own
+  outgoing message and, after a reload, the same bubble reconstructed from
+  the server's saved conversation) — tap an image to view it full-screen.
 - **Settings** (gear icon on the home screen) — log out, or forget the
   server entirely to connect to a different one.
 
@@ -61,3 +63,7 @@ a "log in again" screen if the session ever expires server-side.
   logo ever changes.
 - The attach button opens the Photos library (`PhotosPicker`), so it only
   handles images — there's no general Files-app document picker.
+- Inline images load via the server's `/static/<path>` route, which
+  requires the session cookie — that works because `AsyncImage` and the
+  app's own API client both read/write `HTTPCookieStorage.shared`, so the
+  login cookie is visible to both automatically.
