@@ -1,5 +1,12 @@
 import Foundation
 
+/// A user + conversation the widget (or any other deep link) wants the app
+/// to open directly into, with voice mode already active.
+struct PendingVoiceTarget: Equatable {
+    let user: String
+    let conversationId: String
+}
+
 /// App-wide connection state: which server we're pointed at, whether we're
 /// currently authenticated against it, and the shared API client. Lives for
 /// the lifetime of the app as an environment object.
@@ -8,6 +15,7 @@ final class ServerStore: ObservableObject {
     @Published private(set) var config: ServerConfig?
     @Published private(set) var isAuthenticated = false
     @Published var connectionError: String?
+    @Published var pendingVoiceTarget: PendingVoiceTarget?
 
     let client = FreeClawClient()
 
@@ -15,9 +23,15 @@ final class ServerStore: ObservableObject {
     private let httpsKey = "fc.server.useHTTPS"
     private let passwordKey = "fc.server.password"
 
+    // Shared with the widget extension via the App Group so it can read the
+    // server address without the user having to configure it twice. Falls
+    // back to `.standard` if the App Group entitlement isn't set up yet,
+    // rather than crashing.
+    private let defaults = UserDefaults(suiteName: "group.dev.eedeb.freeclaw") ?? .standard
+
     init() {
-        if let address = UserDefaults.standard.string(forKey: addressKey), !address.isEmpty {
-            let cfg = ServerConfig(address: address, useHTTPS: UserDefaults.standard.bool(forKey: httpsKey))
+        if let address = defaults.string(forKey: addressKey), !address.isEmpty {
+            let cfg = ServerConfig(address: address, useHTTPS: defaults.bool(forKey: httpsKey))
             config = cfg
             client.configure(baseURL: cfg.baseURL)
         }
@@ -39,8 +53,8 @@ final class ServerStore: ObservableObject {
                 return false
             }
             config = cfg
-            UserDefaults.standard.set(address, forKey: addressKey)
-            UserDefaults.standard.set(useHTTPS, forKey: httpsKey)
+            defaults.set(address, forKey: addressKey)
+            defaults.set(useHTTPS, forKey: httpsKey)
             KeychainStore.set(password, for: passwordKey)
             isAuthenticated = true
             return true
@@ -77,8 +91,8 @@ final class ServerStore: ObservableObject {
     }
 
     func forgetServer() {
-        UserDefaults.standard.removeObject(forKey: addressKey)
-        UserDefaults.standard.removeObject(forKey: httpsKey)
+        defaults.removeObject(forKey: addressKey)
+        defaults.removeObject(forKey: httpsKey)
         KeychainStore.delete(passwordKey)
         client.clearSession()
         config = nil

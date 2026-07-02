@@ -9,9 +9,10 @@ struct UsersListView: View {
     @State private var errorMessage: String?
     @State private var showAddUser = false
     @State private var newUserName = ""
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ZStack {
                 FCTheme.background.ignoresSafeArea()
                 content
@@ -34,7 +35,13 @@ struct UsersListView: View {
                 }
             }
             .refreshable { await load() }
-            .task { await load() }
+            .task {
+                await load()
+                consumePendingDeepLinkIfPossible()
+            }
+            .onChange(of: store.pendingVoiceTarget) { _ in
+                consumePendingDeepLinkIfPossible()
+            }
             .navigationDestination(for: UserSummary.self) { user in
                 ConversationsListView(user: user.name)
             }
@@ -46,6 +53,16 @@ struct UsersListView: View {
                 Text("Letters, numbers, spaces, - or _")
             }
         }
+    }
+
+    /// If a widget deep link is waiting and its user is in the loaded list,
+    /// push straight to that user's conversation list (which itself opens
+    /// the right conversation — see ConversationsListView).
+    private func consumePendingDeepLinkIfPossible() {
+        guard let target = store.pendingVoiceTarget,
+              let matchedUser = users.first(where: { $0.name == target.user })
+        else { return }
+        path.append(matchedUser)
     }
 
     @ViewBuilder

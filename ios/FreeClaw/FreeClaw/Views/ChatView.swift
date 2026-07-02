@@ -10,6 +10,7 @@ struct ChatView: View {
     let user: String
     let conversationId: String
     @State var title: String
+    var autoStartVoiceMode: Bool = false
 
     @State private var items: [ChatDisplayItem] = []
     @State private var isLoading = true
@@ -88,11 +89,14 @@ struct ChatView: View {
             isVoiceModeEnabled = false
             speech.deactivateSession()
         } else {
-            Task {
-                if await speech.requestPermissions() {
-                    isVoiceModeEnabled = true
-                }
-            }
+            Task { await enableVoiceMode() }
+        }
+    }
+
+    private func enableVoiceMode() async {
+        guard !isVoiceModeEnabled else { return }
+        if await speech.requestPermissions() {
+            isVoiceModeEnabled = true
         }
     }
 
@@ -327,6 +331,9 @@ struct ChatView: View {
                 title = activeTitle
             }
             items = buildDisplayItems(from: active.messages)
+            if autoStartVoiceMode {
+                await enableVoiceMode()
+            }
         } catch {
             if case FreeClawError.unauthorized = error {
                 store.sessionExpired()

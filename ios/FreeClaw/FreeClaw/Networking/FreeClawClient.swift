@@ -2,26 +2,32 @@ import Foundation
 
 /// Talks to a single FreeClaw agent (Flask/main.py). Auth is a session
 /// cookie set by POST /login — there's no bearer token for the normal UI
-/// routes, so this client relies on URLSession's shared cookie storage the
-/// same way a browser would.
+/// routes, so this client relies on cookie storage the same way a browser
+/// would. Cookie storage is scoped to the shared App Group container (not
+/// `.shared`) so a login here is also visible to the widget extension's own
+/// `FreeClawClient` instance — both must use this same group identifier.
 final class FreeClawClient: NSObject {
     private(set) var baseURL: URL = URL(string: "http://localhost")!
     private var session: URLSession!
     private var noRedirectSession: URLSession!
+    private let cookieStorage = HTTPCookieStorage(forGroupContainerIdentifier: "group.dev.eedeb.freeclaw")
 
-    override init() {
+    /// `timeoutInterval` defaults to 20s for the main app; the widget
+    /// extension passes a shorter value so an unreachable LAN server fails
+    /// fast instead of stalling the widget configuration UI.
+    init(timeoutInterval: TimeInterval = 20) {
         super.init()
         let config = URLSessionConfiguration.default
-        config.httpCookieStorage = HTTPCookieStorage.shared
-        config.timeoutIntervalForRequest = 20
+        config.httpCookieStorage = cookieStorage
+        config.timeoutIntervalForRequest = timeoutInterval
         session = URLSession(configuration: config)
 
         // A second session, with redirects disabled, purely to observe the
         // 302 Flask sends on a successful /login (vs. the 200 it sends back
         // when re-rendering login.html with an error).
         let noRedirectConfig = URLSessionConfiguration.default
-        noRedirectConfig.httpCookieStorage = HTTPCookieStorage.shared
-        noRedirectConfig.timeoutIntervalForRequest = 20
+        noRedirectConfig.httpCookieStorage = cookieStorage
+        noRedirectConfig.timeoutIntervalForRequest = timeoutInterval
         noRedirectSession = URLSession(configuration: noRedirectConfig, delegate: self, delegateQueue: nil)
     }
 
@@ -30,8 +36,8 @@ final class FreeClawClient: NSObject {
     }
 
     func clearSession() {
-        for cookie in HTTPCookieStorage.shared.cookies(for: baseURL) ?? [] {
-            HTTPCookieStorage.shared.deleteCookie(cookie)
+        for cookie in cookieStorage.cookies(for: baseURL) ?? [] {
+            cookieStorage.deleteCookie(cookie)
         }
     }
 

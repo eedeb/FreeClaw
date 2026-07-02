@@ -12,6 +12,7 @@ struct ConversationsListView: View {
     @State private var isCreating = false
     @State private var selectedConversation: ConversationSummary?
     @State private var showChat = false
+    @State private var openedViaDeepLink = false
 
     var body: some View {
         ZStack {
@@ -37,12 +38,32 @@ struct ConversationsListView: View {
             }
         }
         .refreshable { await load() }
-        .task { await load() }
+        .task {
+            await load()
+            consumePendingDeepLinkIfPossible()
+        }
         .navigationDestination(isPresented: $showChat) {
             if let selectedConversation {
-                ChatView(user: user, conversationId: selectedConversation.id, title: selectedConversation.title)
+                ChatView(
+                    user: user,
+                    conversationId: selectedConversation.id,
+                    title: selectedConversation.title,
+                    autoStartVoiceMode: openedViaDeepLink
+                )
             }
         }
+    }
+
+    /// If a widget deep link is waiting for this user and points at one of
+    /// the conversations we just loaded, open it exactly as a manual tap
+    /// would, but flagged so ChatView starts voice mode automatically.
+    private func consumePendingDeepLinkIfPossible() {
+        guard let target = store.pendingVoiceTarget, target.user == user,
+              let matched = conversations.first(where: { $0.id == target.conversationId })
+        else { return }
+        openedViaDeepLink = true
+        store.pendingVoiceTarget = nil
+        open(matched)
     }
 
     @ViewBuilder
