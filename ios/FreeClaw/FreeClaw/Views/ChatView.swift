@@ -384,7 +384,7 @@ struct ChatView: View {
             isStreamingText = true
             streamingText += piece
             if isVoiceModeEnabled { speech.appendReplyToken(piece) }
-        case .toolCall(let name):
+        case .toolCall(let name, let url):
             isStreamingText = false
             streamingText = ""
             isThinking = false
@@ -395,6 +395,14 @@ struct ChatView: View {
             // buffered before this point belongs to a bubble the chat UI
             // itself discards, so drop it rather than speak it.
             if isVoiceModeEnabled { speech.discardPendingReply() }
+            // open_webpage/open_app run entirely client-side: the backend
+            // can't reach the user's device, so it just reports the url
+            // and leaves the actual opening to us. UIApplication.open
+            // launches Safari for http(s) links and the matching app for
+            // a custom URI scheme.
+            if (name == "open_webpage" || name == "open_app"), let url, let target = URL(string: url) {
+                UIApplication.shared.open(target)
+            }
         case .toolResult:
             isToolRunning = false
             liveToolName = nil

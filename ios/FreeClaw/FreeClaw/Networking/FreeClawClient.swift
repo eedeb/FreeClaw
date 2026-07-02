@@ -197,7 +197,7 @@ final class FreeClawClient: NSObject {
     private static func streamEvent(from raw: RawEvent) -> ChatStreamEvent {
         switch raw.type {
         case "token": return .token(raw.text ?? "")
-        case "tool_call": return .toolCall(name: raw.name ?? "tool")
+        case "tool_call": return .toolCall(name: raw.name ?? "tool", url: raw.arguments?.url)
         case "tool_result": return .toolResult(name: raw.name ?? "tool")
         case "error": return .error(raw.error ?? "Unknown error")
         case "done": return .done(raw.conversation ?? [])

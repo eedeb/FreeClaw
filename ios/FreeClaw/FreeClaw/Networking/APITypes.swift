@@ -51,13 +51,20 @@ struct RawEvent: Decodable {
     var name: String?
     var error: String?
     var conversation: [RawMessage]?
+    var arguments: ToolArguments?
+}
+
+/// Tool-call arguments vary by tool; we only need `url` (open_webpage /
+/// open_app), so the rest of the payload is decoded and discarded.
+struct ToolArguments: Decodable {
+    var url: String?
 }
 
 // MARK: - Stream events surfaced to the UI
 
 enum ChatStreamEvent {
     case token(String)
-    case toolCall(name: String)
+    case toolCall(name: String, url: String?)
     case toolResult(name: String)
     case error(String)
     case done([RawMessage])
