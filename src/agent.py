@@ -403,26 +403,12 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
         {
             "type": "function",
             "function": {
-                "name": "open_webpage",
-                "description": "Allows you to open a webpage on the user's machine",
+                "name": "open_url",
+                "description": "Allows you to open a URL or URI on the user's machine. Use this to open webpages or apps with a URI. Also use it for other URI tools such as texting or calling.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "url": { "type": "string", "description": "url to open" }
-                    },
-                    "required": ["url"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "open_app",
-                "description": "Allows you to open an app on the user's machine using a URI scheme.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": { "type": "string", "description": "URI scheme to open" }
                     },
                     "required": ["url"]
                 }
@@ -887,14 +873,11 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             data=args_dict.get('data')
             output=home_assistant.execute_action(domain, service, data)
             yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'open_webpage':
+        elif command_name == 'open_url':
             # Actually opening the tab happens client-side — the frontend
             # listens for the "tool_call" SSE event (which already carries
             # this url in evt.arguments) and calls window.open() on it.
-            yield from agent_stream(tool_input="Webpage opened: "+args_dict.get('url', ''), tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'open_app':
-            # Same as open_webpage — the frontend does the actual open.
-            yield from agent_stream(tool_input="App opened: "+args_dict.get('url', ''), tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="URL opened: "+args_dict.get('url', ''), tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'run_bash_command':
             print(parameter)
             run_command='y'
