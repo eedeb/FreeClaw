@@ -98,13 +98,8 @@ step "1" "Cloning repository..."
 section_gap
 info "Fetching from github.com/eedeb/FreeClaw"
 
-# --filter=blob:none + sparse-checkout means the ios/ folder (the native
-# mobile client's Xcode project and Swift source) is never fetched at
-# all — it's not needed to run the server, so there's no reason to pull
-# it down onto every headless install.
-git clone --filter=blob:none --sparse https://github.com/eedeb/FreeClaw 2>&1 | sed 's/^/       /'
+git clone https://github.com/eedeb/FreeClaw 2>&1 | sed 's/^/       /'
 cd FreeClaw || exit 1
-git sparse-checkout set --no-cone '/*' '!/ios/' 2>&1 | sed 's/^/       /'
 success "Repository ready"
 
 section_gap
