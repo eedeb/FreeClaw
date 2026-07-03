@@ -500,14 +500,14 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             else:
                 eco_messages=agent_messages
             model="openai/gpt-oss-20b"
-            check_tools=None
+            #check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
             if len(agent_messages) > 7:
                 eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
             model="openai/gpt-oss-20b"
-            check_tools=None
+            #check_tools=None
         elif tag == 'Search':
             temp=0.4
             if len(agent_messages) > 7:
