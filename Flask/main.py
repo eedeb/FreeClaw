@@ -62,7 +62,7 @@ agent_lock = threading.Lock()
 # path agent.context_path currently points to — calling it before a user/
 # chat has been selected would create a stray context.md directly in
 # static/ instead of inside a user's folder. The client + tool list get
-# initialized lazily, scoped correctly, the first time new_conversation()
+# initialized lazily, scoped correctly, the first time ensure_conversation()
 # or activate_session() runs (both call set_static_dir/set_context_path
 # before reset()).
 
@@ -90,23 +90,50 @@ def user_dir(name):
     return os.path.join(STATIC_DIR, name) + os.sep
 
 
-def conversations_dir(name):
-    path = os.path.join(user_dir(name), CONVERSATIONS_SUBDIR)
+def conversation_path(name):
+    return os.path.join(user_dir(name), "conversation.json")
+
+
+def conv_files_dir(name):
+    """Folder where this user's created/uploaded files live, e.g.
+    static/<user>/files/. Kept separate from the conversation's metadata
+    JSON file."""
+    path = os.path.join(user_dir(name), "files")
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def conversation_path(name, conv_id):
-    return os.path.join(conversations_dir(name), conv_id + ".json")
-
-
-def conv_files_dir(name, conv_id):
-    """Folder where this specific chat's created/uploaded files live, e.g.
-    static/<user>/conversations/<conv_id>/. Kept separate from the
-    conversation's metadata JSON file."""
-    path = os.path.join(conversations_dir(name), conv_id)
-    os.makedirs(path, exist_ok=True)
-    return path
+def _migrate_legacy_conversations(name):
+    """Older versions of FreeClaw gave each user many chats, stored as
+    static/<user>/conversations/<id>.json (each with its own files/
+    subfolder). Now every user has exactly one conversation, so collapse
+    that down: keep the most recently updated chat's history and files as
+    this user's single conversation, and drop the rest."""
+    legacy_dir = os.path.join(user_dir(name), CONVERSATIONS_SUBDIR)
+    if not os.path.isdir(legacy_dir):
+        return
+    latest_id, latest_data, latest_ts = None, None, -1
+    for fname in os.listdir(legacy_dir):
+        if not fname.endswith(".json"):
+            continue
+        conv_id = fname[:-5]
+        try:
+            with open(os.path.join(legacy_dir, fname), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        ts = data.get("updated_at", 0)
+        if ts > latest_ts:
+            latest_id, latest_data, latest_ts = conv_id, data, ts
+    if latest_data is not None and not os.path.exists(conversation_path(name)):
+        with open(conversation_path(name), "w", encoding="utf-8") as f:
+            json.dump(latest_data, f)
+        legacy_files_dir = os.path.join(legacy_dir, latest_id)
+        if os.path.isdir(legacy_files_dir):
+            dest = conv_files_dir(name)
+            for item in os.listdir(legacy_files_dir):
+                shutil.move(os.path.join(legacy_files_dir, item), os.path.join(dest, item))
+    shutil.rmtree(legacy_dir, ignore_errors=True)
 
 
 def user_context_path(name):
@@ -159,38 +186,17 @@ def create_user(name):
     if not os.path.exists(ctx_path):
         with open(ctx_path, "w", encoding="utf-8") as f:
             f.write("")
-    os.makedirs(conversations_dir(name), exist_ok=True)
+    ensure_conversation(name)
 
 
-def list_conversations(name):
-    convs = []
-    cdir = conversations_dir(name)
-    for fname in os.listdir(cdir):
-        if not fname.endswith(".json"):
-            continue
-        conv_id = fname[:-5]
-        try:
-            with open(os.path.join(cdir, fname), "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
-        convs.append({
-            "id": conv_id,
-            "title": data.get("title") or "New chat",
-            "updated_at": data.get("updated_at", 0)
-        })
-    convs.sort(key=lambda c: c["updated_at"], reverse=True)
-    return convs
-
-
-def load_conversation(name, conv_id):
-    path = conversation_path(name, conv_id)
+def load_conversation(name):
+    path = conversation_path(name)
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_conversation(name, conv_id, messages, title=None):
-    path = conversation_path(name, conv_id)
+def save_conversation(name, messages, title=None):
+    path = conversation_path(name)
     data = {}
     if os.path.exists(path):
         try:
@@ -220,27 +226,27 @@ def derive_title(messages):
     return "New chat"
 
 
-def new_conversation(name):
-    """Creates a fresh conversation for `name`, builds its system-prompt
-    messages via agent.reset() (file tools scoped to this chat's own
-    folder, long-term memory scoped to the user's context.md), and
-    persists it to disk. Returns the new conversation id."""
-    conv_id = uuid.uuid4().hex[:12]
-    agent.set_static_dir(conv_files_dir(name, conv_id))
-    agent.set_context_path(user_context_path(name))
-    agent.reset()
-    save_conversation(name, conv_id, agent.get_messages(), title="New chat")
-    return conv_id
+def ensure_conversation(name):
+    """Make sure `name` has a conversation.json, migrating an older
+    multi-chat layout if one is found, or creating a fresh conversation
+    (via agent.reset(), scoped to this user's own files folder and
+    long-term context.md) if there's nothing to migrate."""
+    _migrate_legacy_conversations(name)
+    if not os.path.exists(conversation_path(name)):
+        agent.set_static_dir(conv_files_dir(name))
+        agent.set_context_path(user_context_path(name))
+        agent.reset()
+        save_conversation(name, agent.get_messages(), title="New chat")
 
 
-def activate_session(name, conv_id):
-    """Point the agent module's globals at this chat's file folder and
-    this user's long-term context.md, and load this conversation's saved
-    messages so the next agent_stream() call continues the right thread
-    of conversation."""
-    agent.set_static_dir(conv_files_dir(name, conv_id))
+def activate_session(name):
+    """Point the agent module's globals at this user's file folder and
+    long-term context.md, and load their saved conversation messages so
+    the next agent_stream() call continues the right thread."""
+    ensure_conversation(name)
+    agent.set_static_dir(conv_files_dir(name))
     agent.set_context_path(user_context_path(name))
-    data = load_conversation(name, conv_id)
+    data = load_conversation(name)
     agent.set_messages(data.get("messages", []))
 
 
@@ -248,14 +254,6 @@ def current_user():
     name = session.get("current_user")
     if name and user_exists(name):
         return name
-    return None
-
-
-def current_conv():
-    name = current_user()
-    conv_id = session.get("current_conv")
-    if name and conv_id and os.path.exists(conversation_path(name, conv_id)):
-        return conv_id
     return None
 
 
@@ -296,9 +294,7 @@ def api_list_users():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        users = []
-        for name in list_users():
-            users.append({'name': name, 'chat_count': len(list_conversations(name))})
+        users = [{'name': name} for name in list_users()]
         return jsonify({'users': users, 'static_dir': STATIC_DIR})
     except Exception as e:
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
@@ -333,45 +329,6 @@ def api_delete_user(name):
         # so we don't keep pointing at a now-missing conversation.
         if session.get('current_user') == name:
             session.pop('current_user', None)
-            session.pop('current_conv', None)
-    return jsonify({'ok': True})
-
-
-@app.route('/api/users/<name>/conversations', methods=['GET'])
-def api_list_conversations(name):
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not user_exists(name):
-        return jsonify({'error': 'No such user'}), 404
-    return jsonify({'conversations': list_conversations(name)})
-
-
-@app.route('/api/users/<name>/conversations', methods=['POST'])
-def api_create_conversation(name):
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not user_exists(name):
-        return jsonify({'error': 'No such user'}), 404
-    with agent_lock:
-        conv_id = new_conversation(name)
-    return jsonify({'id': conv_id})
-
-
-@app.route('/api/users/<name>/conversations/<conv_id>', methods=['DELETE'])
-def api_delete_conversation(name, conv_id):
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not user_exists(name):
-        return jsonify({'error': 'No such user'}), 404
-    path = conversation_path(name, conv_id)
-    if not os.path.exists(path):
-        return jsonify({'error': 'No such chat'}), 404
-    with agent_lock:
-        # Remove the metadata file and this chat's own files/ folder.
-        os.remove(path)
-        shutil.rmtree(conv_files_dir(name, conv_id), ignore_errors=True)
-        if session.get('current_user') == name and session.get('current_conv') == conv_id:
-            session.pop('current_conv', None)
     return jsonify({'ok': True})
 
 
@@ -379,13 +336,13 @@ def api_delete_conversation(name, conv_id):
 def api_get_conversation():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
-    name, conv_id = current_user(), current_conv()
-    if not name or not conv_id:
+    name = current_user()
+    if not name:
         return jsonify({'error': 'No active conversation'}), 400
-    data = load_conversation(name, conv_id)
+    ensure_conversation(name)
+    data = load_conversation(name)
     return jsonify({
         'user': name,
-        'id': conv_id,
         'title': data.get('title'),
         'messages': data.get('messages', [])
     })
@@ -395,19 +352,17 @@ def api_get_conversation():
 
 @app.route('/chat', methods=['GET'])
 def open_chat():
-    """ip:6767/chat?user=Elliot&conv=<id> — selects which agent/conversation
+    """ip:6767/chat?user=Elliot — selects which user's (single) conversation
     subsequent requests in this browser session talk to, then serves the
     chat UI."""
     if not logged_in():
         return redirect(url_for('login'))
 
     name = safe_username(request.args.get('user', ''))
-    conv_id = request.args.get('conv', '')
 
-    if name and user_exists(name) and conv_id and os.path.exists(conversation_path(name, conv_id)):
+    if name and user_exists(name):
         session['current_user'] = name
-        session['current_conv'] = conv_id
-    elif not current_user() or not current_conv():
+    elif not current_user():
         return redirect(url_for('index'))
 
     return render_template('chat.html')
@@ -418,8 +373,8 @@ def chat():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
 
-    name, conv_id = current_user(), current_conv()
-    if not name or not conv_id:
+    name = current_user()
+    if not name:
         return jsonify({'error': 'No active conversation selected'}), 400
 
     data = request.get_json()
@@ -430,9 +385,9 @@ def chat():
     # Slash-commands stay as quick, plain JSON responses — no need to stream these.
     if user_input.lower() == '/reset':
         with agent_lock:
-            activate_session(name, conv_id)
+            activate_session(name)
             agent.reset()
-            save_conversation(name, conv_id, agent.get_messages())
+            save_conversation(name, agent.get_messages())
         return jsonify({'response': 'Agent reset successfully'})
     elif user_input.lower() == '/startapi':
         open(_API_FLAG, 'w').close()
@@ -444,10 +399,10 @@ def chat():
 
     def generate():
         with agent_lock:
-            activate_session(name, conv_id)
+            activate_session(name)
             had_title = False
             try:
-                with open(conversation_path(name, conv_id), "r", encoding="utf-8") as f:
+                with open(conversation_path(name), "r", encoding="utf-8") as f:
                     had_title = bool(json.load(f).get("title", "") not in (None, "", "New chat"))
             except (OSError, json.JSONDecodeError):
                 had_title = False
@@ -456,7 +411,7 @@ def chat():
                     yield f"data: {json.dumps(event)}\n\n"
                 messages = agent.get_messages()
                 title = None if had_title else derive_title(messages)
-                save_conversation(name, conv_id, messages, title=title)
+                save_conversation(name, messages, title=title)
                 yield f"data: {json.dumps({'type': 'done', 'conversation': messages})}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
@@ -470,12 +425,12 @@ def chat():
 
 @app.route('/reset', methods=['GET', 'POST'])
 def reset():
-    name, conv_id = current_user(), current_conv()
-    if name and conv_id:
+    name = current_user()
+    if name:
         with agent_lock:
-            activate_session(name, conv_id)
+            activate_session(name)
             agent.reset()
-            save_conversation(name, conv_id, agent.get_messages())
+            save_conversation(name, agent.get_messages())
     if request.method == 'POST':
         return jsonify({'response': 'Agent reset successfully'})
     return redirect(url_for('index'))
@@ -487,25 +442,24 @@ def upload():
         return jsonify({'error': 'Unauthorized'}), 401
 
     name = current_user()
-    conv_id = current_conv()
-    if not name or not conv_id:
+    if not name:
         return jsonify({'error': 'No active conversation selected'}), 400
 
     file = request.files.get('file')
     if not file or file.filename == '':
         return jsonify({'error': 'No file provided'}), 400
 
-    # Save into this chat's own files folder, preserving extension, with a
+    # Save into this user's own files folder, preserving extension, with a
     # uuid prefix to avoid collisions.
     ext = os.path.splitext(file.filename)[1]
     safe_name = uuid.uuid4().hex + ext
-    dest = os.path.join(conv_files_dir(name, conv_id), safe_name)
+    dest = os.path.join(conv_files_dir(name), safe_name)
     file.save(dest)
 
     # Return the path the agent can reference (relative to app root). Use
     # forward slashes explicitly since this is a URL, not an OS file path
     # (os.path.join would emit backslashes on Windows, breaking <img src>).
-    rel_path = '/'.join(['static', name, CONVERSATIONS_SUBDIR, conv_id, safe_name])
+    rel_path = '/'.join(['static', name, 'files', safe_name])
     return jsonify({'path': rel_path, 'filename': file.filename})
 
 
