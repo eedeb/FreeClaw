@@ -153,6 +153,8 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
             Do not add unnecessary explanations, introductions, or conclusions.
             Focus on solving the user's problem.
 
+            Update your context file with important information that you may need later.
+
             You will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.
             """
             },
@@ -181,6 +183,8 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
 
             Do not add unnecessary explanations, introductions, or conclusions.
             Focus on solving the user's problem.
+
+            Update your context file with important information that you may need later.
             """
             },
             {
