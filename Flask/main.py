@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session, Response, stream_with_context
 import src.agent as agent
+import src.mcp_client as mcp_client
 import uuid
 import json
 import re
@@ -158,6 +159,15 @@ def create_user_with_context(name, context=None):
 
 
 agent.set_user_creator(create_user_with_context)
+
+# Build the agent's tool list now (built-ins + any MCP servers configured in
+# .env) so tools are ready even for the very first request against an existing
+# conversation — which doesn't otherwise trigger agent.reset(). A flaky MCP
+# server must never stop the app from booting.
+try:
+    agent.refresh_tools()
+except Exception as e:
+    print(f"[freeclaw] Warning: couldn't load tools at startup ({e}).")
 
 
 def list_users():
@@ -704,6 +714,96 @@ def api_update_settings():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     return jsonify({'ok': True})
+
+
+# ── MCP SERVERS (env-backed parallel lists) ──────────────────
+
+# Characters that would break the single-quote-wrapped JSON we store in .env,
+# or python-dotenv's parsing. Rejected on input so the round-trip is safe.
+_MCP_BAD_CHARS = ("'", '"', '\n', '\r')
+
+
+def _mcp_server_public(s):
+    """Shape a stored server for the client. The token is write-only — we only
+    report whether one is set, never echo it back."""
+    return {
+        'name': s.get('name', ''),
+        'url': s.get('url', ''),
+        'has_token': bool((s.get('token') or '').strip()),
+    }
+
+
+@app.route('/api/mcp', methods=['GET'])
+def api_list_mcp():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        servers = mcp_client.read_servers()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    return jsonify({'servers': [_mcp_server_public(s) for s in servers]})
+
+
+@app.route('/api/mcp', methods=['POST'])
+def api_add_mcp():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name', '')).strip()
+    url = str(data.get('url', '')).strip()
+    token = str(data.get('token', '')).strip()
+
+    if not name or not url:
+        return jsonify({'error': 'A name and URL are both required.'}), 400
+    if not re.match(r'^https?://', url, re.IGNORECASE):
+        return jsonify({'error': 'URL must start with http:// or https://.'}), 400
+    for field, val in (('name', name), ('URL', url), ('token', token)):
+        if any(c in val for c in _MCP_BAD_CHARS):
+            return jsonify({'error': f'The {field} contains unsupported characters (quotes or newlines).'}), 400
+
+    with agent_lock:
+        servers = mcp_client.read_servers()
+        if any(s.get('name') == name for s in servers):
+            return jsonify({'error': f"An MCP server named '{name}' already exists."}), 409
+        servers.append({'name': name, 'url': url, 'token': token})
+        try:
+            _write_env(mcp_client.servers_to_env(servers))
+        except Exception as e:
+            return jsonify({'error': f'Could not save: {e}'}), 500
+
+        # Verify the server is reachable and pick up its tool count now, so
+        # the user gets immediate feedback instead of a silent no-op.
+        mcp_client.clear_cache()
+        error = None
+        tool_count = 0
+        try:
+            tool_count = len(mcp_client.list_tools({'name': name, 'url': url, 'token': token}))
+        except Exception as e:
+            error = str(e)
+        agent.refresh_tools()
+
+    resp = {'ok': True, 'servers': [_mcp_server_public(s) for s in servers], 'tool_count': tool_count}
+    if error:
+        resp['warning'] = f"Saved, but couldn't reach the server yet: {error}"
+    return jsonify(resp)
+
+
+@app.route('/api/mcp/<name>', methods=['DELETE'])
+def api_delete_mcp(name):
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    with agent_lock:
+        servers = mcp_client.read_servers()
+        remaining = [s for s in servers if s.get('name') != name]
+        if len(remaining) == len(servers):
+            return jsonify({'error': 'No such MCP server'}), 404
+        try:
+            _write_env(mcp_client.servers_to_env(remaining))
+        except Exception as e:
+            return jsonify({'error': f'Could not save: {e}'}), 500
+        mcp_client.clear_cache()
+        agent.refresh_tools()
+    return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in remaining]})
 
 
 if __name__ == '__main__':

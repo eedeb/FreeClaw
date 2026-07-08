@@ -1,4 +1,5 @@
 import json
+import re
 import types
 import Classy
 from openai import OpenAI
@@ -8,6 +9,7 @@ import src.scraper as scraper
 from datetime import datetime
 from json_repair import repair_json
 import src.home_assistant as home_assistant
+import src.mcp_client as mcp_client
 import os
 
 
@@ -61,6 +63,11 @@ client = None
 agent_messages=[]
 tools=[]
 groq=True
+
+# Maps the sanitized function name we expose to the model (e.g.
+# "mcp_github_create_issue") back to the (server, real tool name) needed to
+# actually invoke it. Rebuilt by load_mcp_tools().
+mcp_tool_registry = {}
 
 
 def set_static_dir(path):
@@ -193,14 +200,22 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
             }
         ]
 
+    refresh_tools()
+
+
+def build_base_tools():
+    """Build the list of built-in tool definitions (OpenAI function-calling
+    schema). Kept separate from reset() so the full tool list can be rebuilt
+    at any time — e.g. after the MCP server list changes — without touching
+    the conversation or the LLM client."""
     best_sites = [
         {
             "weather": ["localconditions.com"],
             "news": ["bbc.com", "atoztimes.com"]
         }
     ]
-    
-    tools = [
+
+    return [
         {
             "type": "function",
             "function": {
@@ -371,39 +386,39 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
                 }
             }
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "List_Home_Assistant_Devices",
-                "description": "Returns all of the available devices connected to Home Assistant.",
-                "parameters": { "type": "object", "properties": {} }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Home_Assistant",
-                "description": "Sends directions to the Home Assistant API to control smart devices.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "domain": {
-                            "type": "string",
-                            "description": "switch, light, media_player, fan, lock, etc."
-                        },
-                        "service": {
-                            "type": "string",
-                            "description": "turn_on, turn_off, toggle, play_media, etc."
-                        },
-                        "data": {
-                            "type": "object",
-                            "description": "The JSON header to be sent to the Home Assistant API. This should include the entity_id and any necessary parameters to run the command."
-                        }
-                    },
-                    "required": ["domain","service","data"]
-                }
-            }
-        },
+#        {
+#            "type": "function",
+#            "function": {
+#                "name": "List_Home_Assistant_Devices",
+#                "description": "Returns all of the available devices connected to Home Assistant.",
+#                "parameters": { "type": "object", "properties": {} }
+#            }
+#        },
+#        {
+#            "type": "function",
+#            "function": {
+#                "name": "Home_Assistant",
+#                "description": "Sends directions to the Home Assistant API to control smart devices.",
+#                "parameters": {
+#                    "type": "object",
+#                    "properties": {
+#                        "domain": {
+#                            "type": "string",
+#                            "description": "switch, light, media_player, fan, lock, etc."
+#                        },
+#                        "service": {
+#                            "type": "string",
+#                            "description": "turn_on, turn_off, toggle, play_media, etc."
+#                        },
+#                        "data": {
+#                            "type": "object",
+#                            "description": "The JSON header to be sent to the Home Assistant API. This should include the entity_id and any necessary parameters to run the command."
+#                        }
+#                    },
+#                    "required": ["domain","service","data"]
+#                }
+#            }
+#        },
         {
             "type": "function",
             "function": {
@@ -434,6 +449,66 @@ def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.
         }
     ]   
 
+
+
+def _sanitize_tool_name(name):
+    """OpenAI function names must match ^[A-Za-z0-9_-]+$ and stay short, so
+    scrub anything else out of the MCP-derived name."""
+    cleaned = re.sub(r'[^0-9A-Za-z_-]', '_', name).strip('_') or 'tool'
+    return cleaned[:60]
+
+
+def load_mcp_tools():
+    """Connect to each MCP server configured in .env, fetch its tools, and
+    return them as OpenAI-style function definitions. Also (re)builds
+    mcp_tool_registry, which maps the function name exposed to the model back
+    to the (server, real tool name) needed to actually call it.
+
+    A single unreachable server is logged and skipped rather than taking down
+    the whole tool list."""
+    global mcp_tool_registry
+    registry = {}
+    out = []
+    for server in mcp_client.read_servers():
+        try:
+            server_tools = mcp_client.list_tools(server)
+        except Exception as e:
+            print(f"[mcp] '{server.get('name')}' unavailable: {e}")
+            continue
+        for t in server_tools:
+            real_name = t.get("name")
+            if not real_name:
+                continue
+            fn_name = _sanitize_tool_name(f"mcp_{server.get('name', '')}_{real_name}")
+            # Guarantee uniqueness across servers/tools.
+            base = fn_name
+            n = 1
+            while fn_name in registry:
+                suffix = f"_{n}"
+                fn_name = base[:60 - len(suffix)] + suffix
+                n += 1
+            params = t.get("inputSchema") or {"type": "object", "properties": {}}
+            description = t.get("description") or f"{real_name} (via '{server.get('name')}' MCP server)"
+            out.append({
+                "type": "function",
+                "function": {
+                    "name": fn_name,
+                    "description": description[:1024],
+                    "parameters": params,
+                },
+            })
+            registry[fn_name] = {"server": server, "tool": real_name}
+    mcp_tool_registry = registry
+    return out
+
+
+def refresh_tools():
+    """Rebuild the full tool list = built-in tools + any MCP server tools.
+    Safe to call anytime (e.g. after the MCP server list changes); does not
+    touch the conversation or the LLM client."""
+    global tools
+    tools = build_base_tools() + load_mcp_tools()
+    return tools
 
 
 def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
@@ -681,9 +756,13 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         fixed_tool_args = repair_json(tool_args)
 
         args_dict = json.loads(fixed_tool_args)
+        # MCP (and malformed) tool calls can arrive with a non-object payload;
+        # keep the rest of the dispatch, which assumes a dict, crash-free.
+        if not isinstance(args_dict, dict):
+            args_dict = {}
         parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
         print('Agent called tool: '+command_name)
-        print('Agent parameter: '+parameter if parameter else ' ')
+        print('Agent parameter: '+str(parameter) if parameter else ' ')
         yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
         if command_name == 'save_context':
             contents=args_dict.get('contents')
@@ -902,6 +981,19 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 output='Command was run successfully, Report back to the user.'
             print(output)
             yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
+        elif command_name in mcp_tool_registry:
+            entry = mcp_tool_registry[command_name]
+            server = entry["server"]
+            try:
+                result = mcp_client.call_tool(server, entry["tool"], args_dict)
+            except Exception as e:
+                result = f"Error calling MCP tool '{entry['tool']}' on '{server.get('name')}': {e}"
+            yield from agent_stream(tool_input=result, tool_id=tool_call.id, tool_name=command_name)
+        else:
+            # Unknown tool (e.g. an MCP server that was removed after the
+            # model decided to call it) — reply so the tool_call isn't left
+            # dangling, which would break the next turn.
+            yield from agent_stream(tool_input="Unknown tool: " + command_name, tool_id=tool_call.id, tool_name=command_name)
     elif buffer is not None:
         agent_messages.append(
             {

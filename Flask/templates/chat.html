@@ -608,6 +608,119 @@
 
     .tool-result-ok   { color: #c8e6a0; }
     .tool-result-err  { color: #e07070; }
+
+    /* ── MCP button + sidebar ── */
+    #mcp-btn {
+      display: flex; align-items: center; gap: 4px;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 7px 10px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      -webkit-user-select: none; user-select: none;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    #mcp-btn:hover, #mcp-btn:active { border-color: var(--accent-dim); color: var(--accent); }
+    #mcp-btn .mcp-plus { font-size: 13px; line-height: 1; }
+
+    #mcp-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55);
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.2s ease;
+      z-index: 50;
+    }
+    #mcp-overlay.open { opacity: 1; pointer-events: auto; }
+
+    #mcp-sidebar {
+      position: fixed; top: 0; right: 0; bottom: 0;
+      width: min(400px, 88vw);
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      z-index: 51;
+      transform: translateX(100%);
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+      display: flex; flex-direction: column;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    #mcp-sidebar.open { transform: translateX(0); }
+
+    .mcp-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .mcp-header h2 {
+      font-family: var(--sans); font-size: 13px; font-weight: 700;
+      letter-spacing: 0.12em; text-transform: uppercase; line-height: 1;
+    }
+    .mcp-header .mcp-sub { font-family: var(--mono); font-size: 9px; color: var(--muted); margin-top: 3px; }
+    #mcp-close {
+      margin-left: auto; background: none; border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--muted);
+      font-size: 14px; line-height: 1; padding: 6px 10px; cursor: pointer;
+      transition: border-color 0.15s, color 0.15s; flex-shrink: 0;
+    }
+    #mcp-close:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+    .mcp-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
+    .mcp-body::-webkit-scrollbar { width: 3px; }
+    .mcp-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .mcp-section-label {
+      font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted); margin: 4px 0 10px;
+    }
+    .mcp-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+    .mcp-empty { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 8px 0 14px; }
+
+    .mcp-card {
+      display: flex; align-items: center; gap: 10px;
+      padding: 11px 12px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--bg);
+    }
+    .mcp-card-info { min-width: 0; flex: 1; }
+    .mcp-card-name { font-size: 13px; font-weight: 600; }
+    .mcp-card-url {
+      font-family: var(--mono); font-size: 10px; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .mcp-card-token { font-family: var(--mono); font-size: 9px; color: var(--accent-dim); margin-top: 2px; }
+    .mcp-del {
+      background: none; border: 1px solid var(--border); border-radius: var(--radius);
+      color: var(--muted); font-family: var(--mono); font-size: 10px;
+      padding: 5px 8px; cursor: pointer; flex-shrink: 0; transition: border-color 0.15s, color 0.15s;
+    }
+    .mcp-del.confirm { border-color: rgba(224,85,85,0.5); color: #e05555; }
+
+    .mcp-form {
+      display: flex; flex-direction: column; gap: 8px; margin-top: 6px;
+      border-top: 1px solid var(--border); padding-top: 16px;
+    }
+    .mcp-form input {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text);
+      font-family: var(--mono); font-size: 16px; padding: 9px 11px; outline: none;
+    }
+    .mcp-form input:focus { border-color: var(--accent-dim); }
+    #mcp-add-btn {
+      background: var(--accent); border: none; border-radius: var(--radius);
+      color: #0d0d0f; font-weight: 700; font-size: 12px; padding: 11px; cursor: pointer;
+      transition: transform 0.1s;
+    }
+    #mcp-add-btn:active { transform: scale(0.98); }
+    #mcp-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #mcp-msg { font-family: var(--mono); font-size: 11px; margin-top: 4px; display: none; line-height: 1.5; }
+    #mcp-msg.ok { color: var(--accent); } #mcp-msg.err { color: #e05555; }
   </style>
 </head>
 <body>
@@ -630,6 +743,7 @@
     </div>
     <div class="header-right">
       <span id="token-count">~0 tokens</span>
+      <button id="mcp-btn" title="Add MCP servers"><span class="mcp-plus">+</span>MCP</button>
       <button id="home-btn" title="Back to users">⌂</button>
       <button id="reset-btn">reset</button>
     </div>
@@ -668,6 +782,30 @@
     </div>
   </div>
 </div>
+
+<!-- ── MCP servers sidebar ── -->
+<div id="mcp-overlay"></div>
+<aside id="mcp-sidebar" aria-hidden="true">
+  <div class="mcp-header">
+    <div>
+      <h2>MCP Servers</h2>
+      <div class="mcp-sub">connect external tools to the agent</div>
+    </div>
+    <button id="mcp-close" title="Close">✕</button>
+  </div>
+  <div class="mcp-body">
+    <div class="mcp-section-label">Connected</div>
+    <div id="mcp-list" class="mcp-list"></div>
+    <div class="mcp-form">
+      <div class="mcp-section-label" style="margin-bottom:2px">Add a server</div>
+      <input id="mcp-name" placeholder="Name, e.g. github" maxlength="60" autocomplete="off" spellcheck="false"/>
+      <input id="mcp-url" placeholder="Server URL — https://…/mcp" autocomplete="off" spellcheck="false"/>
+      <input id="mcp-token" placeholder="Token / API key (optional)" type="password" autocomplete="off" spellcheck="false"/>
+      <button id="mcp-add-btn">Add server</button>
+      <div id="mcp-msg"></div>
+    </div>
+  </div>
+</aside>
 
 <script>
   const messagesEl  = document.getElementById('messages');
@@ -1217,6 +1355,134 @@
     window.visualViewport.addEventListener('resize', () => {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     });
+  }
+
+  // ── MCP servers sidebar ──────────────────────────────────
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  const mcpBtn     = document.getElementById('mcp-btn');
+  const mcpSidebar = document.getElementById('mcp-sidebar');
+  const mcpOverlay = document.getElementById('mcp-overlay');
+  const mcpClose   = document.getElementById('mcp-close');
+  const mcpListEl  = document.getElementById('mcp-list');
+  const mcpName    = document.getElementById('mcp-name');
+  const mcpUrl     = document.getElementById('mcp-url');
+  const mcpToken   = document.getElementById('mcp-token');
+  const mcpAddBtn  = document.getElementById('mcp-add-btn');
+  const mcpMsg     = document.getElementById('mcp-msg');
+
+  let mcpLoaded = false;
+
+  function openMcp() {
+    mcpSidebar.classList.add('open');
+    mcpOverlay.classList.add('open');
+    mcpSidebar.setAttribute('aria-hidden', 'false');
+    if (!mcpLoaded) loadMcpServers();
+  }
+  function closeMcp() {
+    mcpSidebar.classList.remove('open');
+    mcpOverlay.classList.remove('open');
+    mcpSidebar.setAttribute('aria-hidden', 'true');
+  }
+  mcpBtn.addEventListener('click', openMcp);
+  mcpClose.addEventListener('click', closeMcp);
+  mcpOverlay.addEventListener('click', closeMcp);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && mcpSidebar.classList.contains('open')) closeMcp();
+  });
+
+  function mcpShowMsg(text, ok) {
+    mcpMsg.textContent = text;
+    mcpMsg.className = ok ? 'ok' : 'err';
+    mcpMsg.style.display = 'block';
+  }
+
+  function renderMcpServers(servers) {
+    mcpListEl.innerHTML = '';
+    if (!servers || servers.length === 0) {
+      mcpListEl.innerHTML = '<div class="mcp-empty">No MCP servers connected yet.</div>';
+      return;
+    }
+    servers.forEach(s => {
+      const card = document.createElement('div');
+      card.className = 'mcp-card';
+      card.innerHTML = `
+        <div class="mcp-card-info">
+          <div class="mcp-card-name">${escapeHtml(s.name)}</div>
+          <div class="mcp-card-url">${escapeHtml(s.url)}</div>
+          ${s.has_token ? '<div class="mcp-card-token">🔑 token set</div>' : ''}
+        </div>
+        <button class="mcp-del" type="button">remove</button>`;
+      const del = card.querySelector('.mcp-del');
+      del.addEventListener('click', () => {
+        if (!del.classList.contains('confirm')) {
+          del.classList.add('confirm');
+          del.textContent = 'confirm?';
+          setTimeout(() => {
+            if (del.classList.contains('confirm')) { del.classList.remove('confirm'); del.textContent = 'remove'; }
+          }, 3000);
+          return;
+        }
+        deleteMcpServer(s.name);
+      });
+      mcpListEl.appendChild(card);
+    });
+  }
+
+  async function loadMcpServers() {
+    mcpListEl.innerHTML = '<div class="mcp-empty">loading…</div>';
+    try {
+      const res = await fetch('/api/mcp');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcpServers(data.servers);
+      mcpLoaded = true;
+    } catch (e) {
+      mcpListEl.innerHTML = `<div class="mcp-empty" style="color:#e05555">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function addMcpServer() {
+    const name = mcpName.value.trim();
+    const url = mcpUrl.value.trim();
+    const token = mcpToken.value.trim();
+    mcpMsg.style.display = 'none';
+    if (!name || !url) { mcpShowMsg('Name and URL are required.', false); return; }
+    mcpAddBtn.disabled = true;
+    mcpAddBtn.textContent = 'Connecting…';
+    try {
+      const res = await fetch('/api/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, url, token })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcpServers(data.servers);
+      mcpName.value = ''; mcpUrl.value = ''; mcpToken.value = '';
+      if (data.warning) mcpShowMsg(data.warning, false);
+      else mcpShowMsg(`Added — ${data.tool_count} tool${data.tool_count === 1 ? '' : 's'} available.`, true);
+    } catch (e) {
+      mcpShowMsg(e.message, false);
+    } finally {
+      mcpAddBtn.disabled = false;
+      mcpAddBtn.textContent = 'Add server';
+    }
+  }
+  mcpAddBtn.addEventListener('click', addMcpServer);
+  mcpToken.addEventListener('keydown', e => { if (e.key === 'Enter') addMcpServer(); });
+
+  async function deleteMcpServer(name) {
+    try {
+      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcpServers(data.servers);
+    } catch (e) {
+      mcpShowMsg(e.message, false);
+    }
   }
 </script>
 </body>
