@@ -25,6 +25,23 @@ static_dir=BASE_DIR+'/../Flask/static/'
 context_path=BASE_DIR+'/../Flask/static/context.md'
 location = BASE_DIR + "/../models/data.pth"
 
+# Root that Flask's /static/<path:filename> route serves from. Each user now
+# gets their own subfolder under here (set via set_static_dir), so links back
+# to a created file need to include that subfolder, not just the filename.
+STATIC_ROOT = os.path.normpath(BASE_DIR + '/../Flask/static')
+
+
+def _static_url(directory, filename):
+    """Build the public /static/... URL for `filename`, which was written to
+    `directory` (static_dir or html_dir) — accounting for the per-user
+    subfolder those may point at."""
+    rel = os.path.relpath(os.path.normpath(directory), STATIC_ROOT)
+    if rel in ('.', '') or rel.startswith('..'):
+        rel = ''
+    else:
+        rel = rel.replace(os.sep, '/') + '/'
+    return url + "/static/" + rel + filename
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -871,7 +888,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             contents=args_dict.get('contents')
             with open(static_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            yield from agent_stream(tool_input="Your file is accessable at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="Your file is accessable at "+_static_url(static_dir, filename), tool_id=tool_call.id,tool_name=command_name)
         
 
         elif command_name == 'delete_file':
@@ -910,7 +927,18 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             contents=args_dict.get('contents')
             with open(html_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
-            yield from agent_stream(tool_input="Your site is live at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
+            yield from agent_stream(tool_input="Your site is live at "+_static_url(html_dir, filename), tool_id=tool_call.id,tool_name=command_name)
+        
+        elif command_name == 'List_Home_Assistant_Devices':
+            devices=home_assistant.get_entities()
+            yield from agent_stream(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
+        
+        elif command_name == 'Home_Assistant':
+            domain=args_dict.get('domain')
+            service=args_dict.get('service')
+            data=args_dict.get('data')
+            output=home_assistant.execute_action(domain, service, data)
+            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'open_url':
             # Actually opening the tab happens client-side — the frontend
             # listens for the "tool_call" SSE event (which already carries
