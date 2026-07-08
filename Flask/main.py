@@ -635,8 +635,6 @@ SETTINGS_KEYS = [
     ("NVIDIA_KEY",       "NVIDIA API Key",          True),
     ("OPENROUTER_KEY",   "OpenRouter API Key",      True),
     ("CUSTOM_DOMAIN",    "Custom Domain",           False),
-    ("HA_TOKEN",         "Home Assistant Token",    True),
-    ("HA_URL",           "Home Assistant URL",      False),
 ]
 KNOWN_KEYS = {k for k, _, _ in SETTINGS_KEYS}
 

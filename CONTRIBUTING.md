@@ -17,7 +17,7 @@ Thanks for wanting to help out! Whether you're fixing a bug, adding a feature, o
    pip install groq ddgs requests beautifulsoup4 json-repair fastapi uvicorn
    ```
 
-3. **Set up your credentials** — fill in your Groq API key and location in `api.py`, and your Home Assistant token in `alexa_integration.py` and `smart_tv.py`
+3. **Set up your credentials** — run `./install.sh`, or create a `.env` file in the project root with at least your Groq API key (`API_KEY`) and a web UI password (`FC_PASSWORD`)
 
 ---
 
@@ -50,7 +50,7 @@ Anything! Some ideas:
 
 - **Bug fixes** — if something's broken, fix it
 - **New tools** — add a new tool to the agent (e.g. calendar, timers, notifications)
-- **New smart home integrations** — more devices, more services
+- **MCP integrations** — connectors for new MCP servers, or improvements to the MCP client
 - **Scraper improvements** — better site handling, more reliable parsing
 - **Performance & cost** — ways to reduce token usage even further
 - **Documentation** — clearer explanations, more examples

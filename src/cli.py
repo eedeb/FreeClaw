@@ -50,7 +50,7 @@ def print_banner():
     print(clr("  ██║     ██║  ██║███████╗███████╗╚██████╗███████╗██║  ██║╚███╔███╔╝", GREEN, BOLD))
     print(clr("  ╚═╝     ╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ", GREEN, BOLD))
     print()
-    print(clr("  search the web · run bash · control smart home · write files", GREY))
+    print(clr("  search the web · run bash · connect MCP tools · write files", GREY))
     print(clr("  /reset  — clear conversation      /exit — quit", GREY))
     print()
 

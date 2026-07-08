@@ -20,10 +20,10 @@ Describe what you found, how to reproduce it, and what the potential impact migh
 
 Given the nature of this project, the most relevant areas of concern are:
 
-- **Credential exposure** — anything that could leak your Groq API key, Home Assistant token, or other secrets stored in the codebase
+- **Credential exposure** — anything that could leak your Groq API key, MCP server tokens, or other secrets stored in the codebase or `.env`
 - **Bash execution abuse** — the `run_bash_command` tool runs shell commands directly on the host machine; any prompt injection or bypass that causes unintended commands to run is a serious issue
 - **Scraper exploitation** — malicious web content that manipulates the agent's behavior through scraped text
-- **Home Assistant access** — anything that could allow unauthorized control of Alexa or smart TV integrations
+- **MCP server trust** — a malicious or compromised MCP server can return content that manipulates the agent, or attempt to misuse the token it's given
 
 ---
 
@@ -32,5 +32,5 @@ Given the nature of this project, the most relevant areas of concern are:
 To keep your own instance secure:
 
 - **Never commit credentials** — keep your API keys and tokens out of the repo; use environment variables or a `.env` file instead
-- **Restrict network access** — the Home Assistant endpoints in `smart_tv.py` and `alexa_integration.py` should only be reachable from trusted networks
+- **Only connect trusted MCP servers** — FreeClaw sends your configured token to each MCP server and runs the tools it advertises, so only add servers you trust
 - **Be careful with bash** — the `run_bash_command` tool is powerful; only run FreeClaw in an environment you're comfortable with it having shell access to

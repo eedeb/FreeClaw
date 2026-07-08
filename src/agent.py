@@ -8,7 +8,6 @@ import shlex
 import src.scraper as scraper
 from datetime import datetime
 from json_repair import repair_json
-import src.home_assistant as home_assistant
 import src.mcp_client as mcp_client
 import os
 
@@ -386,39 +385,6 @@ def build_base_tools():
                 }
             }
         },
-#        {
-#            "type": "function",
-#            "function": {
-#                "name": "List_Home_Assistant_Devices",
-#                "description": "Returns all of the available devices connected to Home Assistant.",
-#                "parameters": { "type": "object", "properties": {} }
-#            }
-#        },
-#        {
-#            "type": "function",
-#            "function": {
-#                "name": "Home_Assistant",
-#                "description": "Sends directions to the Home Assistant API to control smart devices.",
-#                "parameters": {
-#                    "type": "object",
-#                    "properties": {
-#                        "domain": {
-#                            "type": "string",
-#                            "description": "switch, light, media_player, fan, lock, etc."
-#                        },
-#                        "service": {
-#                            "type": "string",
-#                            "description": "turn_on, turn_off, toggle, play_media, etc."
-#                        },
-#                        "data": {
-#                            "type": "object",
-#                            "description": "The JSON header to be sent to the Home Assistant API. This should include the entity_id and any necessary parameters to run the command."
-#                        }
-#                    },
-#                    "required": ["domain","service","data"]
-#                }
-#            }
-#        },
         {
             "type": "function",
             "function": {
@@ -945,17 +911,6 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             with open(html_dir+filename, "w", encoding="utf-8") as f:
                 f.write(contents)
             yield from agent_stream(tool_input="Your site is live at "+url+"/static/"+filename, tool_id=tool_call.id,tool_name=command_name)
-        
-        elif command_name == 'List_Home_Assistant_Devices':
-            devices=home_assistant.get_entities()
-            yield from agent_stream(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
-        
-        elif command_name == 'Home_Assistant':
-            domain=args_dict.get('domain')
-            service=args_dict.get('service')
-            data=args_dict.get('data')
-            output=home_assistant.execute_action(domain, service, data)
-            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'open_url':
             # Actually opening the tab happens client-side — the frontend
             # listens for the "tool_call" SSE event (which already carries

@@ -251,29 +251,21 @@ section_gap
 divider
 section_gap
 
-# ── Home Assistant ───────────────────────────
+# ── Permissions ──────────────────────────────
 
-chmod +x ha_setup.sh
 chmod +x update.sh
 chmod +x uninstall.sh
 
-step "7" "Optional: Home Assistant integration..."
-section_gap
-echo -e "     ${GRAY}Connect FreeClaw to your smart home — control devices and${RESET}"
-echo -e "     ${GRAY}announce responses via Alexa using Home Assistant.${RESET}"
-section_gap
+# ── MCP servers ──────────────────────────────
 
-if [[ -x ha_setup.sh ]]; then
-    read -p "$(echo -e "     ${LIME}?${RESET}  Set up Home Assistant? ${GRAY}(y/n)${RESET} ")" answer < /dev/tty
-    if [[ "$answer" == "y" ]]; then
-        section_gap
-        ./ha_setup.sh
-    else
-        info "Skipping Home Assistant setup — run ${BOLD}./ha_setup.sh${RESET} anytime to add it later."
-    fi
-else
-    warn "ha_setup.sh not found or not executable, skipping."
-fi
+step "7" "MCP servers (Model Context Protocol)..."
+section_gap
+echo -e "     ${GRAY}FreeClaw can connect to external MCP servers to gain new${RESET}"
+echo -e "     ${GRAY}tools — GitHub, search, databases, and much more.${RESET}"
+section_gap
+info "No setup needed now — add them anytime from the web UI:"
+info "open a chat and click ${BOLD}+ MCP${RESET} to enter a server URL and token."
+info "Connections are saved to ${BOLD}.env${RESET} and loaded automatically."
 
 section_gap
 divider
