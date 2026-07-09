@@ -929,16 +929,16 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 f.write(contents)
             yield from agent_stream(tool_input="Your site is live at "+_static_url(html_dir, filename), tool_id=tool_call.id,tool_name=command_name)
         
-        elif command_name == 'List_Home_Assistant_Devices':
-            devices=home_assistant.get_entities()
-            yield from agent_stream(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
-        
-        elif command_name == 'Home_Assistant':
-            domain=args_dict.get('domain')
-            service=args_dict.get('service')
-            data=args_dict.get('data')
-            output=home_assistant.execute_action(domain, service, data)
-            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
+#        elif command_name == 'List_Home_Assistant_Devices':
+#            devices=home_assistant.get_entities()
+#            yield from agent_stream(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
+#        
+#        elif command_name == 'Home_Assistant':
+#            domain=args_dict.get('domain')
+#            service=args_dict.get('service')
+#            data=args_dict.get('data')
+#            output=home_assistant.execute_action(domain, service, data)
+#            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
         elif command_name == 'open_url':
             # Actually opening the tab happens client-side — the frontend
             # listens for the "tool_call" SSE event (which already carries

@@ -45,6 +45,16 @@ CLIENT_INFO = {"name": "FreeClaw", "version": "1.0"}
 # server each time. Cleared with clear_cache() when the server list changes.
 _tool_cache = {}
 
+# MCP session ids cached by (url, token) so we don't pay a full
+# initialize + notifications/initialized round trip before every single
+# tools/call. Reused until the server rejects it (see _call_with_session).
+_session_cache = {}
+
+# Shared connection pool across all requests to all MCP servers, so repeat
+# calls to the same server reuse an existing TCP/TLS connection instead of
+# renegotiating one every time.
+_http = requests.Session()
+
 
 # ── .env storage (read + serialize) ──────────────────────────
 
@@ -148,8 +158,8 @@ def _err_text(error):
 def _rpc(server, method, params, session_id=None, timeout=(6, 20)):
     payload = {"jsonrpc": "2.0", "id": str(uuid.uuid4()),
                "method": method, "params": params}
-    resp = requests.post(server["url"], headers=_headers(server, session_id),
-                         json=payload, timeout=timeout)
+    resp = _http.post(server["url"], headers=_headers(server, session_id),
+                       json=payload, timeout=timeout)
     resp.raise_for_status()
     new_session = resp.headers.get("Mcp-Session-Id") or session_id
     return _extract_message(resp), new_session
@@ -158,16 +168,22 @@ def _rpc(server, method, params, session_id=None, timeout=(6, 20)):
 def _notify(server, method, session_id=None, timeout=(6, 20)):
     payload = {"jsonrpc": "2.0", "method": method}
     try:
-        requests.post(server["url"], headers=_headers(server, session_id),
-                      json=payload, timeout=timeout)
+        _http.post(server["url"], headers=_headers(server, session_id),
+                   json=payload, timeout=timeout)
     except requests.RequestException:
         # Notifications get no response and aren't worth failing over.
         pass
 
 
-def _open_session(server):
+def _open_session(server, force=False):
     """Run the MCP `initialize` handshake and return the session id (or None
-    if the server doesn't use one). Raises on any protocol/transport error."""
+    if the server doesn't use one). Cached per (url, token) so repeat calls
+    reuse the same session instead of re-handshaking every time — pass
+    force=True to discard a cached session that the server has rejected.
+    Raises on any protocol/transport error."""
+    sig = (server.get("url"), server.get("token"))
+    if not force and sig in _session_cache:
+        return _session_cache[sig]
     params = {
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": {},
@@ -179,7 +195,23 @@ def _open_session(server):
     if "error" in msg:
         raise RuntimeError(_err_text(msg["error"]))
     _notify(server, "notifications/initialized", session_id=session_id)
+    _session_cache[sig] = session_id
     return session_id
+
+
+def _call_with_session(server, method, params, timeout=(6, 20)):
+    """Run an RPC call against `server` using its cached session. If the
+    session has gone stale server-side (surfaces as an HTTP error, typically
+    404, on the session id), transparently reopen it and retry once instead
+    of failing the whole tool call."""
+    sig = (server.get("url"), server.get("token"))
+    session_id = _open_session(server)
+    try:
+        return _rpc(server, method, params, session_id=session_id, timeout=timeout)
+    except requests.HTTPError:
+        _session_cache.pop(sig, None)
+        session_id = _open_session(server, force=True)
+        return _rpc(server, method, params, session_id=session_id, timeout=timeout)
 
 
 def list_tools(server, use_cache=True):
@@ -188,8 +220,7 @@ def list_tools(server, use_cache=True):
     sig = (server.get("url"), server.get("token"))
     if use_cache and sig in _tool_cache:
         return _tool_cache[sig]
-    session_id = _open_session(server)
-    msg, _ = _rpc(server, "tools/list", {}, session_id=session_id)
+    msg, _ = _call_with_session(server, "tools/list", {})
     if msg is None:
         raise RuntimeError("no response to tools/list")
     if "error" in msg:
@@ -201,10 +232,9 @@ def list_tools(server, use_cache=True):
 
 def call_tool(server, tool_name, arguments):
     """Invoke `tool_name` on `server` and return its result as plain text."""
-    session_id = _open_session(server)
-    msg, _ = _rpc(server, "tools/call",
-                  {"name": tool_name, "arguments": arguments or {}},
-                  session_id=session_id, timeout=(6, 60))
+    msg, _ = _call_with_session(server, "tools/call",
+                                 {"name": tool_name, "arguments": arguments or {}},
+                                 timeout=(6, 60))
     if msg is None:
         return "MCP server returned no response."
     if "error" in msg:
@@ -234,3 +264,4 @@ def _stringify_result(result):
 
 def clear_cache():
     _tool_cache.clear()
+    _session_cache.clear()
