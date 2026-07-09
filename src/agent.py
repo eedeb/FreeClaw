@@ -14,6 +14,7 @@ import os
 
 import base64
 import mimetypes
+import httpx
 
  
 
@@ -74,11 +75,63 @@ else:
 
 
 
-client = None
-
 agent_messages=[]
 tools=[]
-groq=True
+
+# LLM provider fallback chain: (name, api_key, base_url), tried in order.
+# A provider with no key configured is skipped.
+_PROVIDER_CONF = [
+    ("groq", groq_key, "https://api.groq.com/openai/v1"),
+    ("nvidia", nvidia_key, "https://integrate.api.nvidia.com/v1"),
+    ("openrouter", openrouter_key, "https://openrouter.ai/api/v1"),
+]
+
+# Short connect/read timeouts + no SDK-level retries so a dead provider
+# fails in seconds instead of the SDK's 600s default (compounded by its own
+# exponential-backoff retries) before we fail over to the next one.
+_PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
+
+# One OpenAI client per provider, built once and reused so switching
+# providers doesn't pay a fresh TCP/TLS handshake every time.
+_provider_clients = {}
+
+# The provider that answered last, tried first on the next call so a
+# working provider doesn't get re-probed (and potentially fail over) on
+# every single turn.
+_last_provider = "groq"
+
+
+def _client_for(name, key, base_url):
+    if name not in _provider_clients:
+        _provider_clients[name] = OpenAI(
+            api_key=key, base_url=base_url,
+            timeout=_PROVIDER_TIMEOUT, max_retries=0,
+        )
+    return _provider_clients[name]
+
+
+def _create_completion(**kwargs):
+    """Try each configured provider in turn — starting with whichever one
+    last succeeded — and return (response_or_stream, provider_name) from the
+    first that works. Raises RuntimeError with all provider errors if none
+    do."""
+    global _last_provider
+    names = [p[0] for p in _PROVIDER_CONF]
+    order = [_last_provider] + [n for n in names if n != _last_provider]
+    conf = {n: (key, base_url) for n, key, base_url in _PROVIDER_CONF}
+    errors = []
+    for name in order:
+        key, base_url = conf[name]
+        if not key or key in ("None", ""):
+            continue
+        try:
+            c = _client_for(name, key, base_url)
+            result = c.chat.completions.create(**kwargs)
+            _last_provider = name
+            return result, name
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+    raise RuntimeError("All providers failed: " + "; ".join(errors))
 
 # Maps the sanitized function name we expose to the model (e.g.
 # "mcp_github_create_issue") back to the (server, real tool name) needed to
@@ -139,9 +192,7 @@ def set_messages(messages):
     agent_messages = messages
 
 
-def reset(location_innit=location, llm_key=groq_key, base_url="https://api.groq.com/openai/v1", tts=False):
-    global client
-    client = OpenAI(api_key=llm_key, base_url=base_url)
+def reset(location_innit=location, tts=False):
     global location
     location=location_innit
 
@@ -510,8 +561,6 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
     global messages
     global reset
     global tools
-    global groq
-    global client
     model="openai/gpt-oss-120b"
     temp=1
     check_tools=tools
@@ -633,10 +682,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
     '''
     print('Reveived: '+agent_input)
     try:
-        #raise Exception("Test")
-        if groq==False:
-            client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-        stream = client.chat.completions.create(
+        stream, provider = _create_completion(
             model=model,
             messages=eco_messages,
             temperature=temp,
@@ -645,33 +691,8 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             stream=True,
             stop=None
         )
-        groq = True
-    except Exception as e:
-        groq = False
-        if nvidia_key != "None":
-            client = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
-            stream = client.chat.completions.create(
-                model=model,
-                messages=eco_messages,
-                temperature=temp,
-                tools=check_tools,
-                top_p=1,
-                stream=True,
-                stop=None
-            )
-        elif openrouter_key != "None":
-            client = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
-            stream = client.chat.completions.create(
-                model=model,
-                messages=eco_messages,
-                temperature=temp,
-                tools=check_tools,
-                top_p=1,
-                stream=True,
-                stop=None
-            )
-        else:
-            raise Exception("You hit your usage limits.")
+    except RuntimeError:
+        raise Exception("You hit your usage limits.")
 
     # Consume the stream, forwarding text chunks to the caller in real
     # time and reassembling any tool calls (which always arrive as
@@ -837,10 +858,8 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             mime_type = mime_types.get(ext, "image/jpeg")
 
 
-            if groq:
-                client = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
-                groq = False
-            completion = client.chat.completions.create(
+            vision_client = _client_for("nvidia", nvidia_key, "https://integrate.api.nvidia.com/v1")
+            completion = vision_client.chat.completions.create(
                 model="qwen/qwen3.5-397b-a17b",
                 messages=[
                     {
@@ -1002,11 +1021,11 @@ def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, too
 
 def api_complete(messages, model=None, stream=False, temperature=1.0, max_tokens=None):
     """Stateless LLM call for the OpenAI-compatible API endpoint.
-    Does not touch agent_messages or any session state.
-    Tries providers in order: Groq → NVIDIA → OpenRouter."""
-    req_model = model or "openai/gpt-oss-120b"
+    Does not touch agent_messages. Tries providers in order (starting with
+    whichever last succeeded), via the same cached, fast-fail clients as
+    agent_stream."""
     kwargs = dict(
-        model=req_model,
+        model=model or "openai/gpt-oss-120b",
         messages=messages,
         temperature=temperature,
         top_p=1,
@@ -1016,30 +1035,8 @@ def api_complete(messages, model=None, stream=False, temperature=1.0, max_tokens
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    errors = []
-
-    if groq_key and groq_key not in ("None", ""):
-        try:
-            c = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-            return c.chat.completions.create(**kwargs)
-        except Exception as e:
-            errors.append(f"Groq: {e}")
-
-    if nvidia_key and nvidia_key not in ("None", ""):
-        try:
-            c = OpenAI(api_key=nvidia_key, base_url="https://integrate.api.nvidia.com/v1")
-            return c.chat.completions.create(**kwargs)
-        except Exception as e:
-            errors.append(f"NVIDIA: {e}")
-
-    if openrouter_key and openrouter_key not in ("None", ""):
-        try:
-            c = OpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1")
-            return c.chat.completions.create(**kwargs)
-        except Exception as e:
-            errors.append(f"OpenRouter: {e}")
-
-    raise RuntimeError("All providers failed: " + "; ".join(errors))
+    result, _ = _create_completion(**kwargs)
+    return result
 
 
 '''
