@@ -80,27 +80,39 @@ tools=[]
 # immediately, without restarting the process. A provider with no key
 # configured is skipped.
 #
-# Groq and OpenRouter are temporarily disabled — NVIDIA NIM is the only
-# active provider for now. Uncomment to bring the fallback chain back.
+# OpenRouter is still temporarily disabled — uncomment to bring it back
+# into the chain. NVIDIA's hosted gpt-oss-120b doesn't support tool calls
+# at all right now (confirmed: it hangs indefinitely on any request that
+# includes a `tools` param, streaming or not), so Groq is back as primary
+# with NVIDIA as fallback for when Groq is rate-limited.
 _PROVIDER_CONF = [
-    # ("groq", "API_KEY", "https://api.groq.com/openai/v1"),
     ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1"),
+    ("groq", "API_KEY", "https://api.groq.com/openai/v1"),
     # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1"),
 ]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
 # fails in seconds instead of the SDK's 600s default (compounded by its own
-# exponential-backoff retries) before we fail over to the next one.
+# exponential-backoff retries) before we fail over to the next one. This
+# matters even more now: NVIDIA's hosted gpt-oss-120b hangs indefinitely on
+# *any* request that includes a `tools` param (confirmed — streaming,
+# non-streaming, tool_choice="required", all hang forever with zero
+# response), so a tool-calling turn that falls back to NVIDIA is a
+# guaranteed timeout with no chance of succeeding. A long timeout there
+# only makes the user wait longer for a reply that was never coming; fast
+# failure at least surfaces a clear error quickly. Groq being primary and
+# fast means 30s is still plenty of headroom for a legitimate reply.
 _PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 # One OpenAI client per provider, built once and reused so switching
 # providers doesn't pay a fresh TCP/TLS handshake every time.
 _provider_clients = {}
 
-# The provider that answered last, tried first on the next call so a
-# working provider doesn't get re-probed (and potentially fail over) on
-# every single turn.
-_last_provider = "nvidia"
+# The provider that answered last — tracked only so _create_completion can
+# log when a call actually switches providers. Try order itself always
+# follows _PROVIDER_CONF's listed order (first entry tried first, every
+# call), not whichever provider happened to work last.
+_last_provider = "groq"
 
 
 def _client_for(name, key, base_url):
@@ -151,16 +163,13 @@ class AllProvidersFailedError(RuntimeError):
 
 
 def _create_completion(**kwargs):
-    """Try each configured provider in turn — starting with whichever one
-    last succeeded — and return (response_or_stream, provider_name) from the
-    first that works. Raises AllProvidersFailedError if none do."""
+    """Try each configured provider in the order listed in _PROVIDER_CONF —
+    first entry first, every call — and return (response_or_stream,
+    provider_name) from the first that works. Raises AllProvidersFailedError
+    if none do."""
     global _last_provider
-    names = [p[0] for p in _PROVIDER_CONF]
-    order = [_last_provider] + [n for n in names if n != _last_provider]
-    conf = {n: (env_var, base_url) for n, env_var, base_url in _PROVIDER_CONF}
     failures = []
-    for name in order:
-        env_var, base_url = conf[name]
+    for name, env_var, base_url in _PROVIDER_CONF:
         key = os.getenv(env_var)
         if not key or key == "None":
             continue
@@ -339,23 +348,17 @@ def build_base_tools():
     schema). Kept separate from reset() so the full tool list can be rebuilt
     at any time — e.g. after the MCP server list changes — without touching
     the conversation or the LLM client."""
-    best_sites = [
-        {
-            "weather": ["localconditions.com"],
-            "news": ["bbc.com", "atoztimes.com"]
-        }
-    ]
 
     return [
         {
             "type": "function",
             "function": {
                 "name": "save_context",
-                "description": "Stores long-term user information such as identity details, preferences, habits, and persistent instructions for future sessions. Use only for durable facts the user expects the assistant to remember across conversations. Do not store temporary context, or one-time information.",
+                "description": "Stores durable facts (identity, preferences, habits, standing instructions) for future sessions. Not for temporary or one-time info.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "contents": { "type": "string", "description": "Appends a new entry for context.md" }
+                        "contents": { "type": "string", "description": "Entry to append to context.md" }
                     },
                     "required": ["contents"]
                 }
@@ -365,7 +368,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "read_context",
-                "description": "Shows contents of the context.md file.",
+                "description": "Shows the contents of context.md.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },
@@ -373,12 +376,12 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "create_user",
-                "description": "Creates a brand new FreeClaw user with their own folder, chats, and long-term memory. Only use this when the person explicitly asks to add/create a new user — never to switch context for the current conversation.",
+                "description": "Creates a new FreeClaw user with their own chats and memory. Only when explicitly asked to add a user — never to switch context in this conversation.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "name": { "type": "string", "description": "The new user's name. Used as their folder name, so keep it short and simple (letters, numbers, spaces, - or _)." },
-                        "context": { "type": ["string", "null"], "description": "Optional starting content for the new user's context.md (long-term memory) — e.g. known preferences or background info. Leave null/omit for a blank context.md." }
+                        "name": { "type": "string", "description": "New user's name — used as a folder name, so keep it short (letters, numbers, spaces, - or _)." },
+                        "context": { "type": "string", "description": "Optional starting content for the new user's context.md. Omit for blank." }
                     },
                     "required": ["name"]
                 }
@@ -388,12 +391,12 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "search",
-                "description": "Fetches validated, up-to-date information for real-time queries. Only call this tool a maximum of 2 times per task — if you have sufficient data after 1-2 searches, proceed to the next step immediately. If you don't have the sufficient data, report back to the user after a maximium of 2 searches. Here is a website guide: "+str(best_sites),
+                "description": "Fetches up-to-date info for real-time queries. Max 2 calls per task — proceed once you have enough, or report back to the user if you still don't after 2 searches.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "The natural language query to answer" },
-                        "site": { "type": ["string","null"], "description": "The site to be searched or None" }
+                        "query": { "type": "string", "description": "Natural language query to answer" },
+                        "site": { "type": "string", "description": "Site to search. Omit to search generally." }
                     },
                     "required": ["query"]
                 }
@@ -403,7 +406,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "See the contents of a file that is in the /static directory.",
+                "description": "Reads a file's contents from /static.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -417,7 +420,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "Lists the files in the /static directory.",
+                "description": "Lists the files in /static.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },
@@ -433,7 +436,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "create_page",
-                "description": "Creates an HTML page for the user to see",
+                "description": "Creates an HTML page for the user to see.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -448,12 +451,12 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "create_file",
-                "description": "Creates interoperable outputs for other applications and systems. Use for documents, data exports, scripts, configurations, automation artifacts, and other task-completing file outputs.",
+                "description": "Creates an output file (document, data export, script, config, etc.) for the user or other tools to use.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "filename": { "type": "string", "description": "name_of_your_file.something" },
-                        "contents": { "type": "string", "description": "Contents of file, can leave blank" }
+                        "contents": { "type": "string", "description": "File contents, can leave blank" }
                     },
                     "required": ["filename","contents"]
                 }
@@ -463,7 +466,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "delete_file",
-                "description": "Deletes a file in the /static directory. Use this command to delete files that are no longer needed, or if the user asks you to delete a file.",
+                "description": "Deletes a file from /static.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -477,13 +480,13 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Edits an existing file in the /static directory by replacing a specific string with a new one. Use this instead of create_file when modifying existing content.",
+                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "filename": { "type": "string", "description": "Name of the file to edit" },
-                        "old_str": { "type": "string", "description": "The exact string to find and replace" },
-                        "new_str": { "type": "string", "description": "The string to replace it with" }
+                        "old_str": { "type": "string", "description": "Exact string to find and replace" },
+                        "new_str": { "type": "string", "description": "String to replace it with" }
                     },
                     "required": ["filename", "old_str", "new_str"]
                 }
@@ -493,7 +496,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "get_image_description",
-                "description": "Returns a very detailed description of an image in the static folder.",
+                "description": "Returns a detailed description of an image in /static.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -507,7 +510,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "read_web",
-                "description": "Returns the first 3000 English characters of a webpage. Only use this if the user tells you to specifically look at a webpage.",
+                "description": "Returns the first 3000 characters of a webpage. Use only when the user asks to look at a specific URL.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -521,7 +524,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "open_url",
-                "description": "Allows you to open a URL or URI on the user's machine. Use this to open webpages or apps with a URI. Also use it for other URI tools such as texting or calling.",
+                "description": "Opens a URL or URI on the user's device — webpages, apps via custom URI (e.g. texting, calling).",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -535,17 +538,17 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "run_bash_command",
-                "description": "Allows you to run commands directly on this machine. If a user asks you to do something, immediately create a command and run it. Don't run multiple commands without reporting back to the user.",
+                "description": "Runs a shell command on this machine. Execute immediately when asked — don't chain multiple commands without reporting back first.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string", "description": "BASH Command" }
+                        "command": { "type": "string", "description": "BASH command" }
                     },
                     "required": ["command"]
                 }
             }
         }
-    ]   
+    ]
 
 
 
@@ -661,14 +664,14 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             else:
                 eco_messages=agent_messages
             model="openai/gpt-oss-20b"
-            #check_tools=None
+            check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
             if len(agent_messages) > 7:
                 eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
             model="openai/gpt-oss-20b"
-            #check_tools=None
+            check_tools=None
         elif tag == 'Search':
             temp=0.4
             if len(agent_messages) > 7:
