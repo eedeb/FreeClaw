@@ -2,7 +2,7 @@ import json
 import re
 import types
 import Classy
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError
 import subprocess
 import shlex
 import src.scraper as scraper
@@ -122,7 +122,12 @@ def _classify_error(e):
         return "rate_limited"
     if status in (401, 403) or "invalid api key" in text or "unauthorized" in text:
         return "auth_error"
-    if isinstance(e, (httpx.TimeoutException, httpx.ConnectError)):
+    # The openai SDK never lets a raw httpx timeout/connect error escape —
+    # it always wraps it as APIConnectionError (APITimeoutError is a
+    # subclass of it) before it reaches us, so checking for the raw httpx
+    # types alone never matched a hung/unreachable provider and silently
+    # fell through to "unknown". Check both.
+    if isinstance(e, APIConnectionError) or isinstance(e, (httpx.TimeoutException, httpx.ConnectError)):
         return "network_error"
     if status and status >= 500:
         return "provider_error"
@@ -180,6 +185,13 @@ def _user_facing_error(failures):
         return "All configured providers rejected the request — check your API keys in Settings."
     if reasons == {"network_error"}:
         return "Couldn't reach any LLM provider — check your network connection."
+    if reasons == {"rate_limited", "network_error"}:
+        limited = [n for n, r, _ in failures if r == "rate_limited"]
+        unreachable = [n for n, r, _ in failures if r == "network_error"]
+        return (
+            f"{', '.join(limited)} {'is' if len(limited) == 1 else 'are'} rate-limited, and "
+            f"{', '.join(unreachable)} {'is' if len(unreachable) == 1 else 'are'} unreachable right now. Try again shortly."
+        )
     return "All providers failed: " + ", ".join(f"{name} ({reason})" for name, reason, _ in failures)
 
 # Maps the sanitized function name we expose to the model (e.g.
