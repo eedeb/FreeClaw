@@ -79,10 +79,13 @@ tools=[]
 # captured here) so a key added or changed via /api/settings takes effect
 # immediately, without restarting the process. A provider with no key
 # configured is skipped.
+#
+# Groq and OpenRouter are temporarily disabled — NVIDIA NIM is the only
+# active provider for now. Uncomment to bring the fallback chain back.
 _PROVIDER_CONF = [
-    ("groq", "API_KEY", "https://api.groq.com/openai/v1"),
+    # ("groq", "API_KEY", "https://api.groq.com/openai/v1"),
     ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1"),
-    ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1"),
+    # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1"),
 ]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
@@ -97,7 +100,7 @@ _provider_clients = {}
 # The provider that answered last, tried first on the next call so a
 # working provider doesn't get re-probed (and potentially fail over) on
 # every single turn.
-_last_provider = "groq"
+_last_provider = "nvidia"
 
 
 def _client_for(name, key, base_url):
