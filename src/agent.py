@@ -1,6 +1,5 @@
 import json
 import re
-import types
 import Classy
 from openai import OpenAI, APIConnectionError
 import subprocess
@@ -145,6 +144,11 @@ def _classify_error(e):
         return "rate_limited"
     if status in (401, 403) or "invalid api key" in text or "unauthorized" in text:
         return "auth_error"
+    # Other 4xx: the provider understood us and said the request itself is
+    # bad (e.g. a malformed conversation history). Distinct from "unknown"
+    # so the final error message points at the request, not the network.
+    if status in (400, 404, 413, 422):
+        return "bad_request"
     # The openai SDK never lets a raw httpx timeout/connect error escape —
     # it always wraps it as APIConnectionError (APITimeoutError is a
     # subclass of it) before it reaches us, so checking for the raw httpx
@@ -266,12 +270,57 @@ def get_messages():
     return agent_messages
 
 
+def _heal_history(messages):
+    """Repair a conversation so every provider will accept it again.
+
+    OpenAI-compatible APIs reject the entire request if any assistant
+    tool_calls entry lacks a matching `tool` response (or a `tool` message
+    answers an id nobody declared). A conversation saved by an older
+    FreeClaw build — which only ever answered the first of several parallel
+    tool calls — is permanently stuck that way: every new turn resends the
+    broken history and 400s. Healing on load makes those chats usable
+    again: missing tool responses get a placeholder, orphaned ones are
+    dropped, and null call ids are backfilled."""
+    healed = []
+    pending = {}  # id -> function name, awaiting a tool response
+
+    def flush_pending():
+        for call_id, fn_name in pending.items():
+            healed.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": fn_name,
+                "content": "(tool response missing from saved conversation — treat this call as failed)",
+            })
+        pending.clear()
+
+    for n, m in enumerate(messages):
+        role = m.get("role")
+        if role == "tool":
+            call_id = m.get("tool_call_id")
+            if call_id in pending:
+                del pending[call_id]
+                healed.append(m)
+            # else: orphaned/duplicate tool response — drop it
+            continue
+        flush_pending()
+        healed.append(m)
+        if role == "assistant" and m.get("tool_calls"):
+            for i, tc in enumerate(m["tool_calls"]):
+                if not tc.get("id"):
+                    tc["id"] = f"healed_{n}_{i}"
+                pending[tc["id"]] = (tc.get("function") or {}).get("name", "unknown")
+    flush_pending()
+    return healed
+
+
 def set_messages(messages):
     """Load a previously-saved conversation (a plain list of OpenAI-style
     message dicts) as the active conversation for subsequent agent_stream
-    calls."""
+    calls. Healed on the way in so a conversation corrupted by an older
+    build (or a mid-turn crash) can't keep failing every provider call."""
     global agent_messages
-    agent_messages = messages
+    agent_messages = _heal_history(messages)
 
 
 def reset(location_innit=location, tts=False):
@@ -624,6 +673,196 @@ def refresh_tools():
     return tools
 
 
+def _run_tool(command_name, args_dict):
+    """Execute a single tool call and return its result as a string.
+
+    Pure dispatch: appending the tool-response message and making the
+    follow-up LLM turn are the caller's job, so this can run once per call
+    when the model requests several tools in one turn. Exceptions may
+    escape freely — the caller converts them into an error result, because
+    whatever happens, every tool_call id the assistant message declared
+    must end up with a response or the whole conversation is rejected by
+    the provider on the next turn."""
+    parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
+    print('Agent called tool: '+command_name)
+    print('Agent parameter: '+str(parameter) if parameter else ' ')
+
+    if command_name == 'save_context':
+        contents = args_dict.get('contents') or ''
+        with open(context_path, "a", encoding="utf-8") as f:
+            f.write(contents.strip()+'\n')
+        return "Context saved."
+
+    if command_name == 'read_context':
+        with open(context_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    if command_name == 'create_user':
+        new_name = args_dict.get('name')
+        new_context = args_dict.get('context')
+        if not new_name or not str(new_name).strip():
+            return "Error: a name is required to create a user."
+        if user_creator is None:
+            return "Error: user creation isn't available in this context."
+        try:
+            created_name = user_creator(new_name, new_context)
+        except Exception as e:
+            return f"Error creating user: {e}"
+        result = f"User '{created_name}' created successfully."
+        if new_context:
+            result += " Their context.md was set with the provided content."
+        return result
+
+    if command_name == 'search':
+        site = args_dict.get('site') or None
+        print('Site: '+site if site else None)
+        if site is not None:
+            return scraper.get_result(parameter+' - '+site)
+        return scraper.get_result(parameter)
+
+    if command_name == 'read_file':
+        # Uploaded files are referenced by their full "static/..." path
+        # in the chat tag, not a bare filename; take just the basename
+        # so both forms resolve against this session's static_dir.
+        filename = os.path.basename(args_dict.get('filename'))
+        try:
+            with open(static_dir+filename, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return "File not found."
+
+    if command_name == 'get_image_description':
+        filename = os.path.basename(args_dict.get('filename'))
+        file_location = static_dir+filename
+        try:
+            # Read and encode the image to base64
+            with open(file_location, "rb") as image_file:
+                image_data = base64.b64encode(image_file.read()).decode("utf-8")
+        except FileNotFoundError:
+            return "File not found."
+
+        # Detect MIME type from file extension
+        ext = filename.rsplit(".", 1)[-1].lower()
+        mime_types = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+        mime_type = mime_types.get(ext, "image/jpeg")
+
+        vision_client = _client_for("nvidia", os.getenv("NVIDIA_KEY"), "https://integrate.api.nvidia.com/v1")
+        completion = vision_client.chat.completions.create(
+            model="qwen/qwen3.5-397b-a17b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Describe images that the user sends in extreme detail"
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_data}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": "Please describe this image in extreme detail."
+                        }
+                    ]
+                }
+            ],
+            temperature=1,
+            top_p=1,
+        )
+        return completion.choices[0].message.content or "No description returned."
+
+    if command_name == 'list_files':
+        return "Files in static directory: "+", ".join(os.listdir(static_dir))
+
+    if command_name == 'get_date':
+        return "Today's date is "+datetime.now().strftime('%B %d, %Y')
+
+    if command_name == 'read_web':
+        return scraper.scrape(parameter)
+
+    if command_name == 'create_file':
+        filename = args_dict.get('filename')
+        if "/" in filename or "\\" in filename:
+            return "Invalid filename."
+        with open(static_dir+filename, "w", encoding="utf-8") as f:
+            f.write(args_dict.get('contents') or '')
+        return "Your file is accessable at "+_static_url(static_dir, filename)
+
+    if command_name == 'delete_file':
+        filename = args_dict.get('filename')
+        if "/" in filename or "\\" in filename:
+            return "Invalid filename."
+        file_path = static_dir + filename
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            return "File deleted."
+        return "File not found."
+
+    if command_name == 'edit_file':
+        filename = args_dict.get('filename')
+        if "/" in filename or "\\" in filename:
+            return "Invalid filename."
+        old_str = args_dict.get('old_str')
+        new_str = args_dict.get('new_str')
+        try:
+            with open(static_dir + filename, "r", encoding="utf-8") as f:
+                contents = f.read()
+        except FileNotFoundError:
+            return "File not found."
+        if old_str not in contents:
+            return "String not found in file."
+        updated = contents.replace(old_str, new_str, 1)  # replace only first occurrence
+        with open(static_dir + filename, "w", encoding="utf-8") as f:
+            f.write(updated)
+        return "File edited successfully."
+
+    if command_name == 'create_page':
+        filename = args_dict.get('filename')
+        if "/" in filename or "\\" in filename:
+            return "Invalid filename."
+        with open(html_dir+filename, "w", encoding="utf-8") as f:
+            f.write(args_dict.get('contents') or '')
+        return "Your site is live at "+_static_url(html_dir, filename)
+
+    if command_name == 'open_url':
+        # Actually opening the tab happens client-side — the frontend
+        # listens for the "tool_call" SSE event (which already carries
+        # this url in evt.arguments) and calls window.open() on it.
+        return "URL opened: "+args_dict.get('url', '')
+
+    if command_name == 'run_bash_command':
+        proc = subprocess.Popen(
+            f'{parameter}',
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=True
+        )
+        stdout, stderr = proc.communicate()
+        print(stdout,stderr)
+        output = (stdout + "\n" + stderr).strip()
+        if not output:
+            output = 'Command was run successfully, Report back to the user.'
+        return output
+
+    if command_name in mcp_tool_registry:
+        entry = mcp_tool_registry[command_name]
+        server = entry["server"]
+        try:
+            return mcp_client.call_tool(server, entry["tool"], args_dict)
+        except Exception as e:
+            return f"Error calling MCP tool '{entry['tool']}' on '{server.get('name')}': {e}"
+
+    # Unknown tool (e.g. an MCP server that was removed after the model
+    # decided to call it) — answer it anyway so the tool_call isn't left
+    # dangling, which would break the next turn.
+    return "Unknown tool: " + command_name
+
+
 def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
@@ -733,7 +972,11 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         )
         agent_input=system_input
         eco_messages=agent_messages
-    elif tool_input:
+    # `is not None` (not truthiness): a tool can legitimately return "" —
+    # e.g. reading an empty file — and that still has to be recorded as the
+    # call's response and continue the turn, not fall through to the
+    # "no input" error below with the tool_call left dangling.
+    elif tool_input is not None:
         temp=0.2
         yield {"type": "tool_result", "name": tool_name, "result": tool_input}
         agent_messages.append(
@@ -747,8 +990,15 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         agent_input=tool_input
         # Find all user message indices
         user_indices = [i for i, m in enumerate(agent_messages) if m['role'] == 'user']
-        # Start from 2 user messages ago, or the first user message if there aren't 2
-        start_index = user_indices[-2] if len(user_indices) >= 2 else user_indices[0]
+        # Start from 2 user messages ago, or the first user message if there
+        # aren't 2. A system-initiated conversation may have no user turns at
+        # all — keep everything after the two system messages then.
+        if len(user_indices) >= 2:
+            start_index = user_indices[-2]
+        elif user_indices:
+            start_index = user_indices[0]
+        else:
+            start_index = 2
         eco_messages = [agent_messages[0], agent_messages[1]] + agent_messages[start_index:]
     else:
         raise Exception("You must have either user input or system input.")
@@ -812,9 +1062,15 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
 
 
     if tool_calls_list:
+        # A provider that streams a tool call without an id would leave
+        # id=None on both the assistant message and its tool response, and
+        # OpenAI-compatible APIs reject null ids. Synthesize stable ones so
+        # the two sides always match.
+        for i, tc in enumerate(tool_calls_list):
+            if not tc["id"]:
+                tc["id"] = f"call_{i}"
 
-        agent_messages.append(
-            {
+        assistant_msg = {
             "role": "assistant",
             "tool_calls": [
                 {
@@ -827,271 +1083,54 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 }
                 for tc in tool_calls_list
             ]
-            }
-        )
-    
+        }
+        # Keep any text the model streamed before its tool calls — dropping
+        # it would desync the saved conversation from what the user saw.
+        if buffer:
+            assistant_msg["content"] = buffer
+        agent_messages.append(assistant_msg)
 
-        
-        tool_call = types.SimpleNamespace(id=tool_calls_list[0]["id"])
-        command_name = tool_calls_list[0]["function"]["name"]
-        tool_args = tool_calls_list[0]["function"]["arguments"]  # JSON string
-
-        try:
-            fixed_tool_args = repair_json(tool_args)
-            args_dict = json.loads(fixed_tool_args)
-            # MCP (and malformed) tool calls can arrive with a non-object
-            # payload; keep the rest of the dispatch, which assumes a dict,
-            # crash-free.
-            if not isinstance(args_dict, dict):
-                args_dict = {}
-        except Exception as e:
-            # The assistant message with this tool_calls entry is already
-            # committed to agent_messages (just above) — every later turn
-            # resends the full history, and an OpenAI-compatible API
-            # rejects any conversation where a tool_calls message isn't
-            # immediately followed by a matching tool response. If
-            # unparseable arguments (e.g. from a complex MCP tool schema)
-            # bail out here uncaught, the conversation is left permanently
-            # broken from this point on — every subsequent message fails,
-            # not just this one. So this has to report back like any other
-            # tool result, not raise.
-            yield from agent_stream(
-                tool_input=f"Error: couldn't parse arguments for '{command_name}': {e}",
-                tool_id=tool_call.id, tool_name=command_name
-            )
-            return
-        parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
-        print('Agent called tool: '+command_name)
-        print('Agent parameter: '+str(parameter) if parameter else ' ')
-        yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
-        if command_name == 'save_context':
-            contents=args_dict.get('contents')
-            with open(context_path, "a", encoding="utf-8") as f:
-                f.write(contents.strip()+'\n')
-            yield from agent_stream(tool_input="Context saved.", tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'read_context':
-            with open(context_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            yield from agent_stream(tool_input=content, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'create_user':
-            new_name = args_dict.get('name')
-            new_context = args_dict.get('context')
-            if not new_name or not str(new_name).strip():
-                result = "Error: a name is required to create a user."
-            elif user_creator is None:
-                result = "Error: user creation isn't available in this context."
-            else:
-                try:
-                    created_name = user_creator(new_name, new_context)
-                    result = f"User '{created_name}' created successfully."
-                    if new_context:
-                        result += " Their context.md was set with the provided content."
-                except Exception as e:
-                    result = f"Error creating user: {e}"
-            yield from agent_stream(tool_input=result, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'search':
-
-
-            query=args_dict.get('query')
-
-            site=args_dict.get('site') or None
-            print('Site: '+site if site else None)
-            if site is not None:
-                web_data=scraper.get_result(parameter+' - '+site)
-            else:
-                web_data=scraper.get_result(parameter)
-            #print(web_data)
-
-
-            '''
-            s_messages=[{"role": "system", "content": "Query: "+parameter+".The following data has been scraped from a website, and your job is to clean up and structure the following data, answering the query. Only include information closely related to the query. Respond in full sentences."+web_data[0]}]
-
-
-            stream = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=s_messages,
-                stream=True
-            )
-            report=''
-            for chunk in stream:
-                report+=chunk.choices[0].delta.content or ""
-
-            '''
-            
-            #yield from agent_stream(tool_input=report+" - "+web_data[1], tool_id=tool_call.id,tool_name=command_name)
-            yield from agent_stream(tool_input=web_data, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'read_file':
-            filename=args_dict.get('filename')
-            # Uploaded files are referenced by their full "static/..." path
-            # in the chat tag, not a bare filename; take just the basename
-            # so both forms resolve against this session's static_dir.
-            filename=os.path.basename(filename)
+        # The assistant message above declares every requested call, and an
+        # OpenAI-compatible API rejects any history where a tool_calls id
+        # has no matching tool response — which would permanently break the
+        # conversation, since the full history is resent every turn. So run
+        # every call (models often request several at once), turn any
+        # failure into an error result instead of letting it escape, and
+        # hand the last result to the recursive turn that asks the model to
+        # continue.
+        last = len(tool_calls_list) - 1
+        for i, tc in enumerate(tool_calls_list):
+            command_name = tc["function"]["name"]
+            args_dict = None
+            result = None
             try:
-                with open(static_dir+filename, "r", encoding="utf-8") as f:
-                    file_contents = f.read()
-                yield from agent_stream(tool_input=file_contents, tool_id=tool_call.id,tool_name=command_name)
-            except FileNotFoundError:
-                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
-            return
-
-        elif command_name == 'get_image_description':
-            filename=args_dict.get('filename')
-            filename=os.path.basename(filename)
-            file_location=static_dir+filename
-
-            try:
-                # Read and encode the image to base64
-                with open(file_location, "rb") as image_file:
-                    image_data = base64.b64encode(image_file.read()).decode("utf-8")
-            except FileNotFoundError:
-                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
-                return
-
-
-            # Detect MIME type from file extension
-            ext = filename.rsplit(".", 1)[-1].lower()
-            mime_types = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
-            mime_type = mime_types.get(ext, "image/jpeg")
-
-
-            vision_client = _client_for("nvidia", os.getenv("NVIDIA_KEY"), "https://integrate.api.nvidia.com/v1")
-            completion = vision_client.chat.completions.create(
-                model="qwen/qwen3.5-397b-a17b",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Describe images that the user sends in extreme detail"
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{image_data}"
-                                }
-                            },
-                            {
-                                "type": "text",
-                        "text": "Please describe this image in extreme detail."
-                            }
-                        ]
-                    }
-                ],
-                temperature=1,
-                top_p=1,
-            )
-
-            description=completion.choices[0].message.content
-            yield from agent_stream(tool_input=description, tool_id=tool_call.id,tool_name=command_name)
-
-        elif command_name == 'list_files':
-            files = os.listdir(static_dir)
-            yield from agent_stream(tool_input="Files in static directory: "+", ".join(files), tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'get_date':
-            current_date=datetime.now().strftime('%B %d, %Y')
-            yield from agent_stream(tool_input="Today's date is "+current_date, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'read_web':
-            site_data=scraper.scrape(parameter)
-            yield from agent_stream(tool_input=site_data, tool_id=tool_call.id,tool_name=command_name)
-
-        elif command_name == 'create_file':
-
-            filename=args_dict.get('filename')
-            if "/" in filename or "\\" in filename:
-                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
-            contents=args_dict.get('contents')
-            with open(static_dir+filename, "w", encoding="utf-8") as f:
-                f.write(contents)
-            yield from agent_stream(tool_input="Your file is accessable at "+_static_url(static_dir, filename), tool_id=tool_call.id,tool_name=command_name)
-        
-
-        elif command_name == 'delete_file':
-            filename=args_dict.get('filename')
-            if "/" in filename or "\\" in filename:
-                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
-            file_path = static_dir + filename
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                yield from agent_stream(tool_input="File deleted.", tool_id=tool_call.id,tool_name=command_name)
-            else:
-                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'edit_file':
-            filename = args_dict.get('filename')
-            if "/" in filename or "\\" in filename:
-                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id, tool_name=command_name)
-            old_str = args_dict.get('old_str')
-            new_str = args_dict.get('new_str')
-            try:
-                with open(static_dir + filename, "r", encoding="utf-8") as f:
-                    contents = f.read()
-                if old_str not in contents:
-                    yield from agent_stream(tool_input="String not found in file.", tool_id=tool_call.id, tool_name=command_name)
-                updated = contents.replace(old_str, new_str, 1)  # replace only first occurrence
-                with open(static_dir + filename, "w", encoding="utf-8") as f:
-                    f.write(updated)
-                yield from agent_stream(tool_input="File edited successfully.", tool_id=tool_call.id, tool_name=command_name)
-            except FileNotFoundError:
-                yield from agent_stream(tool_input="File not found.", tool_id=tool_call.id, tool_name=command_name)
-            
-        elif command_name == 'create_page':
-
-            filename=args_dict.get('filename')
-            if "/" in filename or "\\" in filename:
-                yield from agent_stream(tool_input="Invalid filename.", tool_id=tool_call.id,tool_name=command_name)
-            contents=args_dict.get('contents')
-            with open(html_dir+filename, "w", encoding="utf-8") as f:
-                f.write(contents)
-            yield from agent_stream(tool_input="Your site is live at "+_static_url(html_dir, filename), tool_id=tool_call.id,tool_name=command_name)
-        
-#        elif command_name == 'List_Home_Assistant_Devices':
-#            devices=home_assistant.get_entities()
-#            yield from agent_stream(tool_input=str(devices), tool_id=tool_call.id,tool_name=command_name)
-#        
-#        elif command_name == 'Home_Assistant':
-#            domain=args_dict.get('domain')
-#            service=args_dict.get('service')
-#            data=args_dict.get('data')
-#            output=home_assistant.execute_action(domain, service, data)
-#            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'open_url':
-            # Actually opening the tab happens client-side — the frontend
-            # listens for the "tool_call" SSE event (which already carries
-            # this url in evt.arguments) and calls window.open() on it.
-            yield from agent_stream(tool_input="URL opened: "+args_dict.get('url', ''), tool_id=tool_call.id,tool_name=command_name)
-        elif command_name == 'run_bash_command':
-            print(parameter)
-            run_command='y'
-            if run_command.lower() == 'y':
-                proc = subprocess.Popen(
-                    f'{parameter}',
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    shell=True
-                )
-                stdout, stderr = proc.communicate()
-                print(stdout,stderr)
-                output=(stdout + "\n" + stderr).strip()
-            else:
-                output='User denied command'
-            if output is None or output == '':
-                output='Command was run successfully, Report back to the user.'
-            print(output)
-            yield from agent_stream(tool_input=output, tool_id=tool_call.id,tool_name=command_name)
-        elif command_name in mcp_tool_registry:
-            entry = mcp_tool_registry[command_name]
-            server = entry["server"]
-            try:
-                result = mcp_client.call_tool(server, entry["tool"], args_dict)
+                args_dict = json.loads(repair_json(tc["function"]["arguments"]))
+                # MCP (and malformed) tool calls can arrive with a
+                # non-object payload; keep _run_tool, which assumes a dict,
+                # crash-free.
+                if not isinstance(args_dict, dict):
+                    args_dict = {}
             except Exception as e:
-                result = f"Error calling MCP tool '{entry['tool']}' on '{server.get('name')}': {e}"
-            yield from agent_stream(tool_input=result, tool_id=tool_call.id, tool_name=command_name)
-        else:
-            # Unknown tool (e.g. an MCP server that was removed after the
-            # model decided to call it) — reply so the tool_call isn't left
-            # dangling, which would break the next turn.
-            yield from agent_stream(tool_input="Unknown tool: " + command_name, tool_id=tool_call.id, tool_name=command_name)
+                result = f"Error: couldn't parse arguments for '{command_name}': {e}"
+            if args_dict is not None:
+                yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
+                try:
+                    result = _run_tool(command_name, args_dict)
+                except Exception as e:
+                    result = f"Error running tool '{command_name}': {e}"
+            if not isinstance(result, str):
+                result = "" if result is None else str(result)
+            if i < last:
+                yield {"type": "tool_result", "name": command_name, "result": result}
+                agent_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": command_name,
+                    "content": result
+                })
+            else:
+                yield from agent_stream(tool_input=result, tool_id=tc["id"], tool_name=command_name)
+        return
     elif buffer is not None:
         agent_messages.append(
             {
