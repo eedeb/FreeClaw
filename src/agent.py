@@ -47,10 +47,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-groq_key = os.getenv("API_KEY")
-nvidia_key = os.getenv("NVIDIA_KEY")
-openrouter_key = os.getenv("OPENROUTER_KEY")
-
 
 
 
@@ -78,12 +74,15 @@ else:
 agent_messages=[]
 tools=[]
 
-# LLM provider fallback chain: (name, api_key, base_url), tried in order.
-# A provider with no key configured is skipped.
+# LLM provider fallback chain: (name, env_var, base_url), tried in order.
+# The key is looked up from the environment fresh on every call (not
+# captured here) so a key added or changed via /api/settings takes effect
+# immediately, without restarting the process. A provider with no key
+# configured is skipped.
 _PROVIDER_CONF = [
-    ("groq", groq_key, "https://api.groq.com/openai/v1"),
-    ("nvidia", nvidia_key, "https://integrate.api.nvidia.com/v1"),
-    ("openrouter", openrouter_key, "https://openrouter.ai/api/v1"),
+    ("groq", "API_KEY", "https://api.groq.com/openai/v1"),
+    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1"),
+    ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1"),
 ]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
@@ -102,36 +101,86 @@ _last_provider = "groq"
 
 
 def _client_for(name, key, base_url):
-    if name not in _provider_clients:
-        _provider_clients[name] = OpenAI(
+    # Cache keyed on (name, key) so a key rotated at runtime (e.g. via
+    # /api/settings) gets a fresh client instead of reusing one built with
+    # the old (or missing) key.
+    cached = _provider_clients.get(name)
+    if cached is None or cached[0] != key:
+        _provider_clients[name] = (key, OpenAI(
             api_key=key, base_url=base_url,
             timeout=_PROVIDER_TIMEOUT, max_retries=0,
+        ))
+    return _provider_clients[name][1]
+
+
+def _classify_error(e):
+    """Best-effort classification of a provider failure, used to build an
+    accurate message if every provider in the chain fails."""
+    status = getattr(e, "status_code", None)
+    text = str(e).lower()
+    if status == 429 or "rate limit" in text or "quota" in text:
+        return "rate_limited"
+    if status in (401, 403) or "invalid api key" in text or "unauthorized" in text:
+        return "auth_error"
+    if isinstance(e, (httpx.TimeoutException, httpx.ConnectError)):
+        return "network_error"
+    if status and status >= 500:
+        return "provider_error"
+    return "unknown"
+
+
+class AllProvidersFailedError(RuntimeError):
+    """Raised when every configured LLM provider failed for one call.
+    Carries the per-provider (name, reason, detail) failures so callers can
+    build a message that reflects what actually went wrong instead of a
+    generic string."""
+
+    def __init__(self, failures):
+        self.failures = failures
+        super().__init__(
+            "All providers failed: " + "; ".join(f"{n}: {d}" for n, _, d in failures)
         )
-    return _provider_clients[name]
 
 
 def _create_completion(**kwargs):
     """Try each configured provider in turn — starting with whichever one
     last succeeded — and return (response_or_stream, provider_name) from the
-    first that works. Raises RuntimeError with all provider errors if none
-    do."""
+    first that works. Raises AllProvidersFailedError if none do."""
     global _last_provider
     names = [p[0] for p in _PROVIDER_CONF]
     order = [_last_provider] + [n for n in names if n != _last_provider]
-    conf = {n: (key, base_url) for n, key, base_url in _PROVIDER_CONF}
-    errors = []
+    conf = {n: (env_var, base_url) for n, env_var, base_url in _PROVIDER_CONF}
+    failures = []
     for name in order:
-        key, base_url = conf[name]
-        if not key or key in ("None", ""):
+        env_var, base_url = conf[name]
+        key = os.getenv(env_var)
+        if not key or key == "None":
             continue
         try:
             c = _client_for(name, key, base_url)
             result = c.chat.completions.create(**kwargs)
+            if name != _last_provider:
+                print(f"LLM provider switched: {_last_provider} -> {name}")
             _last_provider = name
             return result, name
         except Exception as e:
-            errors.append(f"{name}: {e}")
-    raise RuntimeError("All providers failed: " + "; ".join(errors))
+            failures.append((name, _classify_error(e), str(e)))
+    raise AllProvidersFailedError(failures)
+
+
+def _user_facing_error(failures):
+    """Build a short, accurate frontend message from the per-provider
+    failures collected by _create_completion."""
+    if not failures:
+        return "No LLM provider is configured. Add an API key in Settings."
+    reasons = {r for _, r, _ in failures}
+    if reasons == {"rate_limited"}:
+        return "All configured providers are rate-limited or out of usage right now. Try again shortly."
+    if reasons == {"auth_error"}:
+        return "All configured providers rejected the request — check your API keys in Settings."
+    if reasons == {"network_error"}:
+        return "Couldn't reach any LLM provider — check your network connection."
+    return "All providers failed: " + ", ".join(f"{name} ({reason})" for name, reason, _ in failures)
 
 # Maps the sanitized function name we expose to the model (e.g.
 # "mcp_github_create_issue") back to the (server, real tool name) needed to
@@ -691,8 +740,8 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             stream=True,
             stop=None
         )
-    except RuntimeError:
-        raise Exception("You hit your usage limits.")
+    except AllProvidersFailedError as e:
+        raise Exception(_user_facing_error(e.failures))
 
     # Consume the stream, forwarding text chunks to the caller in real
     # time and reassembling any tool calls (which always arrive as
@@ -858,7 +907,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             mime_type = mime_types.get(ext, "image/jpeg")
 
 
-            vision_client = _client_for("nvidia", nvidia_key, "https://integrate.api.nvidia.com/v1")
+            vision_client = _client_for("nvidia", os.getenv("NVIDIA_KEY"), "https://integrate.api.nvidia.com/v1")
             completion = vision_client.chat.completions.create(
                 model="qwen/qwen3.5-397b-a17b",
                 messages=[

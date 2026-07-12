@@ -1,6 +1,12 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session, Response, stream_with_context
 import src.agent as agent
 import src.mcp_client as mcp_client
+from src.users import (
+    STATIC_DIR, safe_username, user_dir, conversation_path, conv_files_dir,
+    user_context_path, list_users, user_exists, create_user,
+    load_conversation, save_conversation, derive_title, ensure_conversation,
+    activate_session,
+)
 import uuid
 import json
 import re
@@ -44,11 +50,9 @@ if not _secret_key:
 app.secret_key = _secret_key
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
-STATIC_DIR    = os.path.join(os.path.dirname(__file__), 'static')
-os.makedirs(STATIC_DIR, exist_ok=True)
-
-CONVERSATIONS_SUBDIR = "conversations"
-RESERVED_NAMES = {"conversations", "uploads"}
+# User/conversation storage (STATIC_DIR, safe_username, list_users, etc. —
+# imported above) lives in src/users.py, shared with the CLI, so both entry
+# points read and write the exact same on-disk layout.
 
 # A handful of users may legitimately hit /chat at the same moment, and the
 # agent module keeps its "active conversation" as module-level globals
@@ -70,75 +74,6 @@ agent_lock = threading.Lock()
 
 def logged_in():
     return session.get("authenticated") is True
-
-
-# ── User / conversation storage helpers ─────────────────────
-
-def safe_username(name):
-    """Restrict usernames to something that's safe to use as a folder name
-    and can't escape the static/ directory or collide with reserved paths."""
-    if not name:
-        return None
-    name = name.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_\- ]{1,40}", name):
-        return None
-    if name.lower() in RESERVED_NAMES:
-        return None
-    return name
-
-
-def user_dir(name):
-    return os.path.join(STATIC_DIR, name) + os.sep
-
-
-def conversation_path(name):
-    return os.path.join(user_dir(name), "conversation.json")
-
-
-def conv_files_dir(name):
-    """Folder where this user's created/uploaded files live, e.g.
-    static/<user>/files/. Kept separate from the conversation's metadata
-    JSON file."""
-    path = os.path.join(user_dir(name), "files")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def _migrate_legacy_conversations(name):
-    """Older versions of FreeClaw gave each user many chats, stored as
-    static/<user>/conversations/<id>.json (each with its own files/
-    subfolder). Now every user has exactly one conversation, so collapse
-    that down: keep the most recently updated chat's history and files as
-    this user's single conversation, and drop the rest."""
-    legacy_dir = os.path.join(user_dir(name), CONVERSATIONS_SUBDIR)
-    if not os.path.isdir(legacy_dir):
-        return
-    latest_id, latest_data, latest_ts = None, None, -1
-    for fname in os.listdir(legacy_dir):
-        if not fname.endswith(".json"):
-            continue
-        conv_id = fname[:-5]
-        try:
-            with open(os.path.join(legacy_dir, fname), "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
-        ts = data.get("updated_at", 0)
-        if ts > latest_ts:
-            latest_id, latest_data, latest_ts = conv_id, data, ts
-    if latest_data is not None and not os.path.exists(conversation_path(name)):
-        with open(conversation_path(name), "w", encoding="utf-8") as f:
-            json.dump(latest_data, f)
-        legacy_files_dir = os.path.join(legacy_dir, latest_id)
-        if os.path.isdir(legacy_files_dir):
-            dest = conv_files_dir(name)
-            for item in os.listdir(legacy_files_dir):
-                shutil.move(os.path.join(legacy_files_dir, item), os.path.join(dest, item))
-    shutil.rmtree(legacy_dir, ignore_errors=True)
-
-
-def user_context_path(name):
-    return os.path.join(user_dir(name), "context.md")
 
 
 def create_user_with_context(name, context=None):
@@ -168,96 +103,6 @@ try:
     agent.refresh_tools()
 except Exception as e:
     print(f"[freeclaw] Warning: couldn't load tools at startup ({e}).")
-
-
-def list_users():
-    if not os.path.isdir(STATIC_DIR):
-        return []
-    users = []
-    for entry in sorted(os.listdir(STATIC_DIR)):
-        if entry.lower() in RESERVED_NAMES or entry.startswith('.'):
-            continue
-        full = os.path.join(STATIC_DIR, entry)
-        try:
-            if os.path.isdir(full):
-                users.append(entry)
-        except OSError:
-            continue
-    return users
-
-
-def user_exists(name):
-    return name in list_users()
-
-
-def create_user(name):
-    os.makedirs(user_dir(name), exist_ok=True)
-    ctx_path = os.path.join(user_dir(name), "context.md")
-    if not os.path.exists(ctx_path):
-        with open(ctx_path, "w", encoding="utf-8") as f:
-            f.write("")
-    ensure_conversation(name)
-
-
-def load_conversation(name):
-    path = conversation_path(name)
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_conversation(name, messages, title=None):
-    path = conversation_path(name)
-    data = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            data = {}
-    if title is not None:
-        data["title"] = title
-    elif "title" not in data:
-        data["title"] = "New chat"
-    data["messages"] = messages
-    data["updated_at"] = time.time()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f)
-
-
-def derive_title(messages):
-    for m in messages:
-        if m.get("role") == "user":
-            text = m.get("content")
-            if isinstance(text, list):
-                text = " ".join(b.get("text", "") for b in text if isinstance(b, dict))
-            text = (text or "").strip()
-            if text:
-                return text[:60]
-    return "New chat"
-
-
-def ensure_conversation(name):
-    """Make sure `name` has a conversation.json, migrating an older
-    multi-chat layout if one is found, or creating a fresh conversation
-    (via agent.reset(), scoped to this user's own files folder and
-    long-term context.md) if there's nothing to migrate."""
-    _migrate_legacy_conversations(name)
-    if not os.path.exists(conversation_path(name)):
-        agent.set_static_dir(conv_files_dir(name))
-        agent.set_context_path(user_context_path(name))
-        agent.reset()
-        save_conversation(name, agent.get_messages(), title="New chat")
-
-
-def activate_session(name):
-    """Point the agent module's globals at this user's file folder and
-    long-term context.md, and load their saved conversation messages so
-    the next agent_stream() call continues the right thread."""
-    ensure_conversation(name)
-    agent.set_static_dir(conv_files_dir(name))
-    agent.set_context_path(user_context_path(name))
-    data = load_conversation(name)
-    agent.set_messages(data.get("messages", []))
 
 
 def current_user():
@@ -571,6 +416,11 @@ def v1_chat_completions():
             temperature=temperature,
             max_tokens=max_tokens,
         )
+    except agent.AllProvidersFailedError as e:
+        reasons = {r for _, r, _ in e.failures}
+        status = 429 if reasons == {"rate_limited"} else 500
+        err_type = "rate_limit_error" if reasons == {"rate_limited"} else "server_error"
+        return jsonify({"error": {"message": agent._user_facing_error(e.failures), "type": err_type}}), status
     except Exception as e:
         return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
 
@@ -595,8 +445,10 @@ def v1_chat_completions():
                     }
                     yield f"data: {json.dumps(payload)}\n\n"
                 yield "data: [DONE]\n\n"
+            except agent.AllProvidersFailedError as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': agent._user_facing_error(e.failures)})}\n\n"
             except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
         return Response(
             stream_with_context(generate()),
@@ -681,6 +533,12 @@ def _write_env(updates: dict):
 
     with open(path, 'w', encoding='utf-8') as f:
         f.writelines(new_lines)
+
+    # Also update the live process environment so a key added/changed here
+    # (e.g. NVIDIA_KEY) is picked up by the LLM provider fallback on the
+    # very next request, without restarting the app.
+    for key, value in updates.items():
+        os.environ[key] = value
 
 
 @app.route('/api/settings', methods=['GET'])

@@ -16,6 +16,7 @@ with open(os.devnull, 'w') as devnull:
     _real_stdout = sys.stdout
     sys.stdout = devnull
     import src.agent as agent
+    import src.users as users
     sys.stdout = _real_stdout
 
 # ── ANSI colours ────────────────────────────────────────────────────────────────
@@ -131,16 +132,111 @@ def render_conversation(conversation):
                 print(clr("agent › ", GREEN, BOLD) + content.strip())
                 print()
 
+def prompt_new_user():
+    """Ask for a valid, not-yet-taken username and create it."""
+    while True:
+        name = input(clr("  name for new user › ", YELLOW, BOLD)).strip()
+        safe = users.safe_username(name)
+        if not safe:
+            print(clr("  invalid name — use 1-40 letters, numbers, spaces, - or _.", RED))
+            continue
+        if users.user_exists(safe):
+            print(clr(f"  a user named '{safe}' already exists.", RED))
+            continue
+        break
+    with silence():
+        users.create_user(safe)
+    print(clr(f"  created user '{safe}'\n", GREEN))
+    return safe
+
+
+def resolve_user(requested):
+    """Figure out which user to chat as: the name passed on the command
+    line if given (creating it after confirmation if it doesn't exist
+    yet), otherwise an interactive picker over existing users."""
+    if requested:
+        name = users.safe_username(requested)
+        if not name:
+            print(clr(f"  '{requested}' isn't a valid username — use 1-40 letters, numbers, spaces, - or _.\n", RED))
+            sys.exit(1)
+        if users.user_exists(name):
+            return name
+        answer = input(clr(f"  no user named '{name}' — create them? [y/N] ", YELLOW)).strip().lower()
+        if answer != "y":
+            print(clr("\n  bye\n", GREY))
+            sys.exit(0)
+        with silence():
+            users.create_user(name)
+        print(clr(f"  created user '{name}'\n", GREEN))
+        return name
+
+    existing = users.list_users()
+    if not existing:
+        print(clr("  no users yet — let's create one.", GREY))
+        return prompt_new_user()
+
+    print(clr("  who's chatting?\n", GREY))
+    for i, u in enumerate(existing, 1):
+        print(clr(f"  {i}) {u}", CYAN))
+    print(clr(f"  {len(existing) + 1}) + add a new user\n", CYAN))
+
+    while True:
+        choice = input(clr("  choose a number or type a name › ", YELLOW, BOLD)).strip()
+        if not choice:
+            continue
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(existing):
+                return existing[idx - 1]
+            if idx == len(existing) + 1:
+                return prompt_new_user()
+            print(clr("  not a valid option.", RED))
+            continue
+        safe = users.safe_username(choice)
+        if not safe:
+            print(clr("  invalid name — use 1-40 letters, numbers, spaces, - or _.", RED))
+            continue
+        if safe in existing:
+            return safe
+        answer = input(clr(f"  no user named '{safe}' — create them? [y/N] ", YELLOW)).strip().lower()
+        if answer == "y":
+            with silence():
+                users.create_user(safe)
+            print(clr(f"  created user '{safe}'\n", GREEN))
+            return safe
+
+
 def main():
     try:
         print_banner()
     except Exception:
         print("FreeClaw CLI\n")
 
-    with silence():
-        agent.reset()
+    requested = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    username = resolve_user(requested)
 
-    last_rendered_index = 0
+    with silence():
+        # Tools are only (re)loaded by agent.reset(), which activate_session()
+        # skips for a returning user with an existing conversation — so load
+        # them explicitly here to make sure they're always available.
+        try:
+            agent.refresh_tools()
+        except Exception:
+            pass
+        users.activate_session(username)
+
+    print(clr(f"  logged in as {username}\n", GREEN))
+
+    conv_data = users.load_conversation(username)
+    had_title = bool(conv_data.get("title", "") not in (None, "", "New chat"))
+
+    # A fresh reset() leaves just the 2 system messages; more than that means
+    # there's a real conversation to resume — show its scrollback.
+    conversation = agent.agent_messages
+    if len(conversation) > 2:
+        print(clr("  — resuming previous conversation —\n", GREY))
+        render_conversation(conversation)
+    last_rendered_index = len(conversation)
 
     while True:
         try:
@@ -159,6 +255,8 @@ def main():
         if user_input.lower() == "/reset":
             with silence():
                 agent.reset()
+                users.save_conversation(username, agent.get_messages(), title="New chat")
+            had_title = False
             last_rendered_index = 0
             print(clr("  conversation reset\n", GREY))
             continue
@@ -216,6 +314,11 @@ def main():
         conversation = agent.agent_messages
         render_tool_blocks(conversation[last_rendered_index:])
         last_rendered_index = len(conversation)
+
+        title = None if had_title else users.derive_title(conversation)
+        users.save_conversation(username, conversation, title=title)
+        if title:
+            had_title = True
 
 if __name__ == "__main__":
     main()

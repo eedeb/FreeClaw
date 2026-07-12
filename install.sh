@@ -242,7 +242,7 @@ info "Installing freeclaw CLI to /usr/local/bin..."
 sudo tee /usr/local/bin/freeclaw > /dev/null <<EOF
 #!/bin/bash
 cd $INSTALL_DIR
-$INSTALL_DIR/venv/bin/python3 -m src.cli
+$INSTALL_DIR/venv/bin/python3 -m src.cli "\$@"
 EOF
 sudo chmod +x /usr/local/bin/freeclaw
 success "CLI installed — run 'freeclaw' from anywhere"
