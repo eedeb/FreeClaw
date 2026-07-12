@@ -836,13 +836,30 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         command_name = tool_calls_list[0]["function"]["name"]
         tool_args = tool_calls_list[0]["function"]["arguments"]  # JSON string
 
-        fixed_tool_args = repair_json(tool_args)
-
-        args_dict = json.loads(fixed_tool_args)
-        # MCP (and malformed) tool calls can arrive with a non-object payload;
-        # keep the rest of the dispatch, which assumes a dict, crash-free.
-        if not isinstance(args_dict, dict):
-            args_dict = {}
+        try:
+            fixed_tool_args = repair_json(tool_args)
+            args_dict = json.loads(fixed_tool_args)
+            # MCP (and malformed) tool calls can arrive with a non-object
+            # payload; keep the rest of the dispatch, which assumes a dict,
+            # crash-free.
+            if not isinstance(args_dict, dict):
+                args_dict = {}
+        except Exception as e:
+            # The assistant message with this tool_calls entry is already
+            # committed to agent_messages (just above) — every later turn
+            # resends the full history, and an OpenAI-compatible API
+            # rejects any conversation where a tool_calls message isn't
+            # immediately followed by a matching tool response. If
+            # unparseable arguments (e.g. from a complex MCP tool schema)
+            # bail out here uncaught, the conversation is left permanently
+            # broken from this point on — every subsequent message fails,
+            # not just this one. So this has to report back like any other
+            # tool result, not raise.
+            yield from agent_stream(
+                tool_input=f"Error: couldn't parse arguments for '{command_name}': {e}",
+                tool_id=tool_call.id, tool_name=command_name
+            )
+            return
         parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
         print('Agent called tool: '+command_name)
         print('Agent parameter: '+str(parameter) if parameter else ' ')
