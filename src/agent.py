@@ -86,8 +86,8 @@ tools=[]
 # includes a `tools` param, streaming or not), so Groq is back as primary
 # with NVIDIA as fallback for when Groq is rate-limited.
 _PROVIDER_CONF = [
-    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1"),
     ("groq", "API_KEY", "https://api.groq.com/openai/v1"),
+    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1"),
     # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1"),
 ]
 
