@@ -74,21 +74,30 @@ else:
 agent_messages=[]
 tools=[]
 
-# LLM provider fallback chain: (name, env_var, base_url), tried in order.
+# LLM provider fallback chain: (name, env_var, base_url, model_override),
+# tried in order.
 # The key is looked up from the environment fresh on every call (not
 # captured here) so a key added or changed via /api/settings takes effect
 # immediately, without restarting the process. A provider with no key
 # configured is skipped.
 #
+# model_override, when set, replaces whatever model the caller asked for
+# when talking to that specific provider. NVIDIA needs one: the shared
+# default (openai/gpt-oss-120b, what Groq calls use) hangs indefinitely on
+# NVIDIA for any request that includes a `tools` param — confirmed by
+# direct testing, streaming and non-streaming both. qwen/qwen3.5-397b-a17b
+# handles tool calls on NVIDIA cleanly (also confirmed directly) and
+# replies normally on tool-free turns too, so NVIDIA always uses it
+# regardless of which model was requested. Leave as None for a provider
+# that should just use whatever model the caller passed in.
+#
 # OpenRouter is still temporarily disabled — uncomment to bring it back
-# into the chain. NVIDIA's hosted gpt-oss-120b doesn't support tool calls
-# at all right now (confirmed: it hangs indefinitely on any request that
-# includes a `tools` param, streaming or not), so Groq is back as primary
-# with NVIDIA as fallback for when Groq is rate-limited.
+# into the chain. Groq is primary, NVIDIA is the fallback for when Groq is
+# rate-limited.
 _PROVIDER_CONF = [
-    ("groq", "API_KEY", "https://api.groq.com/openai/v1"),
-    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1"),
-    # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1"),
+    ("groq", "API_KEY", "https://api.groq.com/openai/v1", None),
+    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1", "qwen/qwen3.5-397b-a17b"),
+    # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1", None),
 ]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
@@ -169,13 +178,14 @@ def _create_completion(**kwargs):
     if none do."""
     global _last_provider
     failures = []
-    for name, env_var, base_url in _PROVIDER_CONF:
+    for name, env_var, base_url, model_override in _PROVIDER_CONF:
         key = os.getenv(env_var)
         if not key or key == "None":
             continue
         try:
             c = _client_for(name, key, base_url)
-            result = c.chat.completions.create(**kwargs)
+            call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
+            result = c.chat.completions.create(**call_kwargs)
             if name != _last_provider:
                 print(f"LLM provider switched: {_last_provider} -> {name}")
             _last_provider = name
