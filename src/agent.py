@@ -364,14 +364,14 @@ def build_base_tools():
                 }
             }
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_context",
-                "description": "Shows the contents of context.md.",
-                "parameters": { "type": "object", "properties": {} }
-            }
-        },
+#        {
+#            "type": "function",
+#            "function": {
+#                "name": "read_context",
+#                "description": "Shows the contents of context.md.",
+#                "parameters": { "type": "object", "properties": {} }
+#            }
+#        },
         {
             "type": "function",
             "function": {
@@ -406,7 +406,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Reads a file's contents from /static.",
+                "description": "Reads a file's contents from /static. Use this to view the context.md file.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -480,7 +480,7 @@ def build_base_tools():
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content.",
+                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content. Use this to edit the context.md file.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -571,6 +571,8 @@ def load_mcp_tools():
     registry = {}
     out = []
     for server in mcp_client.read_servers():
+        if not server.get("enabled", True):
+            continue
         try:
             server_tools = mcp_client.list_tools(server)
         except Exception as e:

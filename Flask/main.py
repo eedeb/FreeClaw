@@ -586,6 +586,7 @@ def _mcp_server_public(s):
         'name': s.get('name', ''),
         'url': s.get('url', ''),
         'has_token': bool((s.get('token') or '').strip()),
+        'enabled': s.get('enabled', True),
     }
 
 
@@ -621,7 +622,7 @@ def api_add_mcp():
         servers = mcp_client.read_servers()
         if any(s.get('name') == name for s in servers):
             return jsonify({'error': f"An MCP server named '{name}' already exists."}), 409
-        servers.append({'name': name, 'url': url, 'token': token})
+        servers.append({'name': name, 'url': url, 'token': token, 'enabled': True})
         try:
             _write_env(mcp_client.servers_to_env(servers))
         except Exception as e:
@@ -642,6 +643,32 @@ def api_add_mcp():
     if error:
         resp['warning'] = f"Saved, but couldn't reach the server yet: {error}"
     return jsonify(resp)
+
+
+@app.route('/api/mcp/<name>', methods=['PATCH'])
+def api_toggle_mcp(name):
+    """Enable/disable a server without touching its saved URL/token — a
+    disabled server's tools are left out of the agent's tool list (see
+    load_mcp_tools in agent.py) but its config stays in .env untouched, so
+    re-enabling it later needs no re-entering of credentials."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    if 'enabled' not in data:
+        return jsonify({'error': "Body must include 'enabled'."}), 400
+    enabled = bool(data.get('enabled'))
+    with agent_lock:
+        servers = mcp_client.read_servers()
+        match = next((s for s in servers if s.get('name') == name), None)
+        if match is None:
+            return jsonify({'error': 'No such MCP server'}), 404
+        match['enabled'] = enabled
+        try:
+            _write_env(mcp_client.servers_to_env(servers))
+        except Exception as e:
+            return jsonify({'error': f'Could not save: {e}'}), 500
+        agent.refresh_tools()
+    return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in servers]})
 
 
 @app.route('/api/mcp/<name>', methods=['DELETE'])

@@ -695,6 +695,24 @@
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .mcp-card-token { font-family: var(--mono); font-size: 9px; color: var(--accent-dim); margin-top: 2px; }
+    .mcp-card.disabled { opacity: 0.5; }
+    .mcp-card.disabled .mcp-card-name::after {
+      content: 'disabled'; margin-left: 6px; font-family: var(--mono); font-size: 9px;
+      font-weight: 400; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .mcp-toggle {
+      position: relative; flex-shrink: 0; width: 30px; height: 17px;
+      -webkit-appearance: none; appearance: none;
+      background: var(--border); border-radius: 9px; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .mcp-toggle::before {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--muted); transition: transform 0.15s, background 0.15s;
+    }
+    .mcp-toggle:checked { background: var(--accent-dim); }
+    .mcp-toggle:checked::before { transform: translateX(13px); background: var(--accent); }
     .mcp-del {
       background: none; border: 1px solid var(--border); border-radius: var(--radius);
       color: var(--muted); font-family: var(--mono); font-size: 10px;
@@ -1406,15 +1424,19 @@
       return;
     }
     servers.forEach(s => {
+      const enabled = s.enabled !== false;
       const card = document.createElement('div');
-      card.className = 'mcp-card';
+      card.className = 'mcp-card' + (enabled ? '' : ' disabled');
       card.innerHTML = `
         <div class="mcp-card-info">
           <div class="mcp-card-name">${escapeHtml(s.name)}</div>
           <div class="mcp-card-url">${escapeHtml(s.url)}</div>
           ${s.has_token ? '<div class="mcp-card-token">🔑 token set</div>' : ''}
         </div>
+        <input class="mcp-toggle" type="checkbox" ${enabled ? 'checked' : ''} title="${enabled ? 'Disable' : 'Enable'} this server"/>
         <button class="mcp-del" type="button">remove</button>`;
+      const toggle = card.querySelector('.mcp-toggle');
+      toggle.addEventListener('change', () => toggleMcpServer(s.name, toggle.checked, card, toggle));
       const del = card.querySelector('.mcp-del');
       del.addEventListener('click', () => {
         if (!del.classList.contains('confirm')) {
@@ -1473,6 +1495,26 @@
   }
   mcpAddBtn.addEventListener('click', addMcpServer);
   mcpToken.addEventListener('keydown', e => { if (e.key === 'Enter') addMcpServer(); });
+
+  async function toggleMcpServer(name, enabled, card, toggle) {
+    toggle.disabled = true;
+    try {
+      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      card.classList.toggle('disabled', !enabled);
+      toggle.title = (enabled ? 'Disable' : 'Enable') + ' this server';
+    } catch (e) {
+      toggle.checked = !enabled;
+      mcpShowMsg(e.message, false);
+    } finally {
+      toggle.disabled = false;
+    }
+  }
 
   async function deleteMcpServer(name) {
     try {

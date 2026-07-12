@@ -5,17 +5,21 @@ over HTTP POST, with responses arriving either as a single JSON body or as an
 SSE `text/event-stream`. No external MCP SDK is required; this leans only on
 `requests`, which FreeClaw already depends on.
 
-Server definitions live in the project's `.env` file as three parallel,
+Server definitions live in the project's `.env` file as four parallel,
 JSON-encoded lists so they're easy to edit by hand or from the web UI:
 
     MCP_NAMES='["github","weather"]'
     MCP_URLS='["https://…/mcp","https://…/mcp"]'
     MCP_TOKENS='["ghp_…",""]'
+    MCP_ENABLED='[true,false]'
 
-`read_servers()` parses those into `{"name","url","token"}` dicts, and
-`servers_to_env()` turns a list of such dicts back into the `{key: value}`
-mapping the caller writes to `.env`. `list_tools()` / `call_tool()` do the
-actual protocol work.
+`read_servers()` parses those into `{"name","url","token","enabled"}` dicts
+(a server with no MCP_ENABLED entry — e.g. one saved before this field
+existed — defaults to enabled), and `servers_to_env()` turns a list of such
+dicts back into the `{key: value}` mapping the caller writes to `.env`.
+A disabled server's config is kept around untouched; `load_mcp_tools()` in
+agent.py just skips it, so re-enabling it later needs no re-entering of the
+URL/token. `list_tools()` / `call_tool()` do the actual protocol work.
 """
 
 import json
@@ -32,10 +36,11 @@ ENV_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
 )
 
-# The three parallel lists we persist under.
+# The four parallel lists we persist under.
 NAMES_KEY = "MCP_NAMES"
 URLS_KEY = "MCP_URLS"
 TOKENS_KEY = "MCP_TOKENS"
+ENABLED_KEY = "MCP_ENABLED"
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "FreeClaw", "version": "1.0"}
@@ -70,14 +75,17 @@ def _parse_list(raw):
 
 def read_servers():
     """Return the configured MCP servers as a list of
-    {"name", "url", "token"} dicts, read fresh from `.env` on every call so
-    runtime edits are picked up without needing a restart."""
+    {"name", "url", "token", "enabled"} dicts, read fresh from `.env` on
+    every call so runtime edits are picked up without needing a restart.
+    A server with no MCP_ENABLED entry (saved before that field existed)
+    defaults to enabled."""
     if not os.path.exists(ENV_PATH):
         return []
     env = dotenv_values(ENV_PATH)
     names = _parse_list(env.get(NAMES_KEY))
     urls = _parse_list(env.get(URLS_KEY))
     tokens = _parse_list(env.get(TOKENS_KEY))
+    enabled = _parse_list(env.get(ENABLED_KEY))
     servers = []
     for i, url in enumerate(urls):
         if not url:
@@ -86,6 +94,7 @@ def read_servers():
             "name": names[i] if i < len(names) and names[i] else f"mcp{i + 1}",
             "url": url,
             "token": tokens[i] if i < len(tokens) else "",
+            "enabled": bool(enabled[i]) if i < len(enabled) else True,
         })
     return servers
 
@@ -98,10 +107,12 @@ def servers_to_env(servers):
     names = [s.get("name", "") for s in servers]
     urls = [s.get("url", "") for s in servers]
     tokens = [s.get("token", "") for s in servers]
+    enabled = [bool(s.get("enabled", True)) for s in servers]
     return {
         NAMES_KEY: "'" + json.dumps(names) + "'",
         URLS_KEY: "'" + json.dumps(urls) + "'",
         TOKENS_KEY: "'" + json.dumps(tokens) + "'",
+        ENABLED_KEY: "'" + json.dumps(enabled) + "'",
     }
 
 
