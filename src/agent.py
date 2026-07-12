@@ -74,8 +74,7 @@ else:
 agent_messages=[]
 tools=[]
 
-# LLM provider fallback chain: (name, env_var, base_url, model_override),
-# tried in order.
+# LLM provider fallback chain: (name, env_var, base_url), tried in order.
 # The key is looked up from the environment fresh on every call (not
 # captured here) so a key added or changed via /api/settings takes effect
 # immediately, without restarting the process. A provider with no key
@@ -373,7 +372,8 @@ def build_base_tools():
                     "required": ["contents"]
                 }
             }
-        },
+        }
+    ]
 #        {
 #            "type": "function",
 #            "function": {
@@ -382,6 +382,8 @@ def build_base_tools():
 #                "parameters": { "type": "object", "properties": {} }
 #            }
 #        },
+def build_file_tools():
+    return [
         {
             "type": "function",
             "function": {
@@ -394,21 +396,6 @@ def build_base_tools():
                         "context": { "type": "string", "description": "Optional starting content for the new user's context.md. Omit for blank." }
                     },
                     "required": ["name"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search",
-                "description": "Fetches up-to-date info for real-time queries. Max 2 calls per task — proceed once you have enough, or report back to the user if you still don't after 2 searches.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Natural language query to answer" },
-                        "site": { "type": "string", "description": "Site to search. Omit to search generally." }
-                    },
-                    "required": ["query"]
                 }
             }
         },
@@ -431,14 +418,6 @@ def build_base_tools():
             "function": {
                 "name": "list_files",
                 "description": "Lists the files in /static.",
-                "parameters": { "type": "object", "properties": {} }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_date",
-                "description": "Returns the current date.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },
@@ -515,6 +494,24 @@ def build_base_tools():
                     "required": ["filename"]
                 }
             }
+        }
+    ]
+def build_search_tools():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Fetches up-to-date info for real-time queries. Max 2 calls per task — proceed once you have enough, or report back to the user if you still don't after 2 searches.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Natural language query to answer" },
+                        "site": { "type": "string", "description": "Site to search. Omit to search generally." }
+                    },
+                    "required": ["query"]
+                }
+            }
         },
         {
             "type": "function",
@@ -529,7 +526,10 @@ def build_base_tools():
                     "required": ["url"]
                 }
             }
-        },
+        }
+    ]
+def build_utility_tools():
+    return [
         {
             "type": "function",
             "function": {
@@ -620,7 +620,7 @@ def refresh_tools():
     Safe to call anytime (e.g. after the MCP server list changes); does not
     touch the conversation or the LLM client."""
     global tools
-    tools = build_base_tools() + load_mcp_tools()
+    tools = build_base_tools() + build_file_tools() + build_search_tools() + build_utility_tools() + load_mcp_tools()
     return tools
 
 
@@ -690,7 +690,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
-
+            check_tools=build_base_tools() + build_search_tools()
 
         elif tag == 'Context' or tag == 'Edit':
             if len(agent_messages) > 11:

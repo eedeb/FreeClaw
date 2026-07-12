@@ -66,8 +66,11 @@ def _domain(url: str) -> str:
 
 
 def _ddgs_text(query: str, max_results: int = 6) -> list[dict]:
-    with DDGS() as ddgs:
-        return list(ddgs.text(query, max_results=max_results))
+    try:
+        with DDGS() as ddgs:
+            return list(ddgs.text(query, max_results=max_results))
+    except Exception:
+        return []
 
 
 def _ddgs_answers(query: str) -> list[dict]:
