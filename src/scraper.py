@@ -5,6 +5,9 @@ Usage:
     import scraper
     result = scraper.get_result("What is the weather in New York?")
     print(result)
+
+    text = scraper.scrape("https://example.com/some-article")
+    print(text)
 """
 
 import re
@@ -301,3 +304,28 @@ def get_result(query: str) -> str:
 
     combined = re.sub(r"\n{3,}", "\n\n", "\n\n".join(sections)).strip()
     return combined[:TOTAL_CHAR_LIMIT]
+
+
+def scrape(url: str) -> str:
+    """
+    Fetch a single URL directly and return its cleaned, readable text —
+    for when the caller already has a specific page in mind, as opposed to
+    get_result()'s "search and aggregate multiple sources" for a query.
+
+    Parameters
+    ----------
+    url : str
+        The webpage to fetch.
+
+    Returns
+    -------
+    str
+        Cleaned visible text from the page, capped at PAGE_CHAR_LIMIT
+        characters, or a short message explaining that nothing readable
+        came back (blocked/JS-heavy domain, fetch failure, non-HTML
+        response, and empty-after-cleaning all collapse to this, since
+        _fetch_page_text doesn't preserve which one it was).
+    """
+    if not url or not url.strip():
+        return "Error: url must be a non-empty string."
+    return _fetch_page_text(url.strip()) or "Couldn't extract any readable content from that URL."
