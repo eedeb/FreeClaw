@@ -270,6 +270,24 @@ def get_messages():
     return agent_messages
 
 
+def _merge_system_messages(messages):
+    """Collapse every system-role message into a single one at index 0.
+
+    Some providers' chat templates reject the whole request the moment a
+    system message shows up anywhere but the very front — confirmed on
+    NVIDIA's qwen3.5: "Failed to apply prompt template: invalid operation:
+    System message must be at the beginning." An older FreeClaw build saved
+    two (instructions, then a separate one for context.md); merge them back
+    into one here so conversations saved before that fix keep loading and
+    working instead of failing this way on every turn from now on."""
+    system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
+    rest = [m for m in messages if m.get("role") != "system"]
+    if not system_parts:
+        return rest
+    merged = {"role": "system", "content": "\n\n".join(p for p in system_parts if p)}
+    return [merged] + rest
+
+
 def _heal_history(messages):
     """Repair a conversation so every provider will accept it again.
 
@@ -280,7 +298,9 @@ def _heal_history(messages):
     tool calls — is permanently stuck that way: every new turn resends the
     broken history and 400s. Healing on load makes those chats usable
     again: missing tool responses get a placeholder, orphaned ones are
-    dropped, and null call ids are backfilled."""
+    dropped, and null call ids are backfilled. Also collapses multiple
+    system messages into one (see _merge_system_messages)."""
+    messages = _merge_system_messages(messages)
     healed = []
     pending = {}  # id -> function name, awaiting a tool response
 
@@ -337,6 +357,14 @@ def reset(location_innit=location, tts=False):
             f.write("")
     with open(ctx_path, "r", encoding="utf-8") as f:
         content = f.read()
+    # A single system message, always exactly one and always at index 0:
+    # some providers' chat templates (confirmed on NVIDIA's qwen3.5) reject
+    # the request outright — "System message must be at the beginning." —
+    # the moment a second system-role message shows up anywhere else in the
+    # list, which a separate "here's context.md" message used to be. Every
+    # eco_messages slice below (and the tool_input branch further down)
+    # assumes this is the only header message; if this ever goes back to
+    # more than one, all of those need updating too.
     if tts:
         agent_messages=[
             {
@@ -361,11 +389,9 @@ def reset(location_innit=location, tts=False):
             Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
 
             You will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.
+
+            Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}
             """
-            },
-            {
-            "role": "system",
-            "content": f"Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}"
             }
         ]
     else:
@@ -390,11 +416,9 @@ def reset(location_innit=location, tts=False):
             Focus on solving the user's problem.
 
             Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
+
+            Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}
             """
-            },
-            {
-            "role": "system",
-            "content": f"Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}"
             }
         ]
 
@@ -874,14 +898,14 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         print(tag)
         if tag == 'Greeting/goodbye':
             if len(agent_messages) > 5:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-3:]]
+                eco_messages=[agent_messages[0], *agent_messages[-3:]]
             else:
                 eco_messages=agent_messages
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
             if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
+                eco_messages=[agent_messages[0], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
             model="openai/gpt-oss-20b"
@@ -889,21 +913,21 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         elif tag == 'Search':
             temp=0.4
             if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
+                eco_messages=[agent_messages[0], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
             check_tools=build_search_tools()
 
         elif tag == 'Context' or tag == 'Edit':
             if len(agent_messages) > 11:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-9:]]
+                eco_messages=[agent_messages[0], *agent_messages[-9:]]
             else:
                 eco_messages=agent_messages
 
 
         elif tag == 'Coding' or tag == 'Writing' or tag == 'List' or tag == 'Suggest':
             if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
 
@@ -911,22 +935,28 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         elif tag == 'Logic' or tag == 'Math' or tag == 'Explain':
             temp=0.2
             if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
         elif tag == 'Utility':
             if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
         else:
             if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-7:]]
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
             else:
                 eco_messages=agent_messages
 
 ######################################################################################################################################
     elif system_input:
+        # No caller in this codebase currently passes system_input (it's
+        # kept for direct/external callers of agent()/agent_stream()) — if
+        # one starts to, note that appending a second system-role message
+        # here breaks the single-leading-system-message invariant reset()
+        # now relies on (see the comment there) and will fail the same way
+        # on providers that enforce it.
         agent_messages.append(
             {
             "role": "system",
@@ -955,14 +985,14 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         user_indices = [i for i, m in enumerate(agent_messages) if m['role'] == 'user']
         # Start from 2 user messages ago, or the first user message if there
         # aren't 2. A system-initiated conversation may have no user turns at
-        # all — keep everything after the two system messages then.
+        # all — keep everything after the one system message then.
         if len(user_indices) >= 2:
             start_index = user_indices[-2]
         elif user_indices:
             start_index = user_indices[0]
         else:
-            start_index = 2
-        eco_messages = [agent_messages[0], agent_messages[1]] + agent_messages[start_index:]
+            start_index = 1
+        eco_messages = [agent_messages[0]] + agent_messages[start_index:]
     else:
         raise Exception("You must have either user input or system input.")
     '''
