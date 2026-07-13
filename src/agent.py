@@ -850,6 +850,72 @@ def _run_tool(command_name, args_dict):
     return "Unknown tool: " + command_name
 
 
+# Fallback for a provider that leaks a tool-call attempt into plain
+# assistant content instead of the API's structured tool_calls field —
+# confirmed on NVIDIA's qwen3.5 build, which sometimes streams:
+#
+#   <tool_call>
+#   <function=some_tool>
+#   <parameter=key>
+#   value
+#   </parameter>
+#   </function>
+#   </tool_call>
+#
+# as ordinary text. Only ever consulted when a turn produced zero native
+# tool calls (see the call site in agent_stream), so it can't conflict
+# with a provider that's already doing this correctly.
+_TEXT_TOOL_CALL_RE = re.compile(r'<tool_call>(.*?)(?:</tool_call>|\Z)', re.DOTALL)
+_TEXT_FUNCTION_RE = re.compile(r'<function=([^>\s]+)>')
+_TEXT_PARAMETER_RE = re.compile(r'<parameter=([^>]+)>\s*(.*?)\s*</parameter>', re.DOTALL)
+
+
+def _coerce_text_param(raw):
+    """This text tool-call format carries no type information — every
+    argument is just text between tags. Try JSON first so "false"/"true"/
+    numbers/arrays round-trip to their real types, and fall back to the
+    raw string for anything that isn't valid JSON on its own (the common
+    case: plain natural-language argument values)."""
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def _parse_text_tool_calls(text):
+    """Pull any <tool_call> blocks out of `text`. Returns (prose, calls):
+    prose is whatever preceded the first <tool_call> tag (or all of `text`
+    if none was found), and calls is a list of {"name", "arguments",
+    "complete"} dicts in the order they appeared.
+
+    A call is "complete" only if its closing </function> and </tool_call>
+    tags actually arrived. The caller must not execute an incomplete one —
+    it may be missing required or side-effecting arguments that the
+    provider simply never got to stream (observed directly: NVIDIA cutting
+    off mid-parameter, mid-word, with no closing tags at all) — only
+    report it as cut off."""
+    matches = list(_TEXT_TOOL_CALL_RE.finditer(text))
+    if not matches:
+        return text, []
+
+    prose = text[:matches[0].start()].strip()
+    calls = []
+    for m in matches:
+        block = m.group(1)
+        fn_match = _TEXT_FUNCTION_RE.search(block)
+        if not fn_match or not fn_match.group(1):
+            continue  # no recognizable function name — not a tool call
+        name = fn_match.group(1)
+        arguments = {
+            key.strip(): _coerce_text_param(value)
+            for key, value in _TEXT_PARAMETER_RE.findall(block)
+        }
+        complete = "</function>" in block and m.group(0).endswith("</tool_call>")
+        calls.append({"name": name, "arguments": arguments, "complete": complete})
+    return prose, calls
+
+
 def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
@@ -1066,6 +1132,26 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             buffer = f"(No response — the connection to {provider} was interrupted before anything came back. Please try again.)"
 
     tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
+
+    if not tool_calls_list and buffer:
+        prose, text_calls = _parse_text_tool_calls(buffer)
+        if text_calls:
+            logger.warning(
+                "Provider '%s' emitted %d tool call(s) as plain text instead of the API's tool_calls field (%s) — recovering them from content",
+                provider, len(text_calls),
+                "all complete" if all(c["complete"] for c in text_calls) else "one or more cut off mid-stream",
+            )
+            buffer = prose
+            tool_calls_list = [
+                {
+                    "id": None,
+                    "type": "function",
+                    "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])},
+                    "_text_incomplete": not c["complete"],
+                }
+                for c in text_calls
+            ]
+
     print('Agent: '+buffer if buffer else ' ')
 
 
@@ -1133,11 +1219,28 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 )
             if args_dict is not None:
                 yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
-                try:
-                    result = _run_tool(command_name, args_dict)
-                except Exception as e:
-                    logger.exception("Tool '%s' raised with args=%.500r", command_name, args_dict)
-                    result = f"Error running tool '{command_name}': {e}"
+                if tc.get("_text_incomplete"):
+                    # Recovered from a provider's plain-text tool-call
+                    # fallback (see _parse_text_tool_calls) but its closing
+                    # tags never arrived — it may be missing arguments the
+                    # model never got to stream, possibly required or
+                    # side-effecting ones (this MCP tool could do anything,
+                    # e.g. send an email). Report it as cut off instead of
+                    # guessing at execution with data known to be partial.
+                    result = (
+                        f"Error: this call to '{command_name}' was cut off before it finished "
+                        "streaming and was not executed. Please try again."
+                    )
+                    logger.warning(
+                        "Not executing incomplete text-format tool call '%s': args=%.500r",
+                        command_name, args_dict,
+                    )
+                else:
+                    try:
+                        result = _run_tool(command_name, args_dict)
+                    except Exception as e:
+                        logger.exception("Tool '%s' raised with args=%.500r", command_name, args_dict)
+                        result = f"Error running tool '{command_name}': {e}"
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
             if i < last:
