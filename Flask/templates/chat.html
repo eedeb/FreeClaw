@@ -1065,7 +1065,17 @@
         const { text, imageUrl } = extractFileTag(rawText);
         addMessage('user', text, imageUrl, { countTokens: false });
       } else if (msg.role === 'assistant') {
-        // Tool calls first (if any)
+        // Render in the order it actually happened: text the model
+        // streamed before making a tool call (e.g. "Let me check
+        // that...") comes first, matching what was already shown live —
+        // otherwise this full re-render would visually reshuffle what the
+        // user just watched stream in.
+        const text = typeof msg.content === 'string'
+          ? msg.content
+          : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+        if (text && text.trim()) {
+          addMessage('agent', text, null, { countTokens: false });
+        }
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const tc of msg.tool_calls) {
             const fn = tc.function || {};
@@ -1074,13 +1084,6 @@
             const isError = resultText && resultText.toLowerCase().startsWith('error');
             addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError);
           }
-        }
-        // Then the assistant's text reply (if any)
-        const text = typeof msg.content === 'string'
-          ? msg.content
-          : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
-        if (text && text.trim()) {
-          addMessage('agent', text, null, { countTokens: false });
         }
       }
     }
@@ -1216,6 +1219,17 @@
       liveText = '';
     };
 
+    // Same as dropLiveBubble but leaves the bubble on screen instead of
+    // removing it — for when the streamed-so-far text is a real part of
+    // the reply (e.g. "Let me check that..." right before a tool call),
+    // not a draft to be thrown away. Just stops tracking it as "live" so
+    // the next token event starts a fresh bubble underneath it.
+    const finalizeLiveBubble = () => {
+      liveWrap = null;
+      liveBubble = null;
+      liveText = '';
+    };
+
     try {
       const res = await fetch('/chat', {
         method: 'POST',
@@ -1276,11 +1290,11 @@
             messagesEl.scrollTop = messagesEl.scrollHeight;
 
           } else if (evt.type === 'tool_call') {
-            // The model is about to run a tool — clear any in-progress
-            // streamed text bubble (it'll be re-rendered properly, with the
-            // full tool block, once the conversation comes back) and show
-            // a live indicator so the user can see what's happening.
-            dropLiveBubble();
+            // The model is about to run a tool. Any text already streamed
+            // (e.g. "Let me check that...") is a real part of its reply,
+            // not a draft — leave it on screen instead of clearing it, and
+            // show a live indicator for the tool below it.
+            finalizeLiveBubble();
             if (thinking.parentNode) thinking.remove();
             activeToolIndicator = addToolLive(evt.name);
 

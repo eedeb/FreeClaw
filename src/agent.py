@@ -334,6 +334,39 @@ def _heal_history(messages):
     return healed
 
 
+def _extend_to_tool_call_boundary(messages, start_index):
+    """Nudge `start_index` earlier if it would start a trimmed window on a
+    bare `tool` message — walk back to the assistant message that declared
+    it (and past any other tool responses answering the same assistant
+    message), so the token-saving "last N messages" windows below never
+    split a tool call from its own result.
+
+    Two distinct failure modes if this isn't done: an orphaned tool
+    message with no preceding tool_calls declaration is the same thing
+    _heal_history repairs in saved conversations — providers reject it
+    outright. And even short of that hard failure, if the window keeps
+    the tool result but cuts off the assistant message that explains what
+    it was for (and the reasoning/prose that led to it), the model loses
+    track of why it called the tool in the first place — it only sees a
+    result with no memory of the question."""
+    while start_index > 0 and messages[start_index].get("role") == "tool":
+        start_index -= 1
+    return start_index
+
+
+def _trimmed_messages(messages, threshold, window):
+    """Return the system message plus the last `window` messages, used to
+    cap how much history a turn resends once the conversation passes
+    `threshold` total messages (the cost-saving windows per intent tag
+    below) — extended earlier if needed so it never starts mid-tool-call
+    (see _extend_to_tool_call_boundary). Below `threshold`, everything is
+    sent as-is; there's nothing to save yet."""
+    if len(messages) <= threshold:
+        return messages
+    start_index = _extend_to_tool_call_boundary(messages, len(messages) - window)
+    return [messages[0]] + messages[max(start_index, 1):]
+
+
 def set_messages(messages):
     """Load a previously-saved conversation (a plain list of OpenAI-style
     message dicts) as the active conversation for subsequent agent_stream
@@ -963,57 +996,31 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
 #####################################################################################################################################
         print(tag)
         if tag == 'Greeting/goodbye':
-            if len(agent_messages) > 5:
-                eco_messages=[agent_messages[0], *agent_messages[-3:]]
-            else:
-                eco_messages=agent_messages
+            eco_messages = _trimmed_messages(agent_messages, 5, 3)
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], *agent_messages[-5:]]
-            else:
-                eco_messages=agent_messages
+            eco_messages = _trimmed_messages(agent_messages, 7, 5)
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Search':
             temp=0.4
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], *agent_messages[-5:]]
-            else:
-                eco_messages=agent_messages
+            eco_messages = _trimmed_messages(agent_messages, 7, 5)
             check_tools=build_search_tools()
 
         elif tag == 'Context' or tag == 'Edit':
-            if len(agent_messages) > 11:
-                eco_messages=[agent_messages[0], *agent_messages[-9:]]
-            else:
-                eco_messages=agent_messages
-
+            eco_messages = _trimmed_messages(agent_messages, 11, 9)
 
         elif tag == 'Coding' or tag == 'Writing' or tag == 'List' or tag == 'Suggest':
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
-
+            eco_messages = _trimmed_messages(agent_messages, 9, 7)
 
         elif tag == 'Logic' or tag == 'Math' or tag == 'Explain':
             temp=0.2
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
+            eco_messages = _trimmed_messages(agent_messages, 9, 7)
         elif tag == 'Utility':
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
+            eco_messages = _trimmed_messages(agent_messages, 9, 7)
         else:
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
+            eco_messages = _trimmed_messages(agent_messages, 9, 7)
 
 ######################################################################################################################################
     elif system_input:
@@ -1058,7 +1065,8 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             start_index = user_indices[0]
         else:
             start_index = 1
-        eco_messages = [agent_messages[0]] + agent_messages[start_index:]
+        start_index = _extend_to_tool_call_boundary(agent_messages, start_index)
+        eco_messages = [agent_messages[0]] + agent_messages[max(start_index, 1):]
     else:
         raise Exception("You must have either user input or system input.")
     '''
