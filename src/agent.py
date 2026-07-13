@@ -895,11 +895,25 @@ def _run_tool(command_name, args_dict):
 #   </function>
 #   </tool_call>
 #
-# as ordinary text. Only ever consulted when a turn produced zero native
-# tool calls (see the call site in agent_stream), so it can't conflict
-# with a provider that's already doing this correctly.
-_TEXT_TOOL_CALL_RE = re.compile(r'<tool_call>(.*?)(?:</tool_call>|\Z)', re.DOTALL)
-_TEXT_FUNCTION_RE = re.compile(r'<function=([^>\s]+)>')
+# as ordinary text — and confirmed separately (same model) leaking this
+# same shape WITHOUT the <tool_call> wrapper, alongside a real native
+# tool_calls entry for the same action: the model ends up dispatching
+# correctly, but this half of it is left dangling in `content`. Once the
+# frontend markdown-renders it, the angle-bracket tags (not valid HTML)
+# get silently dropped by the browser and only the bare parameter values
+# survive on screen as a run-on wall of text — that's the "errors
+# persisting" garbled output, not literal error text.
+#
+# <function=...> is the one anchor that's shown up in every case seen so
+# far, so it's what this anchors on — the <tool_call> wrapper is treated
+# as optional context around it, not required.
+_TEXT_CALL_BLOCK_RE = re.compile(
+    r'(?:<tool_call\b[^>]*>\s*)?'
+    r'<function=(?P<name>[^>\s]+)>'
+    r'(?P<body>.*?)'
+    r'(?P<close></function>\s*(?:</tool_call>\s*)?|\Z)',
+    re.DOTALL,
+)
 _TEXT_PARAMETER_RE = re.compile(r'<parameter=([^>]+)>\s*(.*?)\s*</parameter>', re.DOTALL)
 
 
@@ -917,36 +931,44 @@ def _coerce_text_param(raw):
 
 
 def _parse_text_tool_calls(text):
-    """Pull any <tool_call> blocks out of `text`. Returns (prose, calls):
-    prose is whatever preceded the first <tool_call> tag (or all of `text`
-    if none was found), and calls is a list of {"name", "arguments",
-    "complete"} dicts in the order they appeared.
+    """Pull any <function=...> tool-call blocks out of `text` (with or
+    without a <tool_call> wrapper — see _TEXT_CALL_BLOCK_RE). Returns
+    (prose, calls): prose is every part of `text` that wasn't consumed by
+    a matched block (before, between, and after them — not just the
+    leading prefix, so trailing commentary after a call isn't silently
+    dropped), and calls is a list of {"name", "arguments", "complete"}
+    dicts in the order they appeared.
 
-    A call is "complete" only if its closing </function> and </tool_call>
-    tags actually arrived. The caller must not execute an incomplete one —
-    it may be missing required or side-effecting arguments that the
-    provider simply never got to stream (observed directly: NVIDIA cutting
-    off mid-parameter, mid-word, with no closing tags at all) — only
-    report it as cut off."""
-    matches = list(_TEXT_TOOL_CALL_RE.finditer(text))
+    A call is "complete" only if a real </function> (or </tool_call>)
+    closing tag actually arrived. The caller must not execute an
+    incomplete one — it may be missing required or side-effecting
+    arguments that the provider simply never got to stream (observed
+    directly: NVIDIA cutting off mid-parameter, mid-word, with no closing
+    tags at all) — only report it as cut off. This must be called
+    regardless of whether the turn already had native tool_calls — a
+    provider can leak one of these into content *alongside* a proper
+    native call for the same action, not only instead of one."""
+    matches = list(_TEXT_CALL_BLOCK_RE.finditer(text))
     if not matches:
         return text, []
 
-    prose = text[:matches[0].start()].strip()
+    prose_parts = []
+    pos = 0
     calls = []
     for m in matches:
-        block = m.group(1)
-        fn_match = _TEXT_FUNCTION_RE.search(block)
-        if not fn_match or not fn_match.group(1):
-            continue  # no recognizable function name — not a tool call
-        name = fn_match.group(1)
+        prose_parts.append(text[pos:m.start()])
+        pos = m.end()
         arguments = {
             key.strip(): _coerce_text_param(value)
-            for key, value in _TEXT_PARAMETER_RE.findall(block)
+            for key, value in _TEXT_PARAMETER_RE.findall(m.group("body"))
         }
-        complete = "</function>" in block and m.group(0).endswith("</tool_call>")
-        calls.append({"name": name, "arguments": arguments, "complete": complete})
-    return prose, calls
+        calls.append({
+            "name": m.group("name"),
+            "arguments": arguments,
+            "complete": bool(m.group("close")),
+        })
+    prose_parts.append(text[pos:])
+    return "".join(prose_parts).strip(), calls
 
 
 def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
@@ -1141,24 +1163,38 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
 
     tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
 
-    if not tool_calls_list and buffer:
+    # Run this regardless of whether native tool_calls already came
+    # through: a provider can leak this tag format into content *either*
+    # instead of a native call (nothing else to go on — recover a real,
+    # dispatchable call from it) *or* alongside one for the same action
+    # (native dispatch already handled it for real — just strip the
+    # leaked echo so it doesn't show up as raw tag soup once the browser
+    # drops the invalid tags and leaves only the bare parameter values on
+    # screen). Either way the user must never see the tags.
+    if buffer:
         prose, text_calls = _parse_text_tool_calls(buffer)
         if text_calls:
-            logger.warning(
-                "Provider '%s' emitted %d tool call(s) as plain text instead of the API's tool_calls field (%s) — recovering them from content",
-                provider, len(text_calls),
-                "all complete" if all(c["complete"] for c in text_calls) else "one or more cut off mid-stream",
-            )
+            if not tool_calls_list:
+                logger.warning(
+                    "Provider '%s' emitted %d tool call(s) as plain text instead of the API's tool_calls field (%s) — recovering them from content",
+                    provider, len(text_calls),
+                    "all complete" if all(c["complete"] for c in text_calls) else "one or more cut off mid-stream",
+                )
+                tool_calls_list = [
+                    {
+                        "id": None,
+                        "type": "function",
+                        "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])},
+                        "_text_incomplete": not c["complete"],
+                    }
+                    for c in text_calls
+                ]
+            else:
+                logger.info(
+                    "Provider '%s' echoed %d tool-call-looking block(s) in content alongside %d native tool_calls — stripping from displayed text, not re-dispatching",
+                    provider, len(text_calls), len(tool_calls_list),
+                )
             buffer = prose
-            tool_calls_list = [
-                {
-                    "id": None,
-                    "type": "function",
-                    "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])},
-                    "_text_incomplete": not c["complete"],
-                }
-                for c in text_calls
-            ]
 
     print('Agent: '+buffer if buffer else ' ')
 
