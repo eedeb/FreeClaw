@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session, Response, stream_with_context
+from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.mcp_client as mcp_client
 from src.users import (
@@ -7,6 +8,7 @@ from src.users import (
     load_conversation, save_conversation, derive_title, ensure_conversation,
     activate_session,
 )
+from src.logging_setup import get_logger
 import uuid
 import json
 import re
@@ -19,6 +21,8 @@ from dotenv import load_dotenv, dotenv_values
 import os
 load_dotenv()
 password  = os.getenv("FC_PASSWORD")
+
+logger = get_logger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 location = BASE_DIR + "/../models/data.pth"
@@ -46,8 +50,31 @@ if not _secret_key:
         # in-memory key rather than crashing the whole app at import time.
         print(f"[freeclaw] Warning: couldn't persist secret key to {_secret_key_path} ({e}); "
               f"sessions won't survive a restart. Set SECRET_KEY to fix this.")
+        logger.exception("Couldn't persist secret key to %s", _secret_key_path)
         _secret_key = os.urandom(24).hex()
 app.secret_key = _secret_key
+
+
+def _log_and_error(e, message=None, status=500):
+    """Log the full exception (with traceback) to logs/freeclaw.log, then
+    build the short JSON error body the frontend actually sees — same
+    shape every route already returned, just no longer throwing the real
+    cause away. Call from inside the except block so exc_info is live."""
+    logger.exception("Request failed: %s %s", request.method, request.path)
+    return jsonify({'error': message or f'{type(e).__name__}: {e}'}), status
+
+
+@app.errorhandler(Exception)
+def _handle_uncaught(e):
+    """Safety net for anything that escapes a route's own try/except (or a
+    route with none) — logs the full traceback so a failure is never just
+    a blank 500 with no record of what happened. Werkzeug's own routing
+    exceptions (404, 405, ...) are real, intended responses, not bugs, so
+    they pass through unchanged instead of being logged as errors."""
+    if isinstance(e, HTTPException):
+        return e
+    logger.exception("Unhandled exception on %s %s", request.method, request.path)
+    return jsonify({'error': 'Internal server error — see logs/freeclaw.log for details.'}), 500
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 # User/conversation storage (STATIC_DIR, safe_username, list_users, etc. —
@@ -102,6 +129,7 @@ try:
     agent.refresh_tools()
 except Exception as e:
     print(f"[freeclaw] Warning: couldn't load tools at startup ({e}).")
+    logger.exception("Couldn't load tools at startup")
 
 
 def current_user():
@@ -151,7 +179,7 @@ def api_list_users():
         users = [{'name': name} for name in list_users()]
         return jsonify({'users': users, 'static_dir': STATIC_DIR})
     except Exception as e:
-        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+        return _log_and_error(e)
 
 
 @app.route('/api/users', methods=['POST'])
@@ -167,7 +195,7 @@ def api_create_user():
     try:
         create_user(name)
     except Exception as e:
-        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+        return _log_and_error(e)
     return jsonify({'name': name})
 
 
@@ -253,14 +281,19 @@ def chat():
 
     def generate():
         with agent_lock:
-            activate_session(name)
-            had_title = False
+            # One try/except around the whole turn (not just agent_stream)
+            # so a failure in activate_session() or the title check — not
+            # just in the agent loop itself — still gets logged and turned
+            # into a proper SSE error event instead of a silently broken
+            # stream.
             try:
-                with open(conversation_path(name), "r", encoding="utf-8") as f:
-                    had_title = bool(json.load(f).get("title", "") not in (None, "", "New chat"))
-            except (OSError, json.JSONDecodeError):
+                activate_session(name)
                 had_title = False
-            try:
+                try:
+                    with open(conversation_path(name), "r", encoding="utf-8") as f:
+                        had_title = bool(json.load(f).get("title", "") not in (None, "", "New chat"))
+                except (OSError, json.JSONDecodeError):
+                    had_title = False
                 for event in agent.agent_stream(user_input=user_input):
                     yield f"data: {json.dumps(event)}\n\n"
                 messages = agent.get_messages()
@@ -268,6 +301,7 @@ def chat():
                 save_conversation(name, messages, title=title)
                 yield f"data: {json.dumps({'type': 'done', 'conversation': messages})}\n\n"
             except Exception as e:
+                logger.exception("Chat request failed for user=%s", name)
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return Response(
@@ -416,11 +450,15 @@ def v1_chat_completions():
             max_tokens=max_tokens,
         )
     except agent.AllProvidersFailedError as e:
+        # Each provider's full traceback is already logged inside
+        # _create_completion; this just ties them to the /v1 request.
+        logger.error("v1_chat_completions: all providers failed: %s", e.failures)
         reasons = {r for _, r, _ in e.failures}
         status = 429 if reasons == {"rate_limited"} else 500
         err_type = "rate_limit_error" if reasons == {"rate_limited"} else "server_error"
         return jsonify({"error": {"message": agent._user_facing_error(e.failures), "type": err_type}}), status
     except Exception as e:
+        logger.exception("v1_chat_completions failed")
         return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
 
     if stream:
@@ -445,8 +483,10 @@ def v1_chat_completions():
                     yield f"data: {json.dumps(payload)}\n\n"
                 yield "data: [DONE]\n\n"
             except agent.AllProvidersFailedError as e:
+                logger.error("v1_chat_completions stream: all providers failed: %s", e.failures)
                 yield f"data: {json.dumps({'type': 'error', 'error': agent._user_facing_error(e.failures)})}\n\n"
             except Exception as e:
+                logger.exception("v1_chat_completions stream failed")
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
         return Response(
@@ -567,7 +607,7 @@ def api_update_settings():
     try:
         _write_env(updates)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return _log_and_error(e, message=str(e))
     return jsonify({'ok': True})
 
 
@@ -596,7 +636,7 @@ def api_list_mcp():
     try:
         servers = mcp_client.read_servers()
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return _log_and_error(e, message=str(e))
     return jsonify({'servers': [_mcp_server_public(s) for s in servers]})
 
 
@@ -625,7 +665,7 @@ def api_add_mcp():
         try:
             _write_env(mcp_client.servers_to_env(servers))
         except Exception as e:
-            return jsonify({'error': f'Could not save: {e}'}), 500
+            return _log_and_error(e, message=f'Could not save: {e}')
 
         # Verify the server is reachable and pick up its tool count now, so
         # the user gets immediate feedback instead of a silent no-op.
@@ -636,6 +676,7 @@ def api_add_mcp():
             tool_count = len(mcp_client.list_tools({'name': name, 'url': url, 'token': token}))
         except Exception as e:
             error = str(e)
+            logger.exception("New MCP server '%s' (%s) unreachable at add time", name, url)
         agent.refresh_tools()
 
     resp = {'ok': True, 'servers': [_mcp_server_public(s) for s in servers], 'tool_count': tool_count}
@@ -665,7 +706,7 @@ def api_toggle_mcp(name):
         try:
             _write_env(mcp_client.servers_to_env(servers))
         except Exception as e:
-            return jsonify({'error': f'Could not save: {e}'}), 500
+            return _log_and_error(e, message=f'Could not save: {e}')
         agent.refresh_tools()
     return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in servers]})
 
@@ -682,7 +723,7 @@ def api_delete_mcp(name):
         try:
             _write_env(mcp_client.servers_to_env(remaining))
         except Exception as e:
-            return jsonify({'error': f'Could not save: {e}'}), 500
+            return _log_and_error(e, message=f'Could not save: {e}')
         mcp_client.clear_cache()
         agent.refresh_tools()
     return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in remaining]})

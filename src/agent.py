@@ -8,7 +8,10 @@ import src.scraper as scraper
 from datetime import datetime
 from json_repair import repair_json
 import src.mcp_client as mcp_client
+from src.logging_setup import get_logger
 import os
+
+logger = get_logger(__name__)
 
 
 import base64
@@ -184,16 +187,26 @@ def _create_completion(**kwargs):
         key = os.getenv(env_var)
         if not key or key == "None":
             continue
+        call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
         try:
             c = _client_for(name, key, base_url)
-            call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
             result = c.chat.completions.create(**call_kwargs)
             if name != _last_provider:
                 print(f"LLM provider switched: {_last_provider} -> {name}")
             _last_provider = name
             return result, name
         except Exception as e:
-            failures.append((name, _classify_error(e), str(e)))
+            reason = _classify_error(e)
+            failures.append((name, reason, str(e)))
+            # Full traceback + request shape (never message content, which
+            # may hold user data) — the short strings above are all that
+            # ever reach the frontend or the model, so this is the only
+            # place the real cause of a "provider error" is recoverable.
+            logger.exception(
+                "Provider '%s' failed (%s): model=%s tools=%s messages=%d",
+                name, reason, call_kwargs.get("model"),
+                bool(call_kwargs.get("tools")), len(call_kwargs.get("messages") or []),
+            )
     raise AllProvidersFailedError(failures)
 
 
@@ -593,6 +606,7 @@ def load_mcp_tools():
             server_tools = mcp_client.list_tools(server)
         except Exception as e:
             print(f"[mcp] '{server.get('name')}' unavailable: {e}")
+            logger.exception("MCP server '%s' (%s) unavailable", server.get('name'), server.get('url'))
             continue
         for t in server_tools:
             real_name = t.get("name")
@@ -654,6 +668,7 @@ def _run_tool(command_name, args_dict):
         try:
             created_name = user_creator(new_name, new_context)
         except Exception as e:
+            logger.exception("create_user tool failed for name=%r", new_name)
             return f"Error creating user: {e}"
         result = f"User '{created_name}' created successfully."
         if new_context:
@@ -802,6 +817,7 @@ def _run_tool(command_name, args_dict):
         try:
             return mcp_client.call_tool(server, entry["tool"], args_dict)
         except Exception as e:
+            logger.exception("MCP tool '%s' on '%s' failed", entry['tool'], server.get('name'))
             return f"Error calling MCP tool '{entry['tool']}' on '{server.get('name')}': {e}"
 
     # Unknown tool (e.g. an MCP server that was removed after the model
@@ -968,6 +984,10 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             stop=None
         )
     except AllProvidersFailedError as e:
+        # Each provider's full traceback was already logged individually
+        # inside _create_completion — this ties them together as one
+        # incident so they're easy to find by searching the log.
+        logger.error("All providers failed for this turn: %s", e.failures)
         raise Exception(_user_facing_error(e.failures))
 
     # Consume the stream, forwarding text chunks to the caller in real
@@ -1059,11 +1079,16 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                     args_dict = {}
             except Exception as e:
                 result = f"Error: couldn't parse arguments for '{command_name}': {e}"
+                logger.warning(
+                    "Tool call args unparseable for '%s': %.500r",
+                    command_name, tc["function"]["arguments"], exc_info=True,
+                )
             if args_dict is not None:
                 yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
                 try:
                     result = _run_tool(command_name, args_dict)
                 except Exception as e:
+                    logger.exception("Tool '%s' raised with args=%.500r", command_name, args_dict)
                     result = f"Error running tool '{command_name}': {e}"
             if not isinstance(result, str):
                 result = "" if result is None else str(result)

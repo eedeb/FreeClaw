@@ -108,9 +108,12 @@ FreeClaw/
 │   ├── agent.py               # Core agent loop — intent classification, model routing, tool dispatch
 │   ├── scraper.py             # DuckDuckGo search + page scraping + text cleaning
 │   ├── api.py                 # Optional REST API (FastAPI/uvicorn, port 8080)
-│   └── mcp_client.py          # MCP client — connects to external MCP servers over HTTP
+│   ├── mcp_client.py          # MCP client — connects to external MCP servers over HTTP
+│   └── logging_setup.py       # Central logger — full tracebacks go to logs/freeclaw.log
 ├── models/
 │   └── data.pth                # Classy intent classifier weights
+├── logs/
+│   └── freeclaw.log            # Created at first run; full error detail, see Debugging below
 ├── install.sh                  # One-line installer
 ├── update.sh                   # Pulls and applies the latest changes from GitHub
 └── .env                         # API keys, password, MCP servers, and other config (created during install)
@@ -174,6 +177,18 @@ From your FreeClaw install directory:
 ```
 
 This pulls the latest `src/`, `Flask/templates/`, and `Flask/main.py` from `origin/main`, leaves your `Flask/static/` data (context, uploads, generated pages) untouched, syncs dependencies, and restarts the service.
+
+---
+
+## Debugging
+
+Every unexpected failure — a provider erroring out, a tool crashing, an MCP server going unreachable, an unhandled exception in a route — gets logged with its full traceback to `logs/freeclaw.log` at the repo root, rotated at 5MB (5 backups kept). This is separate from what you see in the chat UI or API response, which stays short on purpose; the log file is where the real cause lives.
+
+```bash
+tail -f logs/freeclaw.log
+```
+
+Warnings and errors are also mirrored to the console, so they show up live under `journalctl -u FreeClaw.service -f` too if you're running as a systemd service. `logs/` is never served by the app (unlike `Flask/static/`), so it's safe to keep tracebacks there even though they can include file paths and request shapes.
 
 ---
 

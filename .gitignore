@@ -1,0 +1,18 @@
+# Runtime logs — can contain full tracebacks (paths, request shapes).
+logs/
+
+# Secrets and per-install config.
+.env
+Flask/.secret_key
+Flask/.api_enabled
+
+# Per-user instance data (chats, uploaded/created files, context.md).
+Flask/static/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# OS cruft
+.DS_Store
