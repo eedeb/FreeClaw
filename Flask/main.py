@@ -286,8 +286,10 @@ def chat():
             # just in the agent loop itself — still gets logged and turned
             # into a proper SSE error event instead of a silently broken
             # stream.
+            session_active = False
             try:
                 activate_session(name)
+                session_active = True
                 had_title = False
                 try:
                     with open(conversation_path(name), "r", encoding="utf-8") as f:
@@ -302,6 +304,18 @@ def chat():
                 yield f"data: {json.dumps({'type': 'done', 'conversation': messages})}\n\n"
             except Exception as e:
                 logger.exception("Chat request failed for user=%s", name)
+                if session_active:
+                    # agent_stream can append several messages (e.g. a
+                    # completed tool call) before failing on a later step —
+                    # without this, the next turn reloads the pre-turn
+                    # conversation from disk and that work silently
+                    # vanishes. Only safe once activate_session() has
+                    # actually run: before that, agent.get_messages()
+                    # could still be a *different* user's leftover state.
+                    try:
+                        save_conversation(name, agent.get_messages())
+                    except Exception:
+                        logger.exception("Also failed to save partial conversation for user=%s", name)
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return Response(

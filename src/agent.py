@@ -1025,27 +1025,45 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
     # incremental argument-string fragments when streamed).
     buffer = ""
     tool_calls_acc = {}
-    for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        if delta is None:
-            continue
-        if getattr(delta, "content", None):
-            buffer += delta.content
-            yield {"type": "token", "text": delta.content}
-        if getattr(delta, "tool_calls", None):
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_acc:
-                    tool_calls_acc[idx] = {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
-                if tc_delta.id:
-                    tool_calls_acc[idx]["id"] = tc_delta.id
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
-                    if tc_delta.function.arguments:
-                        tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+    try:
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta is None:
+                continue
+            if getattr(delta, "content", None):
+                buffer += delta.content
+                yield {"type": "token", "text": delta.content}
+            if getattr(delta, "tool_calls", None):
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+                    if tc_delta.id:
+                        tool_calls_acc[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+    except Exception as e:
+        # A provider's own stream can break mid-response — confirmed on
+        # NVIDIA: a malformed SSE event with no JSON body, which the
+        # openai SDK doesn't guard against and raises JSONDecodeError
+        # straight out of chunk iteration. This is a different failure
+        # mode from the one _create_completion guards: that only covers
+        # the initial request, not the body actually arriving afterward.
+        # Log it fully, but keep whatever partial content/tool-call we
+        # already have instead of losing it outright — that matters most
+        # when a tool call already completed and only the follow-up reply
+        # got cut off.
+        logger.exception(
+            "Stream from provider '%s' broke mid-response: %d chars buffered, %d tool call(s) in progress",
+            provider, len(buffer), len(tool_calls_acc),
+        )
+        if not buffer and not tool_calls_acc:
+            buffer = f"(No response — the connection to {provider} was interrupted before anything came back. Please try again.)"
 
     tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
     print('Agent: '+buffer if buffer else ' ')
