@@ -63,13 +63,12 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 agent_lock = threading.Lock()
 
 # NOTE: we deliberately do NOT call agent.reset() here at startup. reset()
-# both builds the OpenAI client AND reads/creates a context.md at whatever
-# path agent.context_path currently points to — calling it before a user/
-# chat has been selected would create a stray context.md directly in
-# static/ instead of inside a user's folder. The client + tool list get
-# initialized lazily, scoped correctly, the first time ensure_conversation()
-# or activate_session() runs (both call set_static_dir/set_context_path
-# before reset()).
+# reads/creates a context.md inside whatever folder agent.static_dir
+# currently points to — calling it before a user/chat has been selected
+# would create a stray context.md directly in static/ instead of inside a
+# user's files folder. The tool list gets initialized lazily, scoped
+# correctly, the first time ensure_conversation() or activate_session()
+# runs (both call set_static_dir before reset()).
 
 
 def logged_in():

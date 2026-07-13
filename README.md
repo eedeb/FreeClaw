@@ -53,7 +53,7 @@ You can type these directly into the chat box:
 - **Adaptive model routing** — small talk, greetings, and personal questions are handled by `openai/gpt-oss-20b`; everything else (search, coding, logic, file work) uses the larger `openai/gpt-oss-120b`
 - **Minimal context windowing** — the number of past messages sent per turn scales with how complex the intent tag is, keeping token usage low for simple exchanges
 - **Multi-provider fallback** — runs on Groq by default; if a call fails, it automatically retries on NVIDIA NIM or OpenRouter if you've configured a key for either
-- **Persistent memory** — the agent can save durable facts about you to `context.md` with a `save_context` tool and recall them in future sessions, without that history bloating the active context window
+- **Persistent memory** — the agent keeps durable facts about you in `context.md`, stored alongside your other files and read/updated with the same file tools it uses for everything else, without that history bloating the active context window
 - **Web search & scraping** — queries DuckDuckGo for instant answers, news, and snippets, then scrapes and cleans the top non-JS-heavy result pages, all stitched into one capped, structured block of context for the model — no extra LLM call required
 - **Bash execution** — can run shell commands on the host machine and return the output
 - **File, page & image tools** — can create, read, edit (find/replace), delete, and list files in its sandboxed static folder; can publish a live HTML page at a public URL; can describe an uploaded image in detail using a vision model
@@ -99,7 +99,7 @@ The search pipeline (`src/scraper.py`):
 FreeClaw/
 ├── Flask/
 │   ├── main.py               # Flask server — login, chat endpoint, file upload, command handling
-│   ├── static/                # Created at install: context.md, uploaded files, agent-created files
+│   ├── static/                # Created at install; each user gets static/<user>/files/ holding context.md, uploads, and agent-created files
 │   └── templates/
 │       ├── index.html         # Chat UI (dark theme, markdown rendering, token counter, file upload)
 │       ├── login.html         # Password login screen

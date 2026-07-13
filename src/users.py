@@ -41,8 +41,9 @@ def conversation_path(name):
 
 def conv_files_dir(name):
     """Folder where this user's created/uploaded files live, e.g.
-    static/<user>/files/. Kept separate from the conversation's metadata
-    JSON file."""
+    static/<user>/files/ — also where their context.md (long-term memory)
+    lives, so the agent's normal file tools can read/edit it directly.
+    Kept separate from the conversation's metadata JSON file."""
     path = os.path.join(user_dir(name), "files")
     os.makedirs(path, exist_ok=True)
     return path
@@ -82,7 +83,12 @@ def _migrate_legacy_conversations(name):
 
 
 def user_context_path(name):
-    return os.path.join(user_dir(name), "context.md")
+    """Path to this user's context.md — inside their files folder (not
+    user_dir directly) so it's reachable by the agent's normal read_file/
+    edit_file/create_file tools instead of needing a dedicated tool.
+    Calling this creates static/<user>/files/ as a side effect, same as
+    conv_files_dir()."""
+    return os.path.join(conv_files_dir(name), "context.md")
 
 
 def list_users():
@@ -106,8 +112,7 @@ def user_exists(name):
 
 
 def create_user(name):
-    os.makedirs(user_dir(name), exist_ok=True)
-    ctx_path = os.path.join(user_dir(name), "context.md")
+    ctx_path = user_context_path(name)  # creates static/<user>/files/ too
     if not os.path.exists(ctx_path):
         with open(ctx_path, "w", encoding="utf-8") as f:
             f.write("")
@@ -154,22 +159,21 @@ def derive_title(messages):
 def ensure_conversation(name):
     """Make sure `name` has a conversation.json, migrating an older
     multi-chat layout if one is found, or creating a fresh conversation
-    (via agent.reset(), scoped to this user's own files folder and
-    long-term context.md) if there's nothing to migrate."""
+    (via agent.reset(), scoped to this user's own files folder, which also
+    holds their long-term context.md) if there's nothing to migrate."""
     _migrate_legacy_conversations(name)
     if not os.path.exists(conversation_path(name)):
         agent.set_static_dir(conv_files_dir(name))
-        agent.set_context_path(user_context_path(name))
         agent.reset()
         save_conversation(name, agent.get_messages(), title="New chat")
 
 
 def activate_session(name):
-    """Point the agent module's globals at this user's file folder and
-    long-term context.md, and load their saved conversation messages so
-    the next agent_stream() call continues the right thread."""
+    """Point the agent module's globals at this user's file folder (which
+    holds their context.md alongside created/uploaded files), and load
+    their saved conversation messages so the next agent_stream() call
+    continues the right thread."""
     ensure_conversation(name)
     agent.set_static_dir(conv_files_dir(name))
-    agent.set_context_path(user_context_path(name))
     data = load_conversation(name)
     agent.set_messages(data.get("messages", []))

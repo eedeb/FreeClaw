@@ -22,7 +22,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 html_dir=BASE_DIR+'/../Flask/static/'
 static_dir=BASE_DIR+'/../Flask/static/'
-context_path=BASE_DIR+'/../Flask/static/context.md'
 location = BASE_DIR + "/../models/data.pth"
 
 # Root that Flask's /static/<path:filename> route serves from. Each user now
@@ -228,8 +227,10 @@ mcp_tool_registry = {}
 def set_static_dir(path):
     """Point the agent's file tools (read_file, list_files, create_file,
     create_page, get_image_description, etc.) at a specific folder — e.g.
-    static/<username>/conversations/<conv_id>/ for a single chat's files.
-    Creates the folder if it doesn't exist yet."""
+    static/<username>/files/ for that user's files. context.md (the agent's
+    long-term memory, read/updated via the same file tools) lives in this
+    same folder, so pointing static_dir at a user's folder is all that's
+    needed to scope both. Creates the folder if it doesn't exist yet."""
     global static_dir, html_dir
     if not path.endswith(os.sep):
         path = path + os.sep
@@ -237,20 +238,6 @@ def set_static_dir(path):
     static_dir = path
     html_dir = path
     return static_dir
-
-
-def set_context_path(path):
-    """Point save_context/read_context (the agent's long-term, cross-chat
-    memory) at a specific context.md file — independent of static_dir, so
-    the same user's memory persists across all of their separate chats.
-    Creates the file (and its parent folder) if missing."""
-    global context_path
-    context_path = path
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("")
-    return context_path
 
 
 user_creator = None
@@ -331,11 +318,11 @@ def reset(location_innit=location, tts=False):
 
     global agent_messages
     global tools
-    if not os.path.exists(context_path):
-        os.makedirs(os.path.dirname(context_path), exist_ok=True)
-        with open(context_path, "w", encoding="utf-8") as f:
+    ctx_path = static_dir + "context.md"
+    if not os.path.exists(ctx_path):
+        with open(ctx_path, "w", encoding="utf-8") as f:
             f.write("")
-    with open(context_path, "r", encoding="utf-8") as f:
+    with open(ctx_path, "r", encoding="utf-8") as f:
         content = f.read()
     if tts:
         agent_messages=[
@@ -358,14 +345,14 @@ def reset(location_innit=location, tts=False):
             Do not add unnecessary explanations, introductions, or conclusions.
             Focus on solving the user's problem.
 
-            Update your context file with important information that you may need later.
+            Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
 
             You will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.
             """
             },
             {
             "role": "system",
-            "content": f"Context about the user is stored in context.md. Here are the contents of that file: {content}"
+            "content": f"Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}"
             }
         ]
     else:
@@ -389,48 +376,18 @@ def reset(location_innit=location, tts=False):
             Do not add unnecessary explanations, introductions, or conclusions.
             Focus on solving the user's problem.
 
-            Update your context file with important information that you may need later.
+            Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
             """
             },
             {
             "role": "system",
-            "content": f"Context about the user is stored in context.md. Here are the contents of that file: {content}"
+            "content": f"Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}"
             }
         ]
 
     refresh_tools()
 
 
-def build_base_tools():
-    """Build the list of built-in tool definitions (OpenAI function-calling
-    schema). Kept separate from reset() so the full tool list can be rebuilt
-    at any time — e.g. after the MCP server list changes — without touching
-    the conversation or the LLM client."""
-
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "save_context",
-                "description": "Stores durable facts (identity, preferences, habits, standing instructions) for future sessions. Not for temporary or one-time info.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "contents": { "type": "string", "description": "Entry to append to context.md" }
-                    },
-                    "required": ["contents"]
-                }
-            }
-        }
-    ]
-#        {
-#            "type": "function",
-#            "function": {
-#                "name": "read_context",
-#                "description": "Shows the contents of context.md.",
-#                "parameters": { "type": "object", "properties": {} }
-#            }
-#        },
 def build_file_tools():
     return [
         {
@@ -669,7 +626,7 @@ def refresh_tools():
     Safe to call anytime (e.g. after the MCP server list changes); does not
     touch the conversation or the LLM client."""
     global tools
-    tools = build_base_tools() + build_file_tools() + build_search_tools() + build_utility_tools() + load_mcp_tools()
+    tools = build_file_tools() + build_search_tools() + build_utility_tools() + load_mcp_tools()
     return tools
 
 
@@ -686,16 +643,6 @@ def _run_tool(command_name, args_dict):
     parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
     print('Agent called tool: '+command_name)
     print('Agent parameter: '+str(parameter) if parameter else ' ')
-
-    if command_name == 'save_context':
-        contents = args_dict.get('contents') or ''
-        with open(context_path, "a", encoding="utf-8") as f:
-            f.write(contents.strip()+'\n')
-        return "Context saved."
-
-    if command_name == 'read_context':
-        with open(context_path, "r", encoding="utf-8") as f:
-            return f.read()
 
     if command_name == 'create_user':
         new_name = args_dict.get('name')
@@ -929,7 +876,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 eco_messages=[agent_messages[0], agent_messages[1], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
-            check_tools=build_base_tools() + build_search_tools()
+            check_tools=build_search_tools()
 
         elif tag == 'Context' or tag == 'Edit':
             if len(agent_messages) > 11:
