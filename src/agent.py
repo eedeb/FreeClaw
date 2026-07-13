@@ -75,29 +75,43 @@ else:
 agent_messages=[]
 tools=[]
 
-# LLM provider fallback chain: (name, env_var, base_url), tried in order.
-# The key is looked up from the environment fresh on every call (not
-# captured here) so a key added or changed via /api/settings takes effect
-# immediately, without restarting the process. A provider with no key
-# configured is skipped.
+# LLM provider fallback chain: (name, env_var, base_url, model_override,
+# extra_body), tried in order. The key is looked up from the environment
+# fresh on every call (not captured here) so a key added or changed via
+# /api/settings takes effect immediately, without restarting the process.
+# A provider with no key configured is skipped.
 #
 # model_override, when set, replaces whatever model the caller asked for
 # when talking to that specific provider. NVIDIA needs one: the shared
 # default (openai/gpt-oss-120b, what Groq calls use) hangs indefinitely on
 # NVIDIA for any request that includes a `tools` param — confirmed by
-# direct testing, streaming and non-streaming both. qwen/qwen3.5-397b-a17b
-# handles tool calls on NVIDIA cleanly (also confirmed directly) and
-# replies normally on tool-free turns too, so NVIDIA always uses it
-# regardless of which model was requested. Leave as None for a provider
-# that should just use whatever model the caller passed in.
+# direct testing, streaming and non-streaming both.
+#
+# qwen/qwen3.5-397b-a17b used to be the override here — dropped after it
+# turned out to leak its own tool-call planning into plain assistant
+# content instead of the API's structured tool_calls field, in several
+# increasingly-degraded shapes (tagged, then wrapper-less, then bare
+# parameter soup, then free-form pseudocode) as retries piled up. Now
+# nvidia/nemotron-3-super-120b-a12b, NVIDIA's own newest agentic-focused
+# family — but it's *also* a reasoning model, and NVIDIA's own docs are
+# explicit that its tool calling is only reliable "with detailed thinking
+# off". extra_body carries that: {"chat_template_kwargs": {"enable_thinking":
+# False}}, merged into the raw request body by _create_completion. Skipping
+# this for a reasoning model is exactly how qwen3.5 ended up leaking its
+# planning into content in the first place — don't drop it when swapping
+# models again.
+#
+# Leave model_override/extra_body as None for a provider that should just
+# use whatever the caller passed in.
 #
 # OpenRouter is still temporarily disabled — uncomment to bring it back
 # into the chain. Groq is primary, NVIDIA is the fallback for when Groq is
 # rate-limited.
 _PROVIDER_CONF = [
-    ("groq", "API_KEY", "https://api.groq.com/openai/v1", None),
-    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1", "qwen/qwen3.5-397b-a17b"),
-    # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1", None),
+    ("groq", "API_KEY", "https://api.groq.com/openai/v1", None, None),
+    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1", "nvidia/nemotron-3-super-120b-a12b",
+     {"chat_template_kwargs": {"enable_thinking": False}}),
+    # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1", None, None),
 ]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
@@ -183,11 +197,13 @@ def _create_completion(**kwargs):
     if none do."""
     global _last_provider
     failures = []
-    for name, env_var, base_url, model_override in _PROVIDER_CONF:
+    for name, env_var, base_url, model_override, extra_body in _PROVIDER_CONF:
         key = os.getenv(env_var)
         if not key or key == "None":
             continue
         call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
+        if extra_body:
+            call_kwargs = {**call_kwargs, "extra_body": extra_body}
         try:
             c = _client_for(name, key, base_url)
             result = c.chat.completions.create(**call_kwargs)
