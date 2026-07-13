@@ -334,39 +334,6 @@ def _heal_history(messages):
     return healed
 
 
-def _extend_to_tool_call_boundary(messages, start_index):
-    """Nudge `start_index` earlier if it would start a trimmed window on a
-    bare `tool` message — walk back to the assistant message that declared
-    it (and past any other tool responses answering the same assistant
-    message), so the token-saving "last N messages" windows below never
-    split a tool call from its own result.
-
-    Two distinct failure modes if this isn't done: an orphaned tool
-    message with no preceding tool_calls declaration is the same thing
-    _heal_history repairs in saved conversations — providers reject it
-    outright. And even short of that hard failure, if the window keeps
-    the tool result but cuts off the assistant message that explains what
-    it was for (and the reasoning/prose that led to it), the model loses
-    track of why it called the tool in the first place — it only sees a
-    result with no memory of the question."""
-    while start_index > 0 and messages[start_index].get("role") == "tool":
-        start_index -= 1
-    return start_index
-
-
-def _trimmed_messages(messages, threshold, window):
-    """Return the system message plus the last `window` messages, used to
-    cap how much history a turn resends once the conversation passes
-    `threshold` total messages (the cost-saving windows per intent tag
-    below) — extended earlier if needed so it never starts mid-tool-call
-    (see _extend_to_tool_call_boundary). Below `threshold`, everything is
-    sent as-is; there's nothing to save yet."""
-    if len(messages) <= threshold:
-        return messages
-    start_index = _extend_to_tool_call_boundary(messages, len(messages) - window)
-    return [messages[0]] + messages[max(start_index, 1):]
-
-
 def set_messages(messages):
     """Load a previously-saved conversation (a plain list of OpenAI-style
     message dicts) as the active conversation for subsequent agent_stream
@@ -883,114 +850,6 @@ def _run_tool(command_name, args_dict):
     return "Unknown tool: " + command_name
 
 
-# Fallback for a provider that leaks a tool-call attempt into plain
-# assistant content instead of the API's structured tool_calls field —
-# confirmed on NVIDIA's qwen3.5 build, which sometimes streams:
-#
-#   <tool_call>
-#   <function=some_tool>
-#   <parameter=key>
-#   value
-#   </parameter>
-#   </function>
-#   </tool_call>
-#
-# as ordinary text — and confirmed separately (same model) leaking this
-# same shape WITHOUT the <tool_call> wrapper, alongside a real native
-# tool_calls entry for the same action: the model ends up dispatching
-# correctly, but this half of it is left dangling in `content`. Once the
-# frontend markdown-renders it, the angle-bracket tags (not valid HTML)
-# get silently dropped by the browser and only the bare parameter values
-# survive on screen as a run-on wall of text — that's the "errors
-# persisting" garbled output, not literal error text.
-#
-# <function=...> is the one anchor that's shown up in every case seen so
-# far, so it's what this anchors on — the <tool_call> wrapper is treated
-# as optional context around it, not required.
-_TEXT_CALL_BLOCK_RE = re.compile(
-    r'(?:<tool_call\b[^>]*>\s*)?'
-    r'<function=(?P<name>[^>\s]+)>'
-    r'(?P<body>.*?)'
-    r'(?P<close></function>\s*(?:</tool_call>\s*)?|\Z)',
-    re.DOTALL,
-)
-_TEXT_PARAMETER_RE = re.compile(r'<parameter=([^>]+)>\s*(.*?)\s*</parameter>', re.DOTALL)
-
-
-def _coerce_text_param(raw):
-    """This text tool-call format carries no type information — every
-    argument is just text between tags. Try JSON first so "false"/"true"/
-    numbers/arrays round-trip to their real types, and fall back to the
-    raw string for anything that isn't valid JSON on its own (the common
-    case: plain natural-language argument values)."""
-    raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return raw
-
-
-def _parse_text_tool_calls(text):
-    """Pull any <function=...> tool-call blocks out of `text` (with or
-    without a <tool_call> wrapper — see _TEXT_CALL_BLOCK_RE). Returns
-    (prose, calls): prose is every part of `text` that wasn't consumed by
-    a matched block (before, between, and after them — not just the
-    leading prefix, so trailing commentary after a call isn't silently
-    dropped), and calls is a list of {"name", "arguments", "complete"}
-    dicts in the order they appeared.
-
-    A call is "complete" only if a real </function> (or </tool_call>)
-    closing tag actually arrived. The caller must not execute an
-    incomplete one — it may be missing required or side-effecting
-    arguments that the provider simply never got to stream (observed
-    directly: NVIDIA cutting off mid-parameter, mid-word, with no closing
-    tags at all) — only report it as cut off. This must be called
-    regardless of whether the turn already had native tool_calls — a
-    provider can leak one of these into content *alongside* a proper
-    native call for the same action, not only instead of one."""
-    matches = list(_TEXT_CALL_BLOCK_RE.finditer(text))
-    if not matches:
-        return text, []
-
-    prose_parts = []
-    pos = 0
-    calls = []
-    for m in matches:
-        prose_parts.append(text[pos:m.start()])
-        pos = m.end()
-        arguments = {
-            key.strip(): _coerce_text_param(value)
-            for key, value in _TEXT_PARAMETER_RE.findall(m.group("body"))
-        }
-        calls.append({
-            "name": m.group("name"),
-            "arguments": arguments,
-            "complete": bool(m.group("close")),
-        })
-    prose_parts.append(text[pos:])
-    return "".join(prose_parts).strip(), calls
-
-
-# Second-chance cleanup for when even <function=...> doesn't show up —
-# confirmed directly: a retry attempt leaked only bare <parameter=key>
-# value</parameter> tags with no function name anywhere. There's nothing
-# to recover a dispatchable call from without a name, so this only ever
-# strips debris for display; _parse_text_tool_calls (which can still
-# create a real call) always runs first and removes any <function=...>
-# blocks before this ever sees the text.
-_BARE_PARAMETER_DEBRIS_RE = re.compile(
-    r'(?:<parameter=[^>]+>.*?(?:</parameter>|\Z)\s*)+',
-    re.DOTALL,
-)
-
-
-def _strip_stray_parameter_debris(text):
-    if not _BARE_PARAMETER_DEBRIS_RE.search(text):
-        return text
-    cleaned = _BARE_PARAMETER_DEBRIS_RE.sub(' ', text)
-    return re.sub(r' {2,}', ' ', cleaned).strip()
-
-
 def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
@@ -1038,31 +897,57 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
 #####################################################################################################################################
         print(tag)
         if tag == 'Greeting/goodbye':
-            eco_messages = _trimmed_messages(agent_messages, 5, 3)
+            if len(agent_messages) > 5:
+                eco_messages=[agent_messages[0], *agent_messages[-3:]]
+            else:
+                eco_messages=agent_messages
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
-            eco_messages = _trimmed_messages(agent_messages, 7, 5)
+            if len(agent_messages) > 7:
+                eco_messages=[agent_messages[0], *agent_messages[-5:]]
+            else:
+                eco_messages=agent_messages
             model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Search':
             temp=0.4
-            eco_messages = _trimmed_messages(agent_messages, 7, 5)
+            if len(agent_messages) > 7:
+                eco_messages=[agent_messages[0], *agent_messages[-5:]]
+            else:
+                eco_messages=agent_messages
             check_tools=build_search_tools()
 
         elif tag == 'Context' or tag == 'Edit':
-            eco_messages = _trimmed_messages(agent_messages, 11, 9)
+            if len(agent_messages) > 11:
+                eco_messages=[agent_messages[0], *agent_messages[-9:]]
+            else:
+                eco_messages=agent_messages
+
 
         elif tag == 'Coding' or tag == 'Writing' or tag == 'List' or tag == 'Suggest':
-            eco_messages = _trimmed_messages(agent_messages, 9, 7)
+            if len(agent_messages) > 9:
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
+            else:
+                eco_messages=agent_messages
+
 
         elif tag == 'Logic' or tag == 'Math' or tag == 'Explain':
             temp=0.2
-            eco_messages = _trimmed_messages(agent_messages, 9, 7)
+            if len(agent_messages) > 9:
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
+            else:
+                eco_messages=agent_messages
         elif tag == 'Utility':
-            eco_messages = _trimmed_messages(agent_messages, 9, 7)
+            if len(agent_messages) > 9:
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
+            else:
+                eco_messages=agent_messages
         else:
-            eco_messages = _trimmed_messages(agent_messages, 9, 7)
+            if len(agent_messages) > 9:
+                eco_messages=[agent_messages[0], *agent_messages[-7:]]
+            else:
+                eco_messages=agent_messages
 
 ######################################################################################################################################
     elif system_input:
@@ -1107,8 +992,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             start_index = user_indices[0]
         else:
             start_index = 1
-        start_index = _extend_to_tool_call_boundary(agent_messages, start_index)
-        eco_messages = [agent_messages[0]] + agent_messages[max(start_index, 1):]
+        eco_messages = [agent_messages[0]] + agent_messages[start_index:]
     else:
         raise Exception("You must have either user input or system input.")
     '''
@@ -1182,55 +1066,6 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             buffer = f"(No response — the connection to {provider} was interrupted before anything came back. Please try again.)"
 
     tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
-
-    # Run this regardless of whether native tool_calls already came
-    # through: a provider can leak this tag format into content *either*
-    # instead of a native call (nothing else to go on — recover a real,
-    # dispatchable call from it) *or* alongside one for the same action
-    # (native dispatch already handled it for real — just strip the
-    # leaked echo so it doesn't show up as raw tag soup once the browser
-    # drops the invalid tags and leaves only the bare parameter values on
-    # screen). Either way the user must never see the tags.
-    if buffer:
-        prose, text_calls = _parse_text_tool_calls(buffer)
-        if text_calls:
-            if not tool_calls_list:
-                logger.warning(
-                    "Provider '%s' emitted %d tool call(s) as plain text instead of the API's tool_calls field (%s) — recovering them from content",
-                    provider, len(text_calls),
-                    "all complete" if all(c["complete"] for c in text_calls) else "one or more cut off mid-stream",
-                )
-                tool_calls_list = [
-                    {
-                        "id": None,
-                        "type": "function",
-                        "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])},
-                        "_text_incomplete": not c["complete"],
-                    }
-                    for c in text_calls
-                ]
-            else:
-                logger.info(
-                    "Provider '%s' echoed %d tool-call-looking block(s) in content alongside %d native tool_calls — stripping from displayed text, not re-dispatching",
-                    provider, len(text_calls), len(tool_calls_list),
-                )
-            buffer = prose
-
-        # Independent of whether a nameable call was found above: a
-        # provider can leak bare <parameter=...> tags with no
-        # <function=...> anywhere at all (confirmed directly — a retry
-        # attempt got messier, not cleaner, and dropped the function name
-        # entirely), which the pass above has no anchor to catch. There's
-        # no name to dispatch against here, so this only ever cleans up
-        # display text.
-        cleaned = _strip_stray_parameter_debris(buffer)
-        if cleaned != buffer:
-            logger.info(
-                "Stripped bare <parameter=...> debris (no function name found) from provider '%s' content",
-                provider,
-            )
-            buffer = cleaned
-
     print('Agent: '+buffer if buffer else ' ')
 
 
@@ -1298,28 +1133,11 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 )
             if args_dict is not None:
                 yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
-                if tc.get("_text_incomplete"):
-                    # Recovered from a provider's plain-text tool-call
-                    # fallback (see _parse_text_tool_calls) but its closing
-                    # tags never arrived — it may be missing arguments the
-                    # model never got to stream, possibly required or
-                    # side-effecting ones (this MCP tool could do anything,
-                    # e.g. send an email). Report it as cut off instead of
-                    # guessing at execution with data known to be partial.
-                    result = (
-                        f"Error: this call to '{command_name}' was cut off before it finished "
-                        "streaming and was not executed. Please try again."
-                    )
-                    logger.warning(
-                        "Not executing incomplete text-format tool call '%s': args=%.500r",
-                        command_name, args_dict,
-                    )
-                else:
-                    try:
-                        result = _run_tool(command_name, args_dict)
-                    except Exception as e:
-                        logger.exception("Tool '%s' raised with args=%.500r", command_name, args_dict)
-                        result = f"Error running tool '{command_name}': {e}"
+                try:
+                    result = _run_tool(command_name, args_dict)
+                except Exception as e:
+                    logger.exception("Tool '%s' raised with args=%.500r", command_name, args_dict)
+                    result = f"Error running tool '{command_name}': {e}"
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
             if i < last:
