@@ -971,6 +971,26 @@ def _parse_text_tool_calls(text):
     return "".join(prose_parts).strip(), calls
 
 
+# Second-chance cleanup for when even <function=...> doesn't show up —
+# confirmed directly: a retry attempt leaked only bare <parameter=key>
+# value</parameter> tags with no function name anywhere. There's nothing
+# to recover a dispatchable call from without a name, so this only ever
+# strips debris for display; _parse_text_tool_calls (which can still
+# create a real call) always runs first and removes any <function=...>
+# blocks before this ever sees the text.
+_BARE_PARAMETER_DEBRIS_RE = re.compile(
+    r'(?:<parameter=[^>]+>.*?(?:</parameter>|\Z)\s*)+',
+    re.DOTALL,
+)
+
+
+def _strip_stray_parameter_debris(text):
+    if not _BARE_PARAMETER_DEBRIS_RE.search(text):
+        return text
+    cleaned = _BARE_PARAMETER_DEBRIS_RE.sub(' ', text)
+    return re.sub(r' {2,}', ' ', cleaned).strip()
+
+
 def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
@@ -1195,6 +1215,21 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                     provider, len(text_calls), len(tool_calls_list),
                 )
             buffer = prose
+
+        # Independent of whether a nameable call was found above: a
+        # provider can leak bare <parameter=...> tags with no
+        # <function=...> anywhere at all (confirmed directly — a retry
+        # attempt got messier, not cleaner, and dropped the function name
+        # entirely), which the pass above has no anchor to catch. There's
+        # no name to dispatch against here, so this only ever cleans up
+        # display text.
+        cleaned = _strip_stray_parameter_debris(buffer)
+        if cleaned != buffer:
+            logger.info(
+                "Stripped bare <parameter=...> debris (no function name found) from provider '%s' content",
+                provider,
+            )
+            buffer = cleaned
 
     print('Agent: '+buffer if buffer else ' ')
 
