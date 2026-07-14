@@ -17,6 +17,8 @@ import threading
 import shutil
 import functools
 
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+
 from dotenv import load_dotenv, dotenv_values
 import os
 load_dotenv()
@@ -53,6 +55,30 @@ if not _secret_key:
         logger.exception("Couldn't persist secret key to %s", _secret_key_path)
         _secret_key = os.urandom(24).hex()
 app.secret_key = _secret_key
+
+# Signs short-lived tokens for /static/<path> links that get opened outside
+# the logged-in browser session — e.g. a generated .ics handed to the iOS
+# app's open_url tool, which launches Safari/Calendar in a separate process
+# that doesn't carry our session cookie. The token authorizes only the exact
+# file path it was signed for, and expires, so it can't be used to browse
+# other users' files or stay valid indefinitely if a link leaks.
+STATIC_TOKEN_MAX_AGE = 24 * 60 * 60  # 24 hours
+_static_token_serializer = URLSafeTimedSerializer(_secret_key, salt="static-file-access")
+
+
+def _make_static_token(rel_path):
+    return _static_token_serializer.dumps(rel_path)
+
+
+def _verify_static_token(rel_path, token):
+    try:
+        signed_path = _static_token_serializer.loads(token, max_age=STATIC_TOKEN_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return False
+    return signed_path == rel_path
+
+
+agent.set_static_token_signer(_make_static_token)
 
 
 def _log_and_error(e, message=None, status=500):
@@ -384,7 +410,8 @@ def serve_template(text):
 
 @app.route('/static/<path:filename>')
 def serve_static(filename):
-    if not logged_in():
+    token = request.args.get('token')
+    if not logged_in() and not (token and _verify_static_token(filename, token)):
         return jsonify({'error': 'Unauthorized'}), 401
     return send_from_directory(STATIC_DIR, filename)
 

@@ -33,16 +33,40 @@ location = BASE_DIR + "/../models/data.pth"
 STATIC_ROOT = os.path.normpath(BASE_DIR + '/../Flask/static')
 
 
+static_token_signer = None
+
+
+def set_static_token_signer(fn):
+    """Registers the function that signs a static-file path into a
+    short-lived access token (main.py wires this up at startup, same pattern
+    as set_user_creator — agent.py can't import main.py directly since main.py
+    already imports agent.py). fn must accept the file's path relative to
+    Flask's static root and return a token string.
+
+    Needed because links the agent hands back (e.g. a generated .ics) get
+    opened by the client via the OS — Safari/Calendar on iOS, not the app's
+    own authenticated session — so they can't rely on the login cookie."""
+    global static_token_signer
+    static_token_signer = fn
+
+
 def _static_url(directory, filename):
     """Build the public /static/... URL for `filename`, which was written to
     `directory` (static_dir or html_dir) — accounting for the per-user
-    subfolder those may point at."""
+    subfolder those may point at. Includes a signed access token so the link
+    still works when opened outside the logged-in session (e.g. handed to
+    Calendar/Safari on a phone), without requiring /static to be open to
+    anyone who guesses a path."""
     rel = os.path.relpath(os.path.normpath(directory), STATIC_ROOT)
     if rel in ('.', '') or rel.startswith('..'):
         rel = ''
     else:
         rel = rel.replace(os.sep, '/') + '/'
-    return url + "/static/" + rel + filename
+    rel_path = rel + filename
+    link = url + "/static/" + rel_path
+    if static_token_signer is not None:
+        link += "?token=" + static_token_signer(rel_path)
+    return link
 
 from dotenv import load_dotenv
 
