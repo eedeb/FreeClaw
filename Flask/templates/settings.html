@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw · Settings</title>
+  <meta name="theme-color" content="#0d0d0f"/>
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0d0f; --surface: #141416; --border: #222228;
+      --accent: #c8f04a; --accent-dim: #a8cc38; --text: #e8e8ec;
+      --muted: #666672; --err: #e05555;
+      --radius: 4px; --mono: 'IBM Plex Mono', monospace; --sans: 'Syne', sans-serif;
+    }
+    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-tap-highlight-color: transparent; }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px; opacity: 0.35; pointer-events: none; z-index: 0;
+    }
+    .wrap { position: relative; z-index: 1; max-width: 760px; margin: 0 auto; padding: 20px 18px 80px; }
+
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 26px;
+    }
+    header .logo { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; flex-shrink: 0; }
+    header .logo img { width: 100%; height: 100%; object-fit: cover; }
+    header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+    header .sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+    header .spacer { flex: 1; }
+    .nav-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      border-radius: var(--radius); padding: 7px 12px; font-family: var(--mono); font-size: 12px;
+      cursor: pointer; text-decoration: none; transition: all 0.15s;
+    }
+    .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+    section { margin-bottom: 34px; }
+    .sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+    .sec-head h2 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+    .sec-desc { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 14px; }
+
+    .banner {
+      font-family: var(--mono); font-size: 11px; line-height: 1.6;
+      border: 1px solid var(--border); border-left: 2px solid var(--accent-dim);
+      background: var(--surface); border-radius: var(--radius); padding: 9px 12px; margin-bottom: 14px; color: var(--text);
+    }
+
+    .card-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+    .empty { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 6px 0 12px; }
+    .card {
+      display: flex; align-items: center; gap: 12px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px;
+    }
+    .card-info { min-width: 0; flex: 1; }
+    .card-name { font-size: 14px; font-weight: 600; }
+    .card-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 3px; word-break: break-all; }
+    .card-sub .k { color: var(--accent-dim); }
+    .card.disabled { opacity: 0.5; }
+    .card.disabled .card-name::after { content: ' · off'; color: var(--muted); font-weight: 400; font-size: 11px; }
+
+    .toggle {
+      appearance: none; -webkit-appearance: none; width: 30px; height: 17px; border-radius: 9px;
+      background: var(--border); position: relative; cursor: pointer; flex-shrink: 0; transition: background 0.15s;
+    }
+    .toggle::before { content: ''; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--muted); transition: transform 0.15s, background 0.15s; }
+    .toggle:checked { background: var(--accent-dim); }
+    .toggle:checked::before { transform: translateX(13px); background: var(--accent); }
+    .del {
+      background: none; border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius);
+      padding: 5px 9px; font-family: var(--mono); font-size: 10px; cursor: pointer; flex-shrink: 0; transition: all 0.15s;
+    }
+    .del:hover { border-color: rgba(224,85,85,0.5); color: var(--err); }
+    .del.confirm { border-color: rgba(224,85,85,0.5); color: var(--err); }
+
+    .form { display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius); padding: 13px; }
+    .form-label { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .form input {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
+      padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
+    }
+    .form input:focus { outline: none; border-color: var(--accent-dim); }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+
+    button.primary {
+      background: var(--accent); color: #0d0d0f; border: none; border-radius: var(--radius);
+      padding: 10px 14px; font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; transition: transform 0.1s, opacity 0.15s;
+    }
+    button.primary:active { transform: scale(0.98); }
+    button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.ghost {
+      background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 14px; font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s;
+    }
+    button.ghost:hover { border-color: var(--accent-dim); }
+
+    .msg { font-family: var(--mono); font-size: 11px; margin-top: 2px; display: none; line-height: 1.5; }
+    .msg.ok { color: var(--accent); display: block; } .msg.err { color: var(--err); display: block; }
+
+    .env-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+    .env-row label { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+    .restart-box { border: 1px solid var(--border); border-left: 2px solid var(--err); background: var(--surface); border-radius: var(--radius); padding: 15px; }
+    .restart-box p { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
+    #restart-status { font-family: var(--mono); font-size: 11px; color: var(--accent-dim); margin-top: 10px; display: none; }
+    #restart-status.show { display: block; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
+    <div>
+      <h1>Settings</h1>
+      <div class="sub">providers · mcp · environment</div>
+    </div>
+    <div class="spacer"></div>
+    <a class="nav-btn" href="/">⌂ home</a>
+  </header>
+
+  <!-- ── PROVIDERS ── -->
+  <section>
+    <div class="sec-head"><h2>Providers</h2></div>
+    <div class="sec-desc">
+      Any OpenAI-compatible chat endpoint. The agent tries your enabled providers in order, top to bottom,
+      falling through to the next if one fails or is rate-limited. Free option:
+      <a href="https://cloud.cerebras.ai" target="_blank" rel="noopener" style="color:var(--accent-dim)">get a Cerebras API key</a>.
+    </div>
+    <div id="prov-banner" class="banner" style="display:none"></div>
+    <div id="prov-list" class="card-list"></div>
+    <div class="form">
+      <div class="form-label">Add a provider</div>
+      <input id="prov-name" placeholder="Name, e.g. cerebras" maxlength="60" autocomplete="off" spellcheck="false"/>
+      <input id="prov-url" placeholder="Base URL — https://api.cerebras.ai/v1" autocomplete="off" spellcheck="false"/>
+      <div class="grid2">
+        <input id="prov-model" placeholder="Model, e.g. gpt-oss-120b" autocomplete="off" spellcheck="false"/>
+        <input id="prov-key" placeholder="API key" type="password" autocomplete="off" spellcheck="false"/>
+      </div>
+      <button id="prov-add" class="primary">Add provider</button>
+      <div id="prov-msg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- ── MCP SERVERS ── -->
+  <section>
+    <div class="sec-head"><h2>MCP Servers</h2></div>
+    <div class="sec-desc">Connect external <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" style="color:var(--accent-dim)">Model Context Protocol</a> servers to give the agent new tools.</div>
+    <div id="mcp-list" class="card-list"></div>
+    <div class="form">
+      <div class="form-label">Add a server</div>
+      <input id="mcp-name" placeholder="Name, e.g. github" maxlength="60" autocomplete="off" spellcheck="false"/>
+      <input id="mcp-url" placeholder="Server URL — https://…/mcp" autocomplete="off" spellcheck="false"/>
+      <input id="mcp-token" placeholder="Token / API key (optional)" type="password" autocomplete="off" spellcheck="false"/>
+      <button id="mcp-add" class="primary">Add server</button>
+      <div id="mcp-msg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- ── ENVIRONMENT ── -->
+  <section>
+    <div class="sec-head"><h2>Environment</h2></div>
+    <div class="sec-desc">Login password, session secret, the built-in fallback keys, and other <span style="font-family:var(--mono)">.env</span> settings.</div>
+    <div id="env-fields"></div>
+    <button id="env-save" class="primary">Save environment</button>
+    <div id="env-msg" class="msg"></div>
+  </section>
+
+  <!-- ── RESTART ── -->
+  <section>
+    <div class="sec-head"><h2>Restart Server</h2></div>
+    <div class="restart-box">
+      <p>Most changes above apply on the next message with no restart. A restart is only needed for a new
+      session secret, an updated dependency, or code pulled by <span style="font-family:var(--mono)">update.sh</span>.
+      The server goes down for a few seconds and this page reloads itself when it's back.</p>
+      <button id="restart-btn" class="ghost">Restart now</button>
+      <div id="restart-status"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+  function showMsg(el, text, ok) { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err'); }
+
+  // Delete button needs a confirm tap before firing (shared by both lists).
+  function wireDelete(btn, onConfirm) {
+    btn.addEventListener('click', () => {
+      if (!btn.classList.contains('confirm')) {
+        btn.classList.add('confirm'); btn.textContent = 'confirm?';
+        setTimeout(() => { if (btn.classList.contains('confirm')) { btn.classList.remove('confirm'); btn.textContent = 'remove'; } }, 3000);
+        return;
+      }
+      onConfirm();
+    });
+  }
+
+  // ── Providers ──
+  const provList = $('prov-list'), provMsg = $('prov-msg'), provBanner = $('prov-banner');
+
+  function renderProviders(providers, usingBuiltin) {
+    if (usingBuiltin) {
+      provBanner.style.display = 'block';
+      provBanner.innerHTML = 'No providers configured — running on the <strong>built-in fallback</strong> (Google → Cerebras, using the keys in Environment below). Add one here to take full control of the chain.';
+    } else {
+      provBanner.style.display = 'none';
+    }
+    provList.innerHTML = '';
+    if (!providers || providers.length === 0) {
+      provList.innerHTML = '<div class="empty">No providers added yet.</div>';
+      return;
+    }
+    providers.forEach(p => {
+      const enabled = p.enabled !== false;
+      const card = document.createElement('div');
+      card.className = 'card' + (enabled ? '' : ' disabled');
+      card.innerHTML = `
+        <div class="card-info">
+          <div class="card-name">${escapeHtml(p.name)}</div>
+          <div class="card-sub">${escapeHtml(p.url)}${p.model ? ' · <span class="k">' + escapeHtml(p.model) + '</span>' : ''}${p.has_key ? ' · 🔑' : ' · ⚠ no key'}</div>
+        </div>
+        <input class="toggle" type="checkbox" ${enabled ? 'checked' : ''} title="${enabled ? 'Disable' : 'Enable'}"/>
+        <button class="del" type="button">remove</button>`;
+      const toggle = card.querySelector('.toggle');
+      toggle.addEventListener('change', () => toggleProvider(p.name, toggle.checked, card, toggle));
+      wireDelete(card.querySelector('.del'), () => deleteProvider(p.name));
+      provList.appendChild(card);
+    });
+  }
+
+  async function loadProviders() {
+    provList.innerHTML = '<div class="empty">loading…</div>';
+    try {
+      const res = await fetch('/api/providers');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderProviders(data.providers, data.using_builtin);
+    } catch (e) { provList.innerHTML = `<div class="empty" style="color:var(--err)">${escapeHtml(e.message)}</div>`; }
+  }
+
+  async function addProvider() {
+    const name = $('prov-name').value.trim(), url = $('prov-url').value.trim();
+    const model = $('prov-model').value.trim(), key = $('prov-key').value.trim();
+    provMsg.style.display = 'none';
+    if (!name || !url || !key) { showMsg(provMsg, 'Name, URL, and API key are required.', false); return; }
+    const btn = $('prov-add'); btn.disabled = true; btn.textContent = 'Adding…';
+    try {
+      const res = await fetch('/api/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url, model, key }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderProviders(data.providers, false);
+      $('prov-name').value = ''; $('prov-url').value = ''; $('prov-model').value = ''; $('prov-key').value = '';
+      showMsg(provMsg, 'Provider added.', true);
+    } catch (e) { showMsg(provMsg, e.message, false); }
+    finally { btn.disabled = false; btn.textContent = 'Add provider'; }
+  }
+
+  async function toggleProvider(name, enabled, card, toggle) {
+    toggle.disabled = true;
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent(name)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderProviders(data.providers, false);
+    } catch (e) { toggle.checked = !enabled; showMsg(provMsg, e.message, false); }
+    finally { toggle.disabled = false; }
+  }
+
+  async function deleteProvider(name) {
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      await loadProviders();  // reload so the built-in banner reappears if the list is now empty
+    } catch (e) { showMsg(provMsg, e.message, false); }
+  }
+
+  $('prov-add').addEventListener('click', addProvider);
+  $('prov-key').addEventListener('keydown', e => { if (e.key === 'Enter') addProvider(); });
+
+  // ── MCP servers ──
+  const mcpList = $('mcp-list'), mcpMsg = $('mcp-msg');
+
+  function renderMcp(servers) {
+    mcpList.innerHTML = '';
+    if (!servers || servers.length === 0) { mcpList.innerHTML = '<div class="empty">No MCP servers connected yet.</div>'; return; }
+    servers.forEach(s => {
+      const enabled = s.enabled !== false;
+      const card = document.createElement('div');
+      card.className = 'card' + (enabled ? '' : ' disabled');
+      card.innerHTML = `
+        <div class="card-info">
+          <div class="card-name">${escapeHtml(s.name)}</div>
+          <div class="card-sub">${escapeHtml(s.url)}${s.has_token ? ' · 🔑' : ''}</div>
+        </div>
+        <input class="toggle" type="checkbox" ${enabled ? 'checked' : ''} title="${enabled ? 'Disable' : 'Enable'}"/>
+        <button class="del" type="button">remove</button>`;
+      const toggle = card.querySelector('.toggle');
+      toggle.addEventListener('change', () => toggleMcp(s.name, toggle.checked, card, toggle));
+      wireDelete(card.querySelector('.del'), () => deleteMcp(s.name));
+      mcpList.appendChild(card);
+    });
+  }
+
+  async function loadMcp() {
+    mcpList.innerHTML = '<div class="empty">loading…</div>';
+    try {
+      const res = await fetch('/api/mcp');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcp(data.servers);
+    } catch (e) { mcpList.innerHTML = `<div class="empty" style="color:var(--err)">${escapeHtml(e.message)}</div>`; }
+  }
+
+  async function addMcp() {
+    const name = $('mcp-name').value.trim(), url = $('mcp-url').value.trim(), token = $('mcp-token').value.trim();
+    mcpMsg.style.display = 'none';
+    if (!name || !url) { showMsg(mcpMsg, 'Name and URL are required.', false); return; }
+    const btn = $('mcp-add'); btn.disabled = true; btn.textContent = 'Connecting…';
+    try {
+      const res = await fetch('/api/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url, token }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcp(data.servers);
+      $('mcp-name').value = ''; $('mcp-url').value = ''; $('mcp-token').value = '';
+      if (data.warning) showMsg(mcpMsg, data.warning, false);
+      else showMsg(mcpMsg, `Added — ${data.tool_count} tool${data.tool_count === 1 ? '' : 's'} available.`, true);
+    } catch (e) { showMsg(mcpMsg, e.message, false); }
+    finally { btn.disabled = false; btn.textContent = 'Add server'; }
+  }
+
+  async function toggleMcp(name, enabled, card, toggle) {
+    toggle.disabled = true;
+    try {
+      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      card.classList.toggle('disabled', !enabled);
+    } catch (e) { toggle.checked = !enabled; showMsg(mcpMsg, e.message, false); }
+    finally { toggle.disabled = false; }
+  }
+
+  async function deleteMcp(name) {
+    try {
+      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcp(data.servers);
+    } catch (e) { showMsg(mcpMsg, e.message, false); }
+  }
+
+  $('mcp-add').addEventListener('click', addMcp);
+  $('mcp-token').addEventListener('keydown', e => { if (e.key === 'Enter') addMcp(); });
+
+  // ── Environment (.env keys) ──
+  const envFields = $('env-fields'), envMsg = $('env-msg');
+
+  async function loadEnv() {
+    envFields.innerHTML = '<div class="empty">loading…</div>';
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      envFields.innerHTML = '';
+      data.settings.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'env-row';
+        const inp = document.createElement('input');
+        inp.className = 'form-input'; inp.dataset.key = s.key;
+        inp.type = s.secret ? 'password' : 'text';
+        inp.value = s.value || '';
+        inp.autocomplete = 'off'; inp.spellcheck = false;
+        inp.style.cssText = 'background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:9px 11px;font-family:var(--mono);font-size:12px;width:100%';
+        const lab = document.createElement('label');
+        lab.textContent = s.label + '  (' + s.key + ')';
+        row.appendChild(lab); row.appendChild(inp);
+        envFields.appendChild(row);
+      });
+    } catch (e) { envFields.innerHTML = `<div class="empty" style="color:var(--err)">${escapeHtml(e.message)}</div>`; }
+  }
+
+  async function saveEnv() {
+    envMsg.style.display = 'none';
+    const payload = {};
+    envFields.querySelectorAll('input[data-key]').forEach(inp => { payload[inp.dataset.key] = inp.value; });
+    const btn = $('env-save'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      showMsg(envMsg, 'Saved. Password / key changes apply immediately; a new session secret needs a restart.', true);
+    } catch (e) { showMsg(envMsg, e.message, false); }
+    finally { btn.disabled = false; btn.textContent = 'Save environment'; }
+  }
+  $('env-save').addEventListener('click', saveEnv);
+
+  // ── Restart ──
+  $('restart-btn').addEventListener('click', async () => {
+    const btn = $('restart-btn'), status = $('restart-status');
+    if (!confirm('Restart the FreeClaw server now? It will be unavailable for a few seconds.')) return;
+    btn.disabled = true; status.className = 'show'; status.textContent = 'Requesting restart…';
+    try {
+      const res = await fetch('/api/restart', { method: 'POST' });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `Error ${res.status}`); }
+    } catch (e) {
+      // A dropped connection right after the request is expected — the worker
+      // may exit before it finishes replying. Treat it as "restarting".
+    }
+    status.textContent = 'Server restarting — waiting for it to come back…';
+    // Poll an always-public endpoint (/login) until the network resolves again.
+    const started = Date.now();
+    (function poll() {
+      setTimeout(async () => {
+        try {
+          await fetch('/login', { method: 'GET', cache: 'no-store' });
+          status.textContent = 'Back up — reloading…';
+          location.reload();
+        } catch (_) {
+          if (Date.now() - started > 40000) {
+            status.style.color = 'var(--err)';
+            status.textContent = "Server hasn't come back after 40s. If you're not running it under systemd, start it again manually.";
+            btn.disabled = false;
+            return;
+          }
+          poll();
+        }
+      }, 1500);
+    })();
+  });
+
+  // Initial load
+  loadProviders(); loadMcp(); loadEnv();
+</script>
+</body>
+</html>

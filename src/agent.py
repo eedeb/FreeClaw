@@ -75,46 +75,127 @@ else:
 agent_messages=[]
 tools=[]
 
-# LLM provider fallback chain: (name, env_var, base_url, model_override,
-# extra_body), tried in order. The key is looked up from the environment
-# fresh on every call (not captured here) so a key added or changed via
-# /api/settings takes effect immediately, without restarting the process.
-# A provider with no key configured is skipped.
+# Built-in fallback provider chain: (name, env_var, base_url,
+# model_override, extra_body), tried in order. Used ONLY when the user has
+# defined no providers of their own in Settings → Providers (see
+# read_providers / _active_providers below). Keeps existing installs — the
+# ones the old installer seeded with GOOGLE_KEY / CEREBRAS_KEY — working
+# unchanged, while a fresh install starts with an empty user list and the
+# user adds an OpenAI-compatible endpoint in the web UI instead.
 #
-# model_override, when set, replaces whatever model the caller asked for
-# when talking to that specific provider — needed here since Google and
-# Cerebras don't share a model namespace. Google gets gemini-3.5-flash
-# explicitly; Cerebras gets no override, so the caller's own default
-# (openai/gpt-oss-120b) passes straight through — that's exactly what
-# Cerebras hosts under that name.
+# The key is looked up from the environment fresh on every call (not
+# captured here) so a key added/changed via Settings takes effect
+# immediately. A built-in with no key configured is skipped.
 #
-# gemini-3.5-flash is a reasoning model with *no way to turn thinking
-# off* — confirmed directly against Google's own docs: reasoning cannot
-# be disabled for Gemini 3.x models (the thinking_budget=0 trick that
-# works on this exact family of bug only applies to Gemini 2.5
-# Flash/Flash-Lite). That's a live, undismissed risk: this is the same
-# reasoning-leaks-into-content failure family that hit qwen3.5, and that
-# NVIDIA's Nemotron 3 Super needed extra_body={"chat_template_kwargs":
-# {"enable_thinking": False}} to avoid — except here there's no
-# equivalent switch to flip. Cerebras is the fallback if Google's tool
-# calling misbehaves.
+# model_override, when set, replaces whatever model the caller asked for —
+# needed here since Google and Cerebras don't share a model namespace.
+# Google gets gemini-3-flash-preview explicitly; Cerebras gets no override,
+# so the caller's own default (openai/gpt-oss-120b) passes straight through
+# — exactly what Cerebras hosts under that name. extra_body carries any
+# vendor-specific request fields (none needed for these two today).
 #
-# NVIDIA (nemotron-3-super-120b-a12b, which needed that enable_thinking
-# flag to behave — see git history for the exact config) was removed
-# from the chain when switching primary/fallback to Google + Cerebras.
-# If a reasoning model goes back into this list later, check whether it
-# exposes an equivalent off-switch before trusting its tool calls — don't
-# re-learn that lesson the hard way a third time.
-#
-# Leave model_override/extra_body as None for a provider that should just
-# use whatever the caller passed in.
-#
-# Google is primary, Cerebras is the fallback for when Google is
-# rate-limited or fails.
-_PROVIDER_CONF = [
-    ("google", "GOOGLE_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.5-flash", None),
+# Hard-won context worth keeping even though these are now just fallbacks:
+#  - gemini-3-flash-preview is a reasoning model with no way to fully turn
+#    thinking off (its lowest thinking_level "minimal" still "does not
+#    guarantee that thinking is off", per Google's docs) — the same
+#    reasoning-leaks-into-content family that hit qwen3.5.
+#  - Its multi-turn tool calling can 400 with "Function call is missing a
+#    thought_signature": a vendor token (extra_content.google.thought_
+#    signature) the official openai SDK can't round-trip, and which
+#    Google's own shim sometimes omits anyway. Cerebras as the next entry
+#    is what rescues those turns — it has no such requirement, so a turn
+#    that 400s on Google retries clean on Cerebras.
+# If a reasoning model goes into a chain again, check whether it exposes an
+# off-switch (e.g. NVIDIA Nemotron's enable_thinking, see git history)
+# before trusting its tool calls — don't re-learn that a third time.
+_BUILTIN_PROVIDER_CONF = [
+    ("google", "GOOGLE_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3-flash-preview", None),
     ("cerebras", "CEREBRAS_KEY", "https://api.cerebras.ai/v1", None, None),
 ]
+
+# User-defined providers persist in .env as five parallel JSON lists — the
+# same storage shape MCP servers use (see src/mcp_client.py) — read fresh
+# on every call so an add/remove/toggle in Settings → Providers takes
+# effect without a restart. Each provider carries its own api key directly
+# (not via an env-var name like the built-ins), plus the exact model id to
+# request from that endpoint.
+_ENV_PATH = os.path.join(os.path.dirname(BASE_DIR), ".env")
+_PROVIDER_NAMES_KEY = "PROVIDER_NAMES"
+_PROVIDER_URLS_KEY = "PROVIDER_URLS"
+_PROVIDER_KEYS_KEY = "PROVIDER_KEYS"
+_PROVIDER_MODELS_KEY = "PROVIDER_MODELS"
+_PROVIDER_ENABLED_KEY = "PROVIDER_ENABLED"
+
+
+def _parse_env_list(raw):
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return val if isinstance(val, list) else []
+
+
+def read_providers():
+    """Return the user-defined providers as a list of
+    {"name","url","key","model","enabled"} dicts, read fresh from .env on
+    every call so runtime edits are picked up without a restart. Empty when
+    the user hasn't configured any (the built-in chain is used then — see
+    _active_providers)."""
+    from dotenv import dotenv_values
+    if not os.path.exists(_ENV_PATH):
+        return []
+    env = dotenv_values(_ENV_PATH)
+    names = _parse_env_list(env.get(_PROVIDER_NAMES_KEY))
+    urls = _parse_env_list(env.get(_PROVIDER_URLS_KEY))
+    keys = _parse_env_list(env.get(_PROVIDER_KEYS_KEY))
+    models = _parse_env_list(env.get(_PROVIDER_MODELS_KEY))
+    enabled = _parse_env_list(env.get(_PROVIDER_ENABLED_KEY))
+    out = []
+    for i, url in enumerate(urls):
+        if not url:
+            continue
+        out.append({
+            "name": names[i] if i < len(names) and names[i] else f"provider{i + 1}",
+            "url": url,
+            "key": keys[i] if i < len(keys) else "",
+            "model": models[i] if i < len(models) else "",
+            "enabled": bool(enabled[i]) if i < len(enabled) else True,
+        })
+    return out
+
+
+def providers_to_env(providers):
+    """Turn a list of provider dicts into the {ENV_KEY: value} mapping to
+    persist. Values are single-quote-wrapped JSON so brackets and the inner
+    double quotes survive python-dotenv untouched (callers must reject
+    single quotes / newlines in the fields, same as MCP does)."""
+    return {
+        _PROVIDER_NAMES_KEY: "'" + json.dumps([p.get("name", "") for p in providers]) + "'",
+        _PROVIDER_URLS_KEY: "'" + json.dumps([p.get("url", "") for p in providers]) + "'",
+        _PROVIDER_KEYS_KEY: "'" + json.dumps([p.get("key", "") for p in providers]) + "'",
+        _PROVIDER_MODELS_KEY: "'" + json.dumps([p.get("model", "") for p in providers]) + "'",
+        _PROVIDER_ENABLED_KEY: "'" + json.dumps([bool(p.get("enabled", True)) for p in providers]) + "'",
+    }
+
+
+def _active_providers():
+    """The provider chain _create_completion actually tries, in order.
+    Each item is (name, base_url, api_key, model_override, extra_body).
+
+    Enabled user-defined providers take over the whole chain the moment any
+    exist; otherwise fall back to the built-in google/cerebras chain,
+    resolving each built-in's key from its env var at call time. A user
+    provider with a blank model sends no override (the endpoint's own
+    default model is used)."""
+    user = [p for p in read_providers() if p.get("enabled", True) and p.get("url")]
+    if user:
+        return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None), None) for p in user]
+    return [
+        (name, base_url, os.getenv(env_var), model_override, extra_body)
+        for (name, env_var, base_url, model_override, extra_body) in _BUILTIN_PROVIDER_CONF
+    ]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
 # fails in seconds instead of the SDK's 600s default (compounded by its own
@@ -123,13 +204,14 @@ _PROVIDER_CONF = [
 # coming; fast failure at least surfaces a clear error quickly (or, for a
 # provider further down the chain, actually gets tried in time).
 #
-# Not yet verified: gemini-3.5-flash can't skip its own mandatory
-# reasoning pass (see _PROVIDER_CONF above), and if that phase produces no
-# streamed bytes at all before the real answer starts, a 30s *read*
-# timeout (time between individual chunks, not total response time) could
-# fire on a legitimately-thinking-but-silent connection, not just a dead
-# one. Watch for this specifically if Google starts timing out more than
-# Cerebras ever did as primary.
+# Not yet verified: gemini-3-flash-preview can't fully skip its own
+# reasoning pass (see _BUILTIN_PROVIDER_CONF above), and if that phase
+# produces no streamed bytes at all before the real answer starts, a 30s
+# *read* timeout (time between individual chunks, not total response time)
+# could fire on a legitimately-thinking-but-silent connection, not just a
+# dead one. Watch for this if Google times out more than a fast provider
+# would. The same read timeout applies to every user-added provider too — a
+# slow self-hosted endpoint may need this raised.
 _PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 # One OpenAI client per provider, built once and reused so switching
@@ -138,9 +220,9 @@ _provider_clients = {}
 
 # The provider that answered last — tracked only so _create_completion can
 # log when a call actually switches providers. Try order itself always
-# follows _PROVIDER_CONF's listed order (first entry tried first, every
-# call), not whichever provider happened to work last.
-_last_provider = "google"
+# follows _active_providers()' order (first entry tried first, every call),
+# not whichever provider happened to work last.
+_last_provider = None
 
 
 def _client_for(name, key, base_url):
@@ -196,14 +278,13 @@ class AllProvidersFailedError(RuntimeError):
 
 
 def _create_completion(**kwargs):
-    """Try each configured provider in the order listed in _PROVIDER_CONF —
-    first entry first, every call — and return (response_or_stream,
+    """Try each configured provider in the order _active_providers() returns
+    them — first entry first, every call — and return (response_or_stream,
     provider_name) from the first that works. Raises AllProvidersFailedError
     if none do."""
     global _last_provider
     failures = []
-    for name, env_var, base_url, model_override, extra_body in _PROVIDER_CONF:
-        key = os.getenv(env_var)
+    for name, base_url, key, model_override, extra_body in _active_providers():
         if not key or key == "None":
             continue
         call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
@@ -934,14 +1015,12 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
                 eco_messages=[agent_messages[0], *agent_messages[-3:]]
             else:
                 eco_messages=agent_messages
-            model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
             if len(agent_messages) > 7:
                 eco_messages=[agent_messages[0], *agent_messages[-5:]]
             else:
                 eco_messages=agent_messages
-            model="openai/gpt-oss-20b"
             check_tools=None
         elif tag == 'Search':
             temp=0.4
@@ -1035,7 +1114,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
     print('\n')
     print('##########################################################################')
     '''
-    print('Reveived: '+agent_input)
+    print('Received: '+agent_input)
     try:
         stream, provider = _create_completion(
             model=model,

@@ -145,7 +145,10 @@ def current_user():
 def login():
     error = False
     if request.method == 'POST':
-        if request.form.get('password') == password:
+        # Read fresh (not the module-load `password` global) so a password
+        # changed in Settings — which _write_env pushes into os.environ —
+        # takes effect on the very next login without a restart.
+        if request.form.get('password') == os.getenv("FC_PASSWORD"):
             session.permanent = True
             session['authenticated'] = True
             return redirect(url_for('index'))
@@ -167,6 +170,13 @@ def index():
     if not logged_in():
         return redirect(url_for('login'))
     return render_template('index.html')
+
+
+@app.route('/settings')
+def settings_page():
+    if not logged_in():
+        return redirect(url_for('login'))
+    return render_template('settings.html')
 
 
 # ── USER / CONVERSATION API ──────────────────────────────────
@@ -398,7 +408,7 @@ def _require_api_auth(f):
         if not auth.startswith('Bearer '):
             return jsonify({"error": {"message": "Missing Bearer token", "type": "invalid_request_error", "code": 401}}), 401
         token = auth[len('Bearer '):]
-        if token != password:
+        if token != os.getenv("FC_PASSWORD"):  # fresh read — see login()
             return jsonify({"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": 401}}), 401
         return f(*args, **kwargs)
     return wrapper
@@ -742,6 +752,140 @@ def api_delete_mcp(name):
         mcp_client.clear_cache()
         agent.refresh_tools()
     return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in remaining]})
+
+
+# ── LLM PROVIDERS (env-backed parallel lists) ────────────────
+#
+# User-defined OpenAI-compatible endpoints. Stored + read by agent.py
+# (read_providers / providers_to_env), persisted the same single-quoted-
+# JSON way MCP servers are, and — when any enabled one exists — they
+# replace the built-in google/cerebras chain entirely (see
+# agent._active_providers). Reject the same characters MCP does so the
+# round-trip through .env is safe (the api key is the risky field here).
+
+def _provider_public(p):
+    """Shape a stored provider for the client. The key is write-only — we
+    only report whether one is set, never echo it back."""
+    return {
+        'name': p.get('name', ''),
+        'url': p.get('url', ''),
+        'model': p.get('model', ''),
+        'has_key': bool((p.get('key') or '').strip()),
+        'enabled': p.get('enabled', True),
+    }
+
+
+@app.route('/api/providers', methods=['GET'])
+def api_list_providers():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        providers = agent.read_providers()
+    except Exception as e:
+        return _log_and_error(e, message=str(e))
+    # Surface whether the built-in google/cerebras fallback is what's
+    # actually live right now (i.e. the user has defined none of their own),
+    # so the UI can say so instead of looking mysteriously empty.
+    using_builtin = not any(p.get('enabled', True) and p.get('url') for p in providers)
+    return jsonify({'providers': [_provider_public(p) for p in providers], 'using_builtin': using_builtin})
+
+
+@app.route('/api/providers', methods=['POST'])
+def api_add_provider():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name', '')).strip()
+    url = str(data.get('url', '')).strip()
+    key = str(data.get('key', '')).strip()
+    model = str(data.get('model', '')).strip()
+
+    if not name or not url or not key:
+        return jsonify({'error': 'Name, URL, and API key are all required.'}), 400
+    if not re.match(r'^https?://', url, re.IGNORECASE):
+        return jsonify({'error': 'URL must start with http:// or https://.'}), 400
+    for field, val in (('name', name), ('URL', url), ('API key', key), ('model', model)):
+        if any(c in val for c in _MCP_BAD_CHARS):  # same quote/newline rejects as MCP
+            return jsonify({'error': f'The {field} contains unsupported characters (quotes or newlines).'}), 400
+
+    with agent_lock:
+        providers = agent.read_providers()
+        if any(p.get('name') == name for p in providers):
+            return jsonify({'error': f"A provider named '{name}' already exists."}), 409
+        providers.append({'name': name, 'url': url, 'key': key, 'model': model, 'enabled': True})
+        try:
+            _write_env(agent.providers_to_env(providers))
+        except Exception as e:
+            return _log_and_error(e, message=f'Could not save: {e}')
+    return jsonify({'ok': True, 'providers': [_provider_public(p) for p in providers]})
+
+
+@app.route('/api/providers/<name>', methods=['PATCH'])
+def api_toggle_provider(name):
+    """Enable/disable a provider without dropping its saved url/key/model."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    if 'enabled' not in data:
+        return jsonify({'error': "Body must include 'enabled'."}), 400
+    enabled = bool(data.get('enabled'))
+    with agent_lock:
+        providers = agent.read_providers()
+        match = next((p for p in providers if p.get('name') == name), None)
+        if match is None:
+            return jsonify({'error': 'No such provider'}), 404
+        match['enabled'] = enabled
+        try:
+            _write_env(agent.providers_to_env(providers))
+        except Exception as e:
+            return _log_and_error(e, message=f'Could not save: {e}')
+    return jsonify({'ok': True, 'providers': [_provider_public(p) for p in providers]})
+
+
+@app.route('/api/providers/<name>', methods=['DELETE'])
+def api_delete_provider(name):
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    with agent_lock:
+        providers = agent.read_providers()
+        remaining = [p for p in providers if p.get('name') != name]
+        if len(remaining) == len(providers):
+            return jsonify({'error': 'No such provider'}), 404
+        try:
+            _write_env(agent.providers_to_env(remaining))
+        except Exception as e:
+            return _log_and_error(e, message=f'Could not save: {e}')
+    return jsonify({'ok': True, 'providers': [_provider_public(p) for p in remaining]})
+
+
+# ── SERVER RESTART ───────────────────────────────────────────
+
+@app.route('/api/restart', methods=['POST'])
+def api_restart():
+    """Restart the server so config that isn't picked up live (SECRET_KEY,
+    a newly-installed dependency, code pulled by update.sh) takes effect.
+
+    Mechanism: the process simply exits, and systemd — which runs FreeClaw
+    with Restart=always / RestartSec=5 (see install.sh) — brings it back up
+    within a few seconds. No sudo, no shelling out to systemctl. The
+    frontend polls until the server answers again, then reloads. If FreeClaw
+    is being run WITHOUT the systemd unit (e.g. a bare `python -m
+    Flask.main` during development), nothing restarts it and the process
+    just stops — the poll will time out with a clear message rather than
+    silently hang."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    def _exit_soon():
+        # Give the HTTP response time to flush to the browser before the
+        # worker dies; os._exit skips atexit/cleanup so systemd sees a
+        # clean process gone and restarts it immediately.
+        time.sleep(0.7)
+        logger.info("Restart requested via /api/restart — exiting for systemd to respawn")
+        os._exit(0)
+
+    threading.Thread(target=_exit_soon, daemon=True).start()
+    return jsonify({'ok': True})
 
 
 if __name__ == '__main__':

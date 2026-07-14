@@ -152,45 +152,12 @@ section_gap
 divider
 section_gap
 
-# ── API Key ──────────────────────────────────
+# ── Configuration ────────────────────────────
 
 step "5" "Configuration..."
 section_gap
-echo -e "     ${GRAY}You'll need a free Google AI API key from${RESET} ${LIME}aistudio.google.com${RESET}"
-section_gap
-
-read -p "$(echo -e "     ${LIME}?${RESET}  Google AI API key: ")" api_key < /dev/tty
-printf 'GOOGLE_KEY=%s\n' "$api_key" > .env
-chmod 600 .env
-success "API key saved to .env"
-
-section_gap
-echo -e "     ${GRAY}Optional: Cerebras API key from${RESET} ${LIME}cloud.cerebras.ai${RESET} ${GRAY}— used as a fallback if Google fails (press Enter to skip)${RESET}"
-section_gap
-
-read -p "$(echo -e "     ${LIME}?${RESET}  Cerebras API key: ")" cerebras_key < /dev/tty
-if [[ -n "$cerebras_key" ]]; then
-    printf 'CEREBRAS_KEY=%s\n' "$cerebras_key" >> .env
-    success "Cerebras API key saved"
-else
-    printf 'CEREBRAS_KEY=None\n' >> .env
-    info "No Cerebras key provided — skipping"
-fi
-
-section_gap
-echo -e "     ${GRAY}Optional: NVIDIA NIM API key from${RESET} ${LIME}build.nvidia.com${RESET} ${GRAY}— only used to describe uploaded images (press Enter to skip)${RESET}"
-section_gap
-
-read -p "$(echo -e "     ${LIME}?${RESET}  NVIDIA API key: ")" nvidia_key < /dev/tty
-if [[ -n "$nvidia_key" ]]; then
-    printf 'NVIDIA_KEY=%s\n' "$nvidia_key" >> .env
-    success "NVIDIA API key saved"
-else
-    printf 'NVIDIA_KEY=None\n' >> .env
-    info "No NVIDIA key provided — skipping"
-fi
-printf 'OPENROUTER_KEY=None\n' >> .env
-
+echo -e "     ${GRAY}Just a login password now — you'll add your AI provider(s)${RESET}"
+echo -e "     ${GRAY}from the web UI after install (no API keys needed here).${RESET}"
 section_gap
 
 while true; do
@@ -208,8 +175,14 @@ while true; do
 done
 
 secret_key=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-printf 'FC_PASSWORD=%s\n' "$fc_password" >> .env
+# Write .env: login password + session secret, plus empty/placeholder slots
+# for the optional keys. Providers are added later from Settings → Providers
+# (persisted into PROVIDER_* lists), so no API keys are collected here.
+printf 'FC_PASSWORD=%s\n' "$fc_password" > .env
+chmod 600 .env
 printf 'SECRET_KEY=%s\n' "$secret_key" >> .env
+printf 'NVIDIA_KEY=None\n' >> .env
+printf 'OPENROUTER_KEY=None\n' >> .env
 success "Password saved"
 success "Session secret generated"
 
@@ -270,14 +243,17 @@ chmod +x uninstall.sh
 
 # ── MCP servers ──────────────────────────────
 
-step "7" "MCP servers (Model Context Protocol)..."
+step "7" "AI providers & MCP servers..."
 section_gap
-echo -e "     ${GRAY}FreeClaw can connect to external MCP servers to gain new${RESET}"
-echo -e "     ${GRAY}tools — GitHub, search, databases, and much more.${RESET}"
+echo -e "     ${GRAY}FreeClaw needs at least one AI provider to answer. Add one${RESET}"
+echo -e "     ${GRAY}from the web UI after install — any OpenAI-compatible endpoint:${RESET}"
 section_gap
-info "No setup needed now — add them anytime from the web UI:"
-info "open a chat and click ${BOLD}+ MCP${RESET} to enter a server URL and token."
-info "Connections are saved to ${BOLD}.env${RESET} and loaded automatically."
+info "open the web UI, click ${BOLD}⚙ Settings${RESET} → ${BOLD}Providers${RESET},"
+info "and paste in a URL, API key, and model. Free options that work:"
+info "  ${LIME}aistudio.google.com${RESET} (Google AI)  ·  ${LIME}cloud.cerebras.ai${RESET} (Cerebras)"
+section_gap
+info "The same Settings page manages ${BOLD}MCP servers${RESET} (external tools —"
+info "GitHub, search, databases) and your ${BOLD}.env${RESET} — no file editing needed."
 
 section_gap
 divider
@@ -293,6 +269,9 @@ echo -e "   ${GRAY}FreeClaw is running and will auto-start on boot.${RESET}"
 echo -e "   ${GRAY}Open the web UI in your browser:${RESET}"
 echo ""
 echo -e "   ${BG_DARK}   ${LIME}${BOLD}http://${IP}:6767${RESET}${BG_DARK}   ${RESET}"
+echo ""
+echo -e "   ${YELLOW}First step:${RESET} ${GRAY}open ${BOLD}⚙ Settings → Providers${RESET}${GRAY} and add an AI provider —${RESET}"
+echo -e "   ${GRAY}FreeClaw can't answer until at least one is configured.${RESET}"
 echo ""
 echo -e "   ${DIM}${GRAY}The built-in OpenAI-compatible API is available at:${RESET}"
 echo -e "   ${DIM}${GRAY}  http://${IP}:6767/v1  (toggle on/off from the homepage)${RESET}"
