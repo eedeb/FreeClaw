@@ -182,7 +182,6 @@ printf 'FC_PASSWORD=%s\n' "$fc_password" > .env
 chmod 600 .env
 printf 'SECRET_KEY=%s\n' "$secret_key" >> .env
 printf 'NVIDIA_KEY=None\n' >> .env
-printf 'OPENROUTER_KEY=None\n' >> .env
 success "Password saved"
 success "Session secret generated"
 

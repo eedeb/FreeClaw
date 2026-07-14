@@ -549,7 +549,6 @@ SETTINGS_KEYS = [
     ("GOOGLE_KEY",       "Google AI API Key",       True),
     ("CEREBRAS_KEY",     "Cerebras API Key",        True),
     ("NVIDIA_KEY",       "NVIDIA API Key (vision only)", True),
-    ("OPENROUTER_KEY",   "OpenRouter API Key",      True),
     ("CUSTOM_DOMAIN",    "Custom Domain",           False),
 ]
 KNOWN_KEYS = {k for k, _, _ in SETTINGS_KEYS}
