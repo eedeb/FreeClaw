@@ -536,7 +536,7 @@ def v1_chat_completions():
 SETTINGS_KEYS = [
     ("FC_PASSWORD",      "Login Password",          False),
     ("SECRET_KEY",       "Session Secret Key",      False),
-    ("API_KEY",          "Groq API Key",            True),
+    ("CEREBRAS_KEY",     "Cerebras API Key",        True),
     ("NVIDIA_KEY",       "NVIDIA API Key",          True),
     ("OPENROUTER_KEY",   "OpenRouter API Key",      True),
     ("CUSTOM_DOMAIN",    "Custom Domain",           False),

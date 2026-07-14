@@ -20,7 +20,7 @@ Describe what you found, how to reproduce it, and what the potential impact migh
 
 Given the nature of this project, the most relevant areas of concern are:
 
-- **Credential exposure** — anything that could leak your Groq API key, MCP server tokens, or other secrets stored in the codebase or `.env`
+- **Credential exposure** — anything that could leak your Cerebras API key, MCP server tokens, or other secrets stored in the codebase or `.env`
 - **Bash execution abuse** — the `run_bash_command` tool runs shell commands directly on the host machine; any prompt injection or bypass that causes unintended commands to run is a serious issue
 - **Scraper exploitation** — malicious web content that manipulates the agent's behavior through scraped text
 - **MCP server trust** — a malicious or compromised MCP server can return content that manipulates the agent, or attempt to misuse the token it's given

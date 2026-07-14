@@ -83,9 +83,9 @@ tools=[]
 #
 # model_override, when set, replaces whatever model the caller asked for
 # when talking to that specific provider. NVIDIA needs one: the shared
-# default (openai/gpt-oss-120b, what Groq calls use) hangs indefinitely on
-# NVIDIA for any request that includes a `tools` param — confirmed by
-# direct testing, streaming and non-streaming both.
+# default (openai/gpt-oss-120b, what Cerebras calls use too) hangs
+# indefinitely on NVIDIA for any request that includes a `tools` param —
+# confirmed by direct testing, streaming and non-streaming both.
 #
 # qwen/qwen3.5-397b-a17b used to be the override here — dropped after it
 # turned out to leak its own tool-call planning into plain assistant
@@ -104,11 +104,23 @@ tools=[]
 # Leave model_override/extra_body as None for a provider that should just
 # use whatever the caller passed in.
 #
+# Groq replaced with Cerebras here (same primary slot, same default model —
+# gpt-oss-120b, a plain instruction-tuned model with no "thinking" mode, so
+# no risk of the reasoning-leaks-into-content problem that qwen3.5 and
+# other reasoning models have). Cerebras's own free-tier model list is
+# thin — as of this writing just gpt-oss-120b and zai-glm-4.7 (a reasoning
+# model, same "does it leak thinking into content" question qwen3.5 failed
+# and Nemotron 3 Super needed extra_body to answer — glm-4.7 hasn't been
+# verified here, so it isn't used). Watch for rate-limit fallovers more
+# than Groq ever caused: Cerebras's free tier is 5 requests/minute, and a
+# single tool-calling turn can burn several requests in a row (initial +
+# one continuation per tool call).
+#
 # OpenRouter is still temporarily disabled — uncomment to bring it back
-# into the chain. Groq is primary, NVIDIA is the fallback for when Groq is
-# rate-limited.
+# into the chain. Cerebras is primary, NVIDIA is the fallback for when
+# Cerebras is rate-limited.
 _PROVIDER_CONF = [
-    ("groq", "API_KEY", "https://api.groq.com/openai/v1", None, None),
+    ("cerebras", "CEREBRAS_KEY", "https://api.cerebras.ai/v1", None, None),
     ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1", "nvidia/nemotron-3-super-120b-a12b",
      {"chat_template_kwargs": {"enable_thinking": False}}),
     # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1", None, None),
@@ -123,8 +135,9 @@ _PROVIDER_CONF = [
 # response), so a tool-calling turn that falls back to NVIDIA is a
 # guaranteed timeout with no chance of succeeding. A long timeout there
 # only makes the user wait longer for a reply that was never coming; fast
-# failure at least surfaces a clear error quickly. Groq being primary and
-# fast means 30s is still plenty of headroom for a legitimate reply.
+# failure at least surfaces a clear error quickly. Cerebras being primary
+# and fast (wafer-scale inference, same pitch as Groq) means 30s is still
+# plenty of headroom for a legitimate reply.
 _PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 # One OpenAI client per provider, built once and reused so switching
@@ -135,7 +148,7 @@ _provider_clients = {}
 # log when a call actually switches providers. Try order itself always
 # follows _PROVIDER_CONF's listed order (first entry tried first, every
 # call), not whichever provider happened to work last.
-_last_provider = "groq"
+_last_provider = "cerebras"
 
 
 def _client_for(name, key, base_url):

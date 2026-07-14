@@ -14,10 +14,10 @@ Thanks for wanting to help out! Whether you're fixing a bug, adding a feature, o
 
 2. **Install dependencies**
    ```bash
-   pip install groq ddgs requests beautifulsoup4 json-repair fastapi uvicorn
+   pip install openai ddgs requests beautifulsoup4 json-repair fastapi uvicorn
    ```
 
-3. **Set up your credentials** — run `./install.sh`, or create a `.env` file in the project root with at least your Groq API key (`API_KEY`) and a web UI password (`FC_PASSWORD`)
+3. **Set up your credentials** — run `./install.sh`, or create a `.env` file in the project root with at least your Cerebras API key (`CEREBRAS_KEY`) and a web UI password (`FC_PASSWORD`)
 
 ---
 

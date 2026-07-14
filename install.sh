@@ -156,11 +156,11 @@ section_gap
 
 step "5" "Configuration..."
 section_gap
-echo -e "     ${GRAY}You'll need a free Groq API key from${RESET} ${LIME}console.groq.com${RESET}"
+echo -e "     ${GRAY}You'll need a free Cerebras API key from${RESET} ${LIME}cloud.cerebras.ai${RESET}"
 section_gap
 
-read -p "$(echo -e "     ${LIME}?${RESET}  Groq API key: ")" api_key < /dev/tty
-printf 'API_KEY=%s\n' "$api_key" > .env
+read -p "$(echo -e "     ${LIME}?${RESET}  Cerebras API key: ")" api_key < /dev/tty
+printf 'CEREBRAS_KEY=%s\n' "$api_key" > .env
 chmod 600 .env
 success "API key saved to .env"
 
