@@ -271,6 +271,15 @@ def _create_completion(**kwargs):
         # provider — sending `null` and not sending the key at all mean
         # the exact same thing per OpenAI's own semantics.
         call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
+        if "messages" in call_kwargs:
+            # agent_stream tags its own assistant messages with a "provider"
+            # key (so the UI can show/persist which one answered) — strip it
+            # before it goes out over the wire. It's not part of the
+            # OpenAI-compatible message schema, and some providers 400 on
+            # unrecognized fields (see the None-stripping note above).
+            call_kwargs = {**call_kwargs, "messages": [
+                {k: v for k, v in m.items() if k != "provider"} for m in call_kwargs["messages"]
+            ]}
         try:
             c = _client_for(name, key, base_url)
             result = c.chat.completions.create(**call_kwargs)
@@ -1181,6 +1190,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
 
         assistant_msg = {
             "role": "assistant",
+            "provider": provider,
             "tool_calls": [
                 {
                     "id": tc["id"],
@@ -1249,6 +1259,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         agent_messages.append(
             {
             "role": "assistant",
+            "provider": provider,
             "content": buffer
             }
         )

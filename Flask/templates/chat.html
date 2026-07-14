@@ -736,7 +736,8 @@
     wrap.className = `message ${role}`;
     const label = document.createElement('div');
     label.className = 'msg-label';
-    label.textContent = role === 'user' ? 'you' : 'agent';
+    const provider = opts && opts.provider;
+    label.textContent = role === 'user' ? 'you' : ('agent' + (provider ? ' · via ' + provider : ''));
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
@@ -931,7 +932,7 @@
           ? msg.content
           : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
         if (text && text.trim()) {
-          addMessage('agent', text, null, { countTokens: false });
+          addMessage('agent', text, null, { countTokens: false, provider: msg.provider });
         }
       }
     }
