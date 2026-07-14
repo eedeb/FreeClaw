@@ -209,6 +209,18 @@ def _create_completion(**kwargs):
         call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
         if extra_body:
             call_kwargs = {**call_kwargs, "extra_body": extra_body}
+        # Callers pass a few always-optional params (stop, tools) as an
+        # explicit None when unused rather than omitting them outright —
+        # harmless on providers that treat "null" the same as "not given",
+        # but confirmed NOT harmless on Google's Gemini shim, which 400s
+        # with "Value is not a string: null" the moment any optional field
+        # is present with a JSON null value, `stop` included. Stripping
+        # None values here (once, for every provider) means every caller
+        # gets this fixed for free instead of each needing its own
+        # omit-if-None logic, and it changes nothing for a well-behaved
+        # provider — sending `null` and not sending the key at all mean
+        # the exact same thing per OpenAI's own semantics.
+        call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
         try:
             c = _client_for(name, key, base_url)
             result = c.chat.completions.create(**call_kwargs)
@@ -1032,7 +1044,6 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             tools=check_tools,
             top_p=1,
             stream=True,
-            stop=None
         )
     except AllProvidersFailedError as e:
         # Each provider's full traceback was already logged individually
@@ -1206,7 +1217,6 @@ def api_complete(messages, model=None, stream=False, temperature=1.0, max_tokens
         temperature=temperature,
         top_p=1,
         stream=stream,
-        stop=None,
     )
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
