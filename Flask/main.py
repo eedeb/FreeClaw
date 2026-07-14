@@ -542,13 +542,13 @@ def v1_chat_completions():
 
 # ── SETTINGS (env file) ──────────────────────────────────────
 
-# Known .env keys shown in the settings UI, in display order.
+# Known .env keys shown in the settings UI, in display order. LLM provider
+# credentials (name/url/key/model) live under Settings → Providers instead
+# (see agent.read_providers / providers_to_env) — this list is only for
+# config that isn't a provider: login, session, and misc.
 SETTINGS_KEYS = [
     ("FC_PASSWORD",      "Login Password",          False),
     ("SECRET_KEY",       "Session Secret Key",      False),
-    ("GOOGLE_KEY",       "Google AI API Key",       True),
-    ("CEREBRAS_KEY",     "Cerebras API Key",        True),
-    ("NVIDIA_KEY",       "NVIDIA API Key (vision only)", True),
     ("CUSTOM_DOMAIN",    "Custom Domain",           False),
 ]
 KNOWN_KEYS = {k for k, _, _ in SETTINGS_KEYS}
@@ -598,8 +598,8 @@ def _write_env(updates: dict):
         f.writelines(new_lines)
 
     # Also update the live process environment so a key added/changed here
-    # (e.g. GOOGLE_KEY or CEREBRAS_KEY) is picked up by the LLM provider
-    # fallback on the very next request, without restarting the app.
+    # (e.g. a PROVIDER_KEYS entry, or NVIDIA_KEY) is picked up on the very
+    # next request, without restarting the app.
     for key, value in updates.items():
         os.environ[key] = value
 

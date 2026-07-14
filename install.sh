@@ -175,13 +175,15 @@ while true; do
 done
 
 secret_key=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-# Write .env: login password + session secret, plus empty/placeholder slots
-# for the optional keys. Providers are added later from Settings → Providers
-# (persisted into PROVIDER_* lists), so no API keys are collected here.
+# Write .env: just login password + session secret. Chat providers are
+# added afterward from Settings → Providers in the web UI (persisted into
+# PROVIDER_* lists) — no API keys collected here. The one exception: NVIDIA
+# NIM, only used for the image-description tool, has no Settings UI of its
+# own — add NVIDIA_KEY=... to .env by hand and restart if you want that
+# tool to work.
 printf 'FC_PASSWORD=%s\n' "$fc_password" > .env
 chmod 600 .env
 printf 'SECRET_KEY=%s\n' "$secret_key" >> .env
-printf 'NVIDIA_KEY=None\n' >> .env
 success "Password saved"
 success "Session secret generated"
 

@@ -75,43 +75,25 @@ else:
 agent_messages=[]
 tools=[]
 
-# Built-in fallback provider chain: (name, env_var, base_url,
-# model_override, extra_body), tried in order. Used ONLY when the user has
-# defined no providers of their own in Settings → Providers (see
-# read_providers / _active_providers below). Keeps existing installs — the
-# ones the old installer seeded with GOOGLE_KEY / CEREBRAS_KEY — working
-# unchanged, while a fresh install starts with an empty user list and the
-# user adds an OpenAI-compatible endpoint in the web UI instead.
+# There is no built-in fallback chain anymore — every provider the agent
+# can call comes from Settings → Providers (read_providers / below). An
+# empty list here means the agent has nothing to call at all; that's
+# reported clearly to the user (see _user_facing_error) rather than
+# silently degrading to a hardcoded default. Earlier builds shipped a
+# hardcoded google/cerebras fallback, seeded by the installer as GOOGLE_KEY
+# / CEREBRAS_KEY — removed for good along with those installer prompts and
+# their Settings fields; see git history if reviving one.
 #
-# The key is looked up from the environment fresh on every call (not
-# captured here) so a key added/changed via Settings takes effect
-# immediately. A built-in with no key configured is skipped.
-#
-# model_override, when set, replaces whatever model the caller asked for —
-# needed here since Google and Cerebras don't share a model namespace.
-# Google gets gemini-3-flash-preview explicitly; Cerebras gets no override,
-# so the caller's own default (openai/gpt-oss-120b) passes straight through
-# — exactly what Cerebras hosts under that name. extra_body carries any
-# vendor-specific request fields (none needed for these two today).
-#
-# Hard-won context worth keeping even though these are now just fallbacks:
-#  - gemini-3-flash-preview is a reasoning model with no way to fully turn
-#    thinking off (its lowest thinking_level "minimal" still "does not
-#    guarantee that thinking is off", per Google's docs) — the same
-#    reasoning-leaks-into-content family that hit qwen3.5.
-#  - Its multi-turn tool calling can 400 with "Function call is missing a
-#    thought_signature": a vendor token (extra_content.google.thought_
-#    signature) the official openai SDK can't round-trip, and which
-#    Google's own shim sometimes omits anyway. Cerebras as the next entry
-#    is what rescues those turns — it has no such requirement, so a turn
-#    that 400s on Google retries clean on Cerebras.
-# If a reasoning model goes into a chain again, check whether it exposes an
-# off-switch (e.g. NVIDIA Nemotron's enable_thinking, see git history)
-# before trusting its tool calls — don't re-learn that a third time.
-_BUILTIN_PROVIDER_CONF = [
-    ("google", "GOOGLE_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3-flash-preview", None),
-    ("cerebras", "CEREBRAS_KEY", "https://api.cerebras.ai/v1", None, None),
-]
+# Hard-won lesson worth keeping regardless of which provider is added:
+# reasoning models (qwen3.5, Gemini 3.x, NVIDIA Nemotron) tend to leak their
+# thinking into plain content or otherwise misbehave on tool calls unless
+# there's an explicit off-switch (e.g. Nemotron's enable_thinking) or the
+# model fully separates thought from output on its own. Gemini 3.x
+# specifically also 400s multi-turn tool calls with "Function call is
+# missing a thought_signature" — a vendor token the openai SDK can't
+# round-trip through its OpenAI-compatible endpoint. None of this is
+# enforced in code; it's just worth checking before trusting a new
+# reasoning-model provider's tool calls.
 
 # User-defined providers persist in .env as five parallel JSON lists — the
 # same storage shape MCP servers use (see src/mcp_client.py) — read fresh
@@ -141,8 +123,8 @@ def read_providers():
     """Return the user-defined providers as a list of
     {"name","url","key","model","enabled"} dicts, read fresh from .env on
     every call so runtime edits are picked up without a restart. Empty when
-    the user hasn't configured any (the built-in chain is used then — see
-    _active_providers)."""
+    the user hasn't configured any — see _active_providers, which has no
+    fallback for that case."""
     from dotenv import dotenv_values
     if not os.path.exists(_ENV_PATH):
         return []
@@ -184,34 +166,21 @@ def _active_providers():
     """The provider chain _create_completion actually tries, in order.
     Each item is (name, base_url, api_key, model_override, extra_body).
 
-    Enabled user-defined providers take over the whole chain the moment any
-    exist; otherwise fall back to the built-in google/cerebras chain,
-    resolving each built-in's key from its env var at call time. A user
-    provider with a blank model sends no override (the endpoint's own
-    default model is used)."""
+    Purely the enabled entries from Settings → Providers, in the order the
+    user listed them — no built-in fallback. Empty if the user hasn't
+    configured any yet. A provider with a blank model sends no override
+    (the endpoint's own default model is used)."""
     user = [p for p in read_providers() if p.get("enabled", True) and p.get("url")]
-    if user:
-        return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None), None) for p in user]
-    return [
-        (name, base_url, os.getenv(env_var), model_override, extra_body)
-        for (name, env_var, base_url, model_override, extra_body) in _BUILTIN_PROVIDER_CONF
-    ]
+    return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None), None) for p in user]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
 # fails in seconds instead of the SDK's 600s default (compounded by its own
 # exponential-backoff retries) before we fail over to the next one. A long
 # timeout only makes the user wait longer for a reply that was never
 # coming; fast failure at least surfaces a clear error quickly (or, for a
-# provider further down the chain, actually gets tried in time).
-#
-# Not yet verified: gemini-3-flash-preview can't fully skip its own
-# reasoning pass (see _BUILTIN_PROVIDER_CONF above), and if that phase
-# produces no streamed bytes at all before the real answer starts, a 30s
-# *read* timeout (time between individual chunks, not total response time)
-# could fire on a legitimately-thinking-but-silent connection, not just a
-# dead one. Watch for this if Google times out more than a fast provider
-# would. The same read timeout applies to every user-added provider too — a
-# slow self-hosted endpoint may need this raised.
+# provider further down the chain, actually gets tried in time). A slow
+# self-hosted or reasoning-model endpoint may need this raised — see the
+# reasoning-model note above _PROVIDER_NAMES_KEY.
 _PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 # One OpenAI client per provider, built once and reused so switching
@@ -328,7 +297,7 @@ def _user_facing_error(failures):
     """Build a short, accurate frontend message from the per-provider
     failures collected by _create_completion."""
     if not failures:
-        return "No LLM provider is configured. Add an API key in Settings."
+        return "No LLM provider is configured. Add one in Settings → Providers."
     reasons = {r for _, r, _ in failures}
     if reasons == {"rate_limited"}:
         return "All configured providers are rate-limited or out of usage right now. Try again shortly."
