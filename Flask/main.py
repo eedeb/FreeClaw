@@ -536,8 +536,9 @@ def v1_chat_completions():
 SETTINGS_KEYS = [
     ("FC_PASSWORD",      "Login Password",          False),
     ("SECRET_KEY",       "Session Secret Key",      False),
+    ("GOOGLE_KEY",       "Google AI API Key",       True),
     ("CEREBRAS_KEY",     "Cerebras API Key",        True),
-    ("NVIDIA_KEY",       "NVIDIA API Key",          True),
+    ("NVIDIA_KEY",       "NVIDIA API Key (vision only)", True),
     ("OPENROUTER_KEY",   "OpenRouter API Key",      True),
     ("CUSTOM_DOMAIN",    "Custom Domain",           False),
 ]
@@ -588,8 +589,8 @@ def _write_env(updates: dict):
         f.writelines(new_lines)
 
     # Also update the live process environment so a key added/changed here
-    # (e.g. NVIDIA_KEY) is picked up by the LLM provider fallback on the
-    # very next request, without restarting the app.
+    # (e.g. GOOGLE_KEY or CEREBRAS_KEY) is picked up by the LLM provider
+    # fallback on the very next request, without restarting the app.
     for key, value in updates.items():
         os.environ[key] = value
 

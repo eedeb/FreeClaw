@@ -156,16 +156,29 @@ section_gap
 
 step "5" "Configuration..."
 section_gap
-echo -e "     ${GRAY}You'll need a free Cerebras API key from${RESET} ${LIME}cloud.cerebras.ai${RESET}"
+echo -e "     ${GRAY}You'll need a free Google AI API key from${RESET} ${LIME}aistudio.google.com${RESET}"
 section_gap
 
-read -p "$(echo -e "     ${LIME}?${RESET}  Cerebras API key: ")" api_key < /dev/tty
-printf 'CEREBRAS_KEY=%s\n' "$api_key" > .env
+read -p "$(echo -e "     ${LIME}?${RESET}  Google AI API key: ")" api_key < /dev/tty
+printf 'GOOGLE_KEY=%s\n' "$api_key" > .env
 chmod 600 .env
 success "API key saved to .env"
 
 section_gap
-echo -e "     ${GRAY}Optional: NVIDIA NIM API key from${RESET} ${LIME}build.nvidia.com${RESET} ${GRAY}(press Enter to skip)${RESET}"
+echo -e "     ${GRAY}Optional: Cerebras API key from${RESET} ${LIME}cloud.cerebras.ai${RESET} ${GRAY}— used as a fallback if Google fails (press Enter to skip)${RESET}"
+section_gap
+
+read -p "$(echo -e "     ${LIME}?${RESET}  Cerebras API key: ")" cerebras_key < /dev/tty
+if [[ -n "$cerebras_key" ]]; then
+    printf 'CEREBRAS_KEY=%s\n' "$cerebras_key" >> .env
+    success "Cerebras API key saved"
+else
+    printf 'CEREBRAS_KEY=None\n' >> .env
+    info "No Cerebras key provided — skipping"
+fi
+
+section_gap
+echo -e "     ${GRAY}Optional: NVIDIA NIM API key from${RESET} ${LIME}build.nvidia.com${RESET} ${GRAY}— only used to describe uploaded images (press Enter to skip)${RESET}"
 section_gap
 
 read -p "$(echo -e "     ${LIME}?${RESET}  NVIDIA API key: ")" nvidia_key < /dev/tty

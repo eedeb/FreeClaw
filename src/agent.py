@@ -82,62 +82,54 @@ tools=[]
 # A provider with no key configured is skipped.
 #
 # model_override, when set, replaces whatever model the caller asked for
-# when talking to that specific provider. NVIDIA needs one: the shared
-# default (openai/gpt-oss-120b, what Cerebras calls use too) hangs
-# indefinitely on NVIDIA for any request that includes a `tools` param —
-# confirmed by direct testing, streaming and non-streaming both.
+# when talking to that specific provider — needed here since Google and
+# Cerebras don't share a model namespace. Google gets gemini-3.5-flash
+# explicitly; Cerebras gets no override, so the caller's own default
+# (openai/gpt-oss-120b) passes straight through — that's exactly what
+# Cerebras hosts under that name.
 #
-# qwen/qwen3.5-397b-a17b used to be the override here — dropped after it
-# turned out to leak its own tool-call planning into plain assistant
-# content instead of the API's structured tool_calls field, in several
-# increasingly-degraded shapes (tagged, then wrapper-less, then bare
-# parameter soup, then free-form pseudocode) as retries piled up. Now
-# nvidia/nemotron-3-super-120b-a12b, NVIDIA's own newest agentic-focused
-# family — but it's *also* a reasoning model, and NVIDIA's own docs are
-# explicit that its tool calling is only reliable "with detailed thinking
-# off". extra_body carries that: {"chat_template_kwargs": {"enable_thinking":
-# False}}, merged into the raw request body by _create_completion. Skipping
-# this for a reasoning model is exactly how qwen3.5 ended up leaking its
-# planning into content in the first place — don't drop it when swapping
-# models again.
+# gemini-3.5-flash is a reasoning model with *no way to turn thinking
+# off* — confirmed directly against Google's own docs: reasoning cannot
+# be disabled for Gemini 3.x models (the thinking_budget=0 trick that
+# works on this exact family of bug only applies to Gemini 2.5
+# Flash/Flash-Lite). That's a live, undismissed risk: this is the same
+# reasoning-leaks-into-content failure family that hit qwen3.5, and that
+# NVIDIA's Nemotron 3 Super needed extra_body={"chat_template_kwargs":
+# {"enable_thinking": False}} to avoid — except here there's no
+# equivalent switch to flip. Cerebras is the fallback if Google's tool
+# calling misbehaves.
+#
+# NVIDIA (nemotron-3-super-120b-a12b, which needed that enable_thinking
+# flag to behave — see git history for the exact config) was removed
+# from the chain when switching primary/fallback to Google + Cerebras.
+# If a reasoning model goes back into this list later, check whether it
+# exposes an equivalent off-switch before trusting its tool calls — don't
+# re-learn that lesson the hard way a third time.
 #
 # Leave model_override/extra_body as None for a provider that should just
 # use whatever the caller passed in.
 #
-# Groq replaced with Cerebras here (same primary slot, same default model —
-# gpt-oss-120b, a plain instruction-tuned model with no "thinking" mode, so
-# no risk of the reasoning-leaks-into-content problem that qwen3.5 and
-# other reasoning models have). Cerebras's own free-tier model list is
-# thin — as of this writing just gpt-oss-120b and zai-glm-4.7 (a reasoning
-# model, same "does it leak thinking into content" question qwen3.5 failed
-# and Nemotron 3 Super needed extra_body to answer — glm-4.7 hasn't been
-# verified here, so it isn't used). Watch for rate-limit fallovers more
-# than Groq ever caused: Cerebras's free tier is 5 requests/minute, and a
-# single tool-calling turn can burn several requests in a row (initial +
-# one continuation per tool call).
-#
-# OpenRouter is still temporarily disabled — uncomment to bring it back
-# into the chain. Cerebras is primary, NVIDIA is the fallback for when
-# Cerebras is rate-limited.
+# Google is primary, Cerebras is the fallback for when Google is
+# rate-limited or fails.
 _PROVIDER_CONF = [
+    ("google", "GOOGLE_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.5-flash", None),
     ("cerebras", "CEREBRAS_KEY", "https://api.cerebras.ai/v1", None, None),
-    ("nvidia", "NVIDIA_KEY", "https://integrate.api.nvidia.com/v1", "nvidia/nemotron-3-super-120b-a12b",
-     {"chat_template_kwargs": {"enable_thinking": False}}),
-    # ("openrouter", "OPENROUTER_KEY", "https://openrouter.ai/api/v1", None, None),
 ]
 
 # Short connect/read timeouts + no SDK-level retries so a dead provider
 # fails in seconds instead of the SDK's 600s default (compounded by its own
-# exponential-backoff retries) before we fail over to the next one. This
-# matters even more now: NVIDIA's hosted gpt-oss-120b hangs indefinitely on
-# *any* request that includes a `tools` param (confirmed — streaming,
-# non-streaming, tool_choice="required", all hang forever with zero
-# response), so a tool-calling turn that falls back to NVIDIA is a
-# guaranteed timeout with no chance of succeeding. A long timeout there
-# only makes the user wait longer for a reply that was never coming; fast
-# failure at least surfaces a clear error quickly. Cerebras being primary
-# and fast (wafer-scale inference, same pitch as Groq) means 30s is still
-# plenty of headroom for a legitimate reply.
+# exponential-backoff retries) before we fail over to the next one. A long
+# timeout only makes the user wait longer for a reply that was never
+# coming; fast failure at least surfaces a clear error quickly (or, for a
+# provider further down the chain, actually gets tried in time).
+#
+# Not yet verified: gemini-3.5-flash can't skip its own mandatory
+# reasoning pass (see _PROVIDER_CONF above), and if that phase produces no
+# streamed bytes at all before the real answer starts, a 30s *read*
+# timeout (time between individual chunks, not total response time) could
+# fire on a legitimately-thinking-but-silent connection, not just a dead
+# one. Watch for this specifically if Google starts timing out more than
+# Cerebras ever did as primary.
 _PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 # One OpenAI client per provider, built once and reused so switching
@@ -148,7 +140,7 @@ _provider_clients = {}
 # log when a call actually switches providers. Try order itself always
 # follows _PROVIDER_CONF's listed order (first entry tried first, every
 # call), not whichever provider happened to work last.
-_last_provider = "cerebras"
+_last_provider = "google"
 
 
 def _client_for(name, key, base_url):
