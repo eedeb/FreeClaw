@@ -57,6 +57,16 @@
       display: flex; align-items: center; gap: 12px;
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px;
     }
+    .card.draggable { cursor: grab; }
+    .card.dragging { opacity: 0.4; }
+    .card.drag-over { border-top: 2px solid var(--accent); }
+    .drag-handle {
+      font-family: var(--mono); color: var(--muted); flex-shrink: 0; cursor: grab; padding: 0 2px;
+      user-select: none; touch-action: none;
+    }
+    .card-rank {
+      font-family: var(--mono); font-size: 10px; color: var(--muted); flex-shrink: 0; width: 14px; text-align: center;
+    }
     .card-info { min-width: 0; flex: 1; }
     .card-name { font-size: 14px; font-weight: 600; }
     .card-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 3px; word-break: break-all; }
@@ -217,11 +227,15 @@
       provList.innerHTML = '<div class="empty">No providers added yet.</div>';
       return;
     }
-    providers.forEach(p => {
+    providers.forEach((p, i) => {
       const enabled = p.enabled !== false;
       const card = document.createElement('div');
-      card.className = 'card' + (enabled ? '' : ' disabled');
+      card.className = 'card draggable' + (enabled ? '' : ' disabled');
+      card.draggable = true;
+      card.dataset.name = p.name;
       card.innerHTML = `
+        <div class="drag-handle" title="Drag to reorder">⠿</div>
+        <div class="card-rank">${i + 1}</div>
         <div class="card-info">
           <div class="card-name">${escapeHtml(p.name)}</div>
           <div class="card-sub">${escapeHtml(p.url)}${p.model ? ' · <span class="k">' + escapeHtml(p.model) + '</span>' : ''}${p.has_key ? ' · 🔑' : ' · ⚠ no key'}</div>
@@ -231,8 +245,54 @@
       const toggle = card.querySelector('.toggle');
       toggle.addEventListener('change', () => toggleProvider(p.name, toggle.checked, card, toggle));
       wireDelete(card.querySelector('.del'), () => deleteProvider(p.name));
+      wireDrag(card);
       provList.appendChild(card);
     });
+  }
+
+  // ── Drag-to-reorder ──
+  // Order is meaningful here (see the sec-desc above the list: the agent
+  // tries enabled providers top-to-bottom), so dragging a card persists the
+  // new order to .env via /api/providers/reorder — same fallback chain
+  // src/agent.py._active_providers() reads.
+  let dragEl = null;
+
+  function wireDrag(card) {
+    card.addEventListener('dragstart', () => { dragEl = card; card.classList.add('dragging'); });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      provList.querySelectorAll('.card').forEach(c => c.classList.remove('drag-over'));
+      dragEl = null;
+    });
+    card.addEventListener('dragover', e => {
+      e.preventDefault();
+      if (!dragEl || dragEl === card) return;
+      card.classList.add('drag-over');
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+    card.addEventListener('drop', e => {
+      e.preventDefault();
+      card.classList.remove('drag-over');
+      if (!dragEl || dragEl === card) return;
+      const cards = Array.from(provList.children);
+      const from = cards.indexOf(dragEl), to = cards.indexOf(card);
+      if (from < to) card.after(dragEl); else card.before(dragEl);
+      provList.querySelectorAll('.card-rank').forEach((el, i) => { el.textContent = i + 1; });
+      saveProviderOrder();
+    });
+  }
+
+  async function saveProviderOrder() {
+    const order = Array.from(provList.querySelectorAll('.card')).map(c => c.dataset.name);
+    try {
+      const res = await fetch('/api/providers/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      showMsg(provMsg, 'Order saved — this is now the try order.', true);
+    } catch (e) {
+      showMsg(provMsg, e.message, false);
+      await loadProviders(); // snap back to the saved order on failure
+    }
   }
 
   async function loadProviders() {

@@ -841,6 +841,35 @@ def api_toggle_provider(name):
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in providers]})
 
 
+@app.route('/api/providers/reorder', methods=['POST'])
+def api_reorder_providers():
+    """Persist a new top-to-bottom order for the provider chain — this is
+    the order _active_providers() (and so _create_completion's fallback
+    chain) tries them in, so dragging a provider to the top makes it the
+    one used first."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    order = data.get('order')
+    if not isinstance(order, list) or not all(isinstance(n, str) for n in order):
+        return jsonify({'error': "Body must include 'order' as a list of provider names."}), 400
+    with agent_lock:
+        providers = agent.read_providers()
+        by_name = {p.get('name'): p for p in providers}
+        # Providers named in `order` come first, in that order; anything not
+        # named (shouldn't normally happen — the client always sends every
+        # name it has) is appended after, in its existing order, so a stale
+        # request can't silently drop a provider from the chain.
+        reordered = [by_name[n] for n in order if n in by_name]
+        seen = set(order)
+        reordered += [p for p in providers if p.get('name') not in seen]
+        try:
+            _write_env(agent.providers_to_env(reordered))
+        except Exception as e:
+            return _log_and_error(e, message=f'Could not save: {e}')
+    return jsonify({'ok': True, 'providers': [_provider_public(p) for p in reordered]})
+
+
 @app.route('/api/providers/<name>', methods=['DELETE'])
 def api_delete_provider(name):
     if not logged_in():

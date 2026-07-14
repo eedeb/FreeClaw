@@ -1059,6 +1059,7 @@
     let thinking = addThinking();
     let liveWrap = null, liveBubble = null, liveText = '';
     let activeToolIndicator = null;
+    let currentProvider = null;
 
     const dropLiveBubble = () => {
       if (liveWrap) liveWrap.remove();
@@ -1108,14 +1109,24 @@
           let evt;
           try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
-          if (evt.type === 'token') {
+          if (evt.type === 'provider') {
+            // Fires once per LLM call — including every tool-call
+            // continuation — so it also catches a mid-conversation fallback
+            // switch, not just the provider used at the start of the turn.
+            currentProvider = evt.name;
+            if (liveWrap) {
+              const lbl = liveWrap.querySelector('.msg-label');
+              if (lbl) lbl.textContent = 'agent' + (currentProvider ? ' · via ' + currentProvider : '');
+            }
+
+          } else if (evt.type === 'token') {
             if (thinking.parentNode) thinking.remove();
             if (!liveWrap) {
               liveWrap = document.createElement('div');
               liveWrap.className = 'message agent';
               const label = document.createElement('div');
               label.className = 'msg-label';
-              label.textContent = 'agent';
+              label.textContent = 'agent' + (currentProvider ? ' · via ' + currentProvider : '');
               liveBubble = document.createElement('div');
               liveBubble.className = 'bubble';
               liveWrap.appendChild(label);

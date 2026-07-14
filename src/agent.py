@@ -1100,6 +1100,14 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         logger.error("All providers failed for this turn: %s", e.failures)
         raise Exception(_user_facing_error(e.failures))
 
+    # Tell the frontend which provider is about to answer. This fires once
+    # per _create_completion call, and every tool-call continuation is its
+    # own recursive agent_stream() -> _create_completion() call (see the
+    # `yield from agent_stream(...)` below), so a fallback mid-conversation
+    # (or even mid a single tool round-trip) surfaces here too, not just at
+    # the very start of the turn.
+    yield {"type": "provider", "name": provider}
+
     # Consume the stream, forwarding text chunks to the caller in real
     # time and reassembling any tool calls (which always arrive as
     # incremental argument-string fragments when streamed).
