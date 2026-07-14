@@ -623,12 +623,18 @@ def build_file_tools():
         }
     ]
 def build_search_tools():
+    best_sites = [
+        {
+            "weather": ["localconditions.com"],
+            "news": ["bbc.com", "atoztimes.com"]
+        }
+    ]
     return [
         {
             "type": "function",
             "function": {
                 "name": "search",
-                "description": "Fetches up-to-date info for real-time queries. Max 2 calls per task — proceed once you have enough, or report back to the user if you still don't after 2 searches.",
+                "description": "Fetches up-to-date info for real-time queries. Max 2 calls per task — proceed once you have enough, or report back to the user if you still don't after 2 searches. Here is a website guide: "+str(best_sites),
                 "parameters": {
                     "type": "object",
                     "properties": {
