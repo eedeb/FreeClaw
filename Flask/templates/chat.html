@@ -958,7 +958,9 @@
     if (!wrap || !wrap.parentNode) return;
     wrap.classList.add('done');
     const label = wrap.querySelector('.tool-live-label');
-    if (label) label.textContent = `ran tool: ${name}`;
+    // Don't clobber the fallback "open <url>" link that open_url may
+    // have inserted into the label when window.open() was blocked.
+    if (label && !label.querySelector('a')) label.textContent = `ran tool: ${name}`;
   }
 
   // ── Thinking indicator ───────────────────────────────────
@@ -1149,10 +1151,29 @@
 
             // open_url runs entirely client-side: the backend can't reach
             // the user's browser, so it just reports the url in
-            // evt.arguments and leaves the actual opening to us.
+            // evt.arguments and leaves the actual opening to us. By the
+            // time this event arrives we're deep inside an async fetch
+            // stream, well outside the original click/keypress, so
+            // browsers treat window.open() here as an untrusted popup
+            // and silently block it. Fall back to a clickable link the
+            // user can open themselves with a real click.
             if (evt.name === 'open_url') {
               const target = evt.arguments && evt.arguments.url;
-              if (target) window.open(target, '_blank', 'noopener,noreferrer');
+              if (target) {
+                const win = window.open(target, '_blank', 'noopener,noreferrer');
+                if (!win) {
+                  const label = activeToolIndicator && activeToolIndicator.querySelector('.tool-live-label');
+                  if (label) {
+                    label.textContent = '';
+                    const link = document.createElement('a');
+                    link.href = target;
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+                    link.textContent = `open ${target}`;
+                    label.appendChild(link);
+                  }
+                }
+              }
             }
 
           } else if (evt.type === 'tool_result') {
