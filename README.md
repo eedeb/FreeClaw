@@ -17,7 +17,7 @@ curl -fsSL https://freeclaw.eedeb.dev/install.sh | bash
 The script will:
 1. Clone the repo and set up a Python virtual environment with all dependencies
 2. Ask you to set a **password** for the web UI (no API keys collected here)
-3. Register FreeClaw as a systemd service (`FreeClaw.service`) so it starts automatically, plus a disabled-by-default API service (`FreeClawAPI.service`)
+3. Register FreeClaw as a systemd service (`FreeClaw.service`) so it starts automatically, and install the `freeclaw` terminal client
 4. Point you to the web UI, where **Settings → Providers** is where you add your AI provider(s) — FreeClaw can't answer until at least one is configured
 5. Print the local URL to open in your browser
 
@@ -40,24 +40,24 @@ You can type these directly into the chat box:
 | Command | What it does |
 |---|---|
 | `/reset` | Clears the conversation history |
-| `/startapi` | Starts the FreeClaw REST API on port 8080 |
-| `/stopapi` | Stops the REST API |
+| `/startapi` | Enables the OpenAI-compatible API at `/v1/chat/completions` |
+| `/stopapi` | Disables the API |
 
 ---
 
 ## Features
 
 - **Smart intent classification** — a local `Classy` classifier reads your message and tags its intent (greeting, search, coding, logic, banter, etc.) before any API call is made
-- **Adaptive model routing** — small talk, greetings, and personal questions are handled by `openai/gpt-oss-20b`; everything else (search, coding, logic, file work) uses the larger `openai/gpt-oss-120b`
+- **Adaptive turns** — the intent tag decides how much chat history is sent, the sampling temperature, and which tools are offered: small talk gets a tiny context window and no tools, precision work runs colder with the full toolset
 - **Minimal context windowing** — the number of past messages sent per turn scales with how complex the intent tag is, keeping token usage low for simple exchanges
 - **Multi-provider fallback** — add any OpenAI-compatible endpoint from Settings → Providers (URL, API key, model); the agent tries them in the order you list them, falling through to the next if one fails or is rate-limited
 - **Persistent memory** — the agent keeps durable facts about you in `context.md`, stored alongside your other files and read/updated with the same file tools it uses for everything else, without that history bloating the active context window
 - **Web search & scraping** — queries DuckDuckGo for instant answers, news, and snippets, then scrapes and cleans the top non-JS-heavy result pages, all stitched into one capped, structured block of context for the model — no extra LLM call required
 - **Bash execution** — can run shell commands on the host machine and return the output
 - **File, page & image tools** — can create, read, edit (find/replace), delete, and list files in its sandboxed static folder; can publish a live HTML page at a public URL; can describe an uploaded image in detail using a vision model
-- **MCP servers** — connect external [Model Context Protocol](https://modelcontextprotocol.io) servers straight from the web UI (a **+ MCP** button opens a sidebar for the server URL and token); their tools are fetched over the Streamable HTTP transport and merged into the agent's toolset automatically, no restart required
+- **MCP servers** — connect external [Model Context Protocol](https://modelcontextprotocol.io) servers from **Settings → MCP Servers**; their tools are fetched over the Streamable HTTP transport and merged into the agent's toolset automatically, no restart required
 - **Password-protected UI** — the web chat sits behind a login screen so it's safe to expose on your local network
-- **TTS-aware mode** — optional response formatting tuned for text-to-speech output (used automatically by the REST API)
+- **OpenAI-compatible API** — toggle `/v1/chat/completions` on the same port for use from other apps and scripts, authenticated with your FreeClaw password
 
 ---
 
@@ -71,16 +71,16 @@ Flask server (Flask/main.py, port 6767)
     │
     ▼
 Classy.classify()       ← local intent classifier using models/data.pth
-    │                      picks the model + how much chat history to send
+    │                      picks temperature, tools + how much history to send
     ▼
 Configured provider API call ← trimmed message history + tools
     │  (falls back to the next provider in Settings → Providers on failure)
     │
     ├── Tool call? ───► Execute tool (search, bash, file ops, MCP servers, vision…)
     │                       │
-    │                       └──► Recursive agent() call with tool result
+    │                       └──► Recursive agent turn with the tool result
     │
-    └── Text response? ──► Return to Flask → back to browser as JSON
+    └── Text response? ──► Streamed back to the browser as server-sent events
 ```
 
 The search pipeline (`src/scraper.py`):
@@ -96,25 +96,28 @@ The search pipeline (`src/scraper.py`):
 ```
 FreeClaw/
 ├── Flask/
-│   ├── main.py               # Flask server — login, chat endpoint, file upload, command handling
-│   ├── static/                # Created at install; each user gets static/<user>/files/ holding context.md, uploads, and agent-created files
+│   ├── main.py               # Flask server — login, chat SSE endpoint, settings/provider/MCP APIs, /v1 API
+│   ├── static/               # Created at first run; each user gets static/<user>/files/ holding context.md, uploads, and agent-created files
 │   └── templates/
-│       ├── index.html         # Chat UI (dark theme, markdown rendering, token counter, file upload)
-│       ├── login.html         # Password login screen
-│       └── agent/             # HTML pages created by the agent's create_page tool
+│       ├── index.html        # Home page — pick a user, toggle the API
+│       ├── chat.html         # Chat UI (dark theme, markdown rendering, token counter, file upload)
+│       ├── settings.html     # Settings — providers, MCP servers, .env, restart
+│       └── login.html        # Password login screen
 ├── src/
-│   ├── agent.py               # Core agent loop — intent classification, model routing, tool dispatch
-│   ├── scraper.py             # DuckDuckGo search + page scraping + text cleaning
-│   ├── api.py                 # Optional REST API (FastAPI/uvicorn, port 8080)
-│   ├── mcp_client.py          # MCP client — connects to external MCP servers over HTTP
-│   └── logging_setup.py       # Central logger — full tracebacks go to logs/freeclaw.log
+│   ├── agent.py              # Core agent loop — intent classification, provider fallback, tool dispatch
+│   ├── cli.py                # Terminal chat client (the `freeclaw` command)
+│   ├── users.py              # User/conversation storage, shared by the web app and CLI
+│   ├── scraper.py            # DuckDuckGo search + page scraping + text cleaning
+│   ├── mcp_client.py         # MCP client — connects to external MCP servers over HTTP
+│   └── logging_setup.py      # Central logger — full tracebacks go to logs/freeclaw.log
 ├── models/
-│   └── data.pth                # Classy intent classifier weights
+│   └── data.pth              # Classy intent classifier weights
 ├── logs/
-│   └── freeclaw.log            # Created at first run; full error detail, see Debugging below
-├── install.sh                  # One-line installer
-├── update.sh                   # Pulls and applies the latest changes from GitHub
-└── .env                         # API keys, password, MCP servers, and other config (created during install)
+│   └── freeclaw.log          # Created at first run; full error detail, see Debugging below
+├── install.sh                # One-line installer
+├── update.sh                 # Pulls and applies the latest changes from GitHub
+├── requirements.txt          # Python dependencies (web/agent libs)
+└── .env                      # Password, providers, MCP servers, and other config (created during install)
 ```
 
 ---
@@ -123,30 +126,24 @@ FreeClaw/
 
 FreeClaw can connect to external [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to gain new tools — think GitHub, web search, databases, or your own custom server.
 
-Add one from the chat UI: click the **+ MCP** button in the header to open the servers sidebar, then enter the server's URL and (optionally) an auth token. FreeClaw connects over the Streamable HTTP transport, fetches the server's tools, and makes them available to the agent immediately — no restart required.
+Add one from **Settings → MCP Servers**: enter the server's URL and (optionally) an auth token. FreeClaw connects over the Streamable HTTP transport, fetches the server's tools, and makes them available to the agent immediately — no restart required. Servers can also be toggled off without losing their saved config.
 
-Connections are stored in your `.env` file as the parallel `MCP_NAMES`, `MCP_URLS`, and `MCP_TOKENS` lists, so you can also review or edit them by hand.
+Connections are stored in your `.env` file as the parallel `MCP_NAMES`, `MCP_URLS`, `MCP_TOKENS`, and `MCP_ENABLED` lists, so you can also review or edit them by hand.
 
 ---
 
-## REST API (Optional)
+## OpenAI-Compatible API (Optional)
 
-A separate REST API is available on port 8080 for integrating FreeClaw with other apps or scripts (it runs with TTS-aware formatting on by default). Start and stop it from the chat UI with `/startapi` and `/stopapi`, or manage it directly:
-
-```bash
-sudo systemctl start FreeClawAPI.service
-sudo systemctl stop FreeClawAPI.service
-```
-
-**Endpoint:** `POST /chat`
+FreeClaw can expose an OpenAI-compatible API on the same port as the web UI, so anything that speaks the OpenAI chat format can use your provider chain. Toggle it with the **API** chip on the homepage, or with `/startapi` / `/stopapi` in chat. Authenticate with your FreeClaw password as the Bearer token:
 
 ```bash
-curl -X POST http://localhost:8080/chat \
+curl http://localhost:6767/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"message": "What is the weather like today?"}'
+  -H "Authorization: Bearer YOUR_FC_PASSWORD" \
+  -d '{"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-Sending `{"message": "/reset"}` resets the agent's conversation state.
+`GET /v1/models` and streaming (`"stream": true`) are supported. Requests are stateless — they go straight to your configured providers in the same fallback order as the chat UI, without touching any user's conversation.
 
 ---
 
@@ -193,8 +190,8 @@ Warnings and errors are also mirrored to the console, so they show up live under
 
 FreeClaw is built around one principle: **use the cheapest model that can do the job.**
 
-- Greetings, small talk, and personal questions → `openai/gpt-oss-20b`, no tools, minimal context
-- Search, coding, logic, and everything else → `openai/gpt-oss-120b`, full tools, context trimmed to a handful of recent messages
+- Greetings, small talk, and personal questions → no tools, minimal context
+- Search, coding, logic, and everything else → tools included, context trimmed to a handful of recent messages
 - Long-term facts → saved once to `context.md` instead of being re-sent every turn
 - A free, no-LLM scraping pipeline does the heavy lifting for search instead of spending a model call on it
 

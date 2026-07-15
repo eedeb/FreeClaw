@@ -1,36 +1,55 @@
+import base64
 import json
-import re
-import Classy
-from openai import OpenAI, APIConnectionError
-import subprocess
-import shlex
-import src.scraper as scraper
-from datetime import datetime
-from json_repair import repair_json
-import src.mcp_client as mcp_client
-from src.logging_setup import get_logger
 import os
+import re
+import socket
+import subprocess
+
+import Classy
+import httpx
+from dotenv import dotenv_values, load_dotenv
+from json_repair import repair_json
+from openai import OpenAI, APIConnectionError
+
+import src.mcp_client as mcp_client
+import src.scraper as scraper
+from src.logging_setup import get_logger
+
+load_dotenv()
 
 logger = get_logger(__name__)
 
-
-import base64
-import mimetypes
-import httpx
-
- 
-
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-html_dir=BASE_DIR+'/../Flask/static/'
-static_dir=BASE_DIR+'/../Flask/static/'
-location = BASE_DIR + "/../models/data.pth"
+# Weights for the local Classy intent classifier.
+CLASSIFIER_PATH = BASE_DIR + "/../models/data.pth"
 
-# Root that Flask's /static/<path:filename> route serves from. Each user now
+# Root that Flask's /static/<path:filename> route serves from. Each user
 # gets their own subfolder under here (set via set_static_dir), so links back
 # to a created file need to include that subfolder, not just the filename.
 STATIC_ROOT = os.path.normpath(BASE_DIR + '/../Flask/static')
+
+# Folder the agent's file tools operate in — repointed at the active user's
+# own files folder via set_static_dir().
+static_dir = BASE_DIR + '/../Flask/static/'
+
+
+def _server_base_url():
+    """Public base URL for links to files the agent creates: CUSTOM_DOMAIN if
+    set, otherwise this machine's LAN IP on the app's port."""
+    custom_domain = os.getenv("CUSTOM_DOMAIN")
+    if custom_domain:
+        return custom_domain
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))  # doesn't actually send data
+        ip = s.getsockname()[0]
+    finally:
+        s.close()
+    return 'http://' + ip + ':6767'
+
+
+url = _server_base_url()
 
 
 static_token_signer = None
@@ -52,11 +71,11 @@ def set_static_token_signer(fn):
 
 def _static_url(directory, filename):
     """Build the public /static/... URL for `filename`, which was written to
-    `directory` (static_dir or html_dir) — accounting for the per-user
-    subfolder those may point at. Includes a signed access token so the link
-    still works when opened outside the logged-in session (e.g. handed to
-    Calendar/Safari on a phone), without requiring /static to be open to
-    anyone who guesses a path."""
+    `directory` — accounting for the per-user subfolder it may point at.
+    Includes a signed access token so the link still works when opened
+    outside the logged-in session (e.g. handed to Calendar/Safari on a
+    phone), without requiring /static to be open to anyone who guesses a
+    path."""
     rel = os.path.relpath(os.path.normpath(directory), STATIC_ROOT)
     if rel in ('.', '') or rel.startswith('..'):
         rel = ''
@@ -68,63 +87,22 @@ def _static_url(directory, filename):
         link += "?token=" + static_token_signer(rel_path)
     return link
 
-from dotenv import load_dotenv
 
-load_dotenv()
+agent_messages = []
+tools = []
 
-
-
-
-custom_domain = os.getenv("CUSTOM_DOMAIN")
-
-if custom_domain is None:
-    import socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    try:
-        # Doesn't actually send data
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    finally:
-        s.close()
-
-    url='http://'+ip+':6767'
-else:
-    url=custom_domain
-
-
-
-
-
-agent_messages=[]
-tools=[]
-
-# There is no built-in fallback chain anymore — every provider the agent
-# can call comes from Settings → Providers (read_providers / below). An
-# empty list here means the agent has nothing to call at all; that's
-# reported clearly to the user (see _user_facing_error) rather than
-# silently degrading to a hardcoded default. Earlier builds shipped a
-# hardcoded google/cerebras fallback, seeded by the installer as GOOGLE_KEY
-# / CEREBRAS_KEY — removed for good along with those installer prompts and
-# their Settings fields; see git history if reviving one.
+# LLM providers are user-defined in Settings → Providers and persist in .env
+# as five parallel JSON lists — the same storage shape MCP servers use (see
+# src/mcp_client.py) — read fresh on every call so an add/remove/toggle takes
+# effect without a restart. There is no built-in fallback: an empty list
+# means the agent has nothing to call, which is reported to the user plainly
+# (see _user_facing_error) rather than silently degrading to a default.
 #
-# Hard-won lesson worth keeping regardless of which provider is added:
-# reasoning models (qwen3.5, Gemini 3.x, NVIDIA Nemotron) tend to leak their
-# thinking into plain content or otherwise misbehave on tool calls unless
-# there's an explicit off-switch (e.g. Nemotron's enable_thinking) or the
-# model fully separates thought from output on its own. Gemini 3.x
-# specifically also 400s multi-turn tool calls with "Function call is
-# missing a thought_signature" — a vendor token the openai SDK can't
-# round-trip through its OpenAI-compatible endpoint. None of this is
-# enforced in code; it's just worth checking before trusting a new
-# reasoning-model provider's tool calls.
-
-# User-defined providers persist in .env as five parallel JSON lists — the
-# same storage shape MCP servers use (see src/mcp_client.py) — read fresh
-# on every call so an add/remove/toggle in Settings → Providers takes
-# effect without a restart. Each provider carries its own api key directly
-# (not via an env-var name like the built-ins), plus the exact model id to
-# request from that endpoint.
+# Worth checking before trusting a new provider: reasoning models (qwen3.5,
+# Gemini 3.x, NVIDIA Nemotron) tend to leak their thinking into plain content
+# or misbehave on tool calls unless they have an explicit thinking
+# off-switch, and Gemini 3.x 400s multi-turn tool calls through its
+# OpenAI-compatible endpoint ("Function call is missing a thought_signature").
 _ENV_PATH = os.path.join(os.path.dirname(BASE_DIR), ".env")
 _PROVIDER_NAMES_KEY = "PROVIDER_NAMES"
 _PROVIDER_URLS_KEY = "PROVIDER_URLS"
@@ -149,7 +127,6 @@ def read_providers():
     every call so runtime edits are picked up without a restart. Empty when
     the user hasn't configured any — see _active_providers, which has no
     fallback for that case."""
-    from dotenv import dotenv_values
     if not os.path.exists(_ENV_PATH):
         return []
     env = dotenv_values(_ENV_PATH)
@@ -197,14 +174,10 @@ def _active_providers():
     user = [p for p in read_providers() if p.get("enabled", True) and p.get("url")]
     return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None), None) for p in user]
 
-# Short connect/read timeouts + no SDK-level retries so a dead provider
-# fails in seconds instead of the SDK's 600s default (compounded by its own
-# exponential-backoff retries) before we fail over to the next one. A long
-# timeout only makes the user wait longer for a reply that was never
-# coming; fast failure at least surfaces a clear error quickly (or, for a
-# provider further down the chain, actually gets tried in time). A slow
-# self-hosted or reasoning-model endpoint may need this raised — see the
-# reasoning-model note above _PROVIDER_NAMES_KEY.
+# Short timeouts + no SDK-level retries so a dead provider fails in seconds
+# (not the SDK's 600s default compounded by exponential-backoff retries) and
+# the next provider in the chain actually gets tried. A slow self-hosted or
+# reasoning-model endpoint may need this raised.
 _PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 # One OpenAI client per provider, built once and reused so switching
@@ -241,16 +214,12 @@ def _classify_error(e):
     if status in (401, 403) or "invalid api key" in text or "unauthorized" in text:
         return "auth_error"
     # Other 4xx: the provider understood us and said the request itself is
-    # bad (e.g. a malformed conversation history). Distinct from "unknown"
-    # so the final error message points at the request, not the network.
+    # bad (e.g. a malformed conversation history), not the network.
     if status in (400, 404, 413, 422):
         return "bad_request"
-    # The openai SDK never lets a raw httpx timeout/connect error escape —
-    # it always wraps it as APIConnectionError (APITimeoutError is a
-    # subclass of it) before it reaches us, so checking for the raw httpx
-    # types alone never matched a hung/unreachable provider and silently
-    # fell through to "unknown". Check both.
-    if isinstance(e, APIConnectionError) or isinstance(e, (httpx.TimeoutException, httpx.ConnectError)):
+    # The openai SDK wraps raw httpx timeout/connect errors in
+    # APIConnectionError before they reach us — check both to be safe.
+    if isinstance(e, (APIConnectionError, httpx.TimeoutException, httpx.ConnectError)):
         return "network_error"
     if status and status >= 500:
         return "provider_error"
@@ -283,24 +252,14 @@ def _create_completion(**kwargs):
         call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
         if extra_body:
             call_kwargs = {**call_kwargs, "extra_body": extra_body}
-        # Callers pass a few always-optional params (stop, tools) as an
-        # explicit None when unused rather than omitting them outright —
-        # harmless on providers that treat "null" the same as "not given",
-        # but confirmed NOT harmless on Google's Gemini shim, which 400s
-        # with "Value is not a string: null" the moment any optional field
-        # is present with a JSON null value, `stop` included. Stripping
-        # None values here (once, for every provider) means every caller
-        # gets this fixed for free instead of each needing its own
-        # omit-if-None logic, and it changes nothing for a well-behaved
-        # provider — sending `null` and not sending the key at all mean
-        # the exact same thing per OpenAI's own semantics.
+        # Strip params passed as None (stop, tools, ...). Per OpenAI
+        # semantics null means the same as omitting the key, but Google's
+        # Gemini shim 400s on any optional field sent as JSON null.
         call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
         if "messages" in call_kwargs:
-            # agent_stream tags its own assistant messages with a "provider"
-            # key (so the UI can show/persist which one answered) — strip it
-            # before it goes out over the wire. It's not part of the
-            # OpenAI-compatible message schema, and some providers 400 on
-            # unrecognized fields (see the None-stripping note above).
+            # Our assistant messages carry a non-standard "provider" key (so
+            # the UI can show which provider answered) — strip it before it
+            # goes over the wire; some providers 400 on unrecognized fields.
             call_kwargs = {**call_kwargs, "messages": [
                 {k: v for k, v in m.items() if k != "provider"} for m in call_kwargs["messages"]
             ]}
@@ -354,18 +313,16 @@ mcp_tool_registry = {}
 
 
 def set_static_dir(path):
-    """Point the agent's file tools (read_file, list_files, create_file,
-    create_page, get_image_description, etc.) at a specific folder — e.g.
-    static/<username>/files/ for that user's files. context.md (the agent's
-    long-term memory, read/updated via the same file tools) lives in this
-    same folder, so pointing static_dir at a user's folder is all that's
-    needed to scope both. Creates the folder if it doesn't exist yet."""
-    global static_dir, html_dir
+    """Point the agent's file tools (read_file, create_file, create_page,
+    etc.) at a specific folder — e.g. static/<username>/files/. context.md
+    (the agent's long-term memory, read/updated via the same file tools)
+    lives in this same folder, so this scopes both. Creates the folder if it
+    doesn't exist yet."""
+    global static_dir
     if not path.endswith(os.sep):
         path = path + os.sep
     os.makedirs(path, exist_ok=True)
     static_dir = path
-    html_dir = path
     return static_dir
 
 
@@ -389,13 +346,9 @@ def get_messages():
 def _merge_system_messages(messages):
     """Collapse every system-role message into a single one at index 0.
 
-    Some providers' chat templates reject the whole request the moment a
-    system message shows up anywhere but the very front — confirmed on
-    NVIDIA's qwen3.5: "Failed to apply prompt template: invalid operation:
-    System message must be at the beginning." An older FreeClaw build saved
-    two (instructions, then a separate one for context.md); merge them back
-    into one here so conversations saved before that fix keep loading and
-    working instead of failing this way on every turn from now on."""
+    Some providers (confirmed on NVIDIA's qwen3.5) reject the whole request
+    when a system message appears anywhere but the very front. Older saved
+    conversations have two (instructions + context.md), so merge on load."""
     system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
     rest = [m for m in messages if m.get("role") != "system"]
     if not system_parts:
@@ -405,17 +358,15 @@ def _merge_system_messages(messages):
 
 
 def _heal_history(messages):
-    """Repair a conversation so every provider will accept it again.
+    """Repair a loaded conversation so every provider will accept it again.
 
     OpenAI-compatible APIs reject the entire request if any assistant
     tool_calls entry lacks a matching `tool` response (or a `tool` message
-    answers an id nobody declared). A conversation saved by an older
-    FreeClaw build — which only ever answered the first of several parallel
-    tool calls — is permanently stuck that way: every new turn resends the
-    broken history and 400s. Healing on load makes those chats usable
-    again: missing tool responses get a placeholder, orphaned ones are
-    dropped, and null call ids are backfilled. Also collapses multiple
-    system messages into one (see _merge_system_messages)."""
+    answers an id nobody declared) — and since the full history is resent
+    every turn, a conversation saved in that state (older builds, mid-turn
+    crashes) stays broken forever without this. Missing tool responses get
+    a placeholder, orphaned ones are dropped, null call ids are backfilled,
+    and multiple system messages are merged (_merge_system_messages)."""
     messages = _merge_system_messages(messages)
     healed = []
     pending = {}  # id -> function name, awaiting a tool response
@@ -459,85 +410,47 @@ def set_messages(messages):
     agent_messages = _heal_history(messages)
 
 
-def reset(location_innit=location, tts=False):
-    global location
-    location=location_innit
+def reset(tts=False):
+    """Start a fresh conversation for the current static_dir, seeded with
+    that user's context.md.
 
-
-
+    The result is a single system message, always exactly one and always at
+    index 0: some providers' chat templates (confirmed on NVIDIA's qwen3.5)
+    reject the request the moment a second system-role message shows up
+    anywhere else in the list. The eco_messages slicing in agent_stream
+    assumes this is the only header message."""
     global agent_messages
-    global tools
     ctx_path = static_dir + "context.md"
     if not os.path.exists(ctx_path):
         with open(ctx_path, "w", encoding="utf-8") as f:
             f.write("")
     with open(ctx_path, "r", encoding="utf-8") as f:
         content = f.read()
-    # A single system message, always exactly one and always at index 0:
-    # some providers' chat templates (confirmed on NVIDIA's qwen3.5) reject
-    # the request outright — "System message must be at the beginning." —
-    # the moment a second system-role message shows up anywhere else in the
-    # list, which a separate "here's context.md" message used to be. Every
-    # eco_messages slice below (and the tool_input branch further down)
-    # assumes this is the only header message; if this ever goes back to
-    # more than one, all of those need updating too.
+
+    prompt = """
+You are a capable AI assistant.
+
+Answer the user's request directly.
+
+If the request requires actions, perform them using available tools instead of describing how they could be done.
+
+Adapt the depth of your response to the user's request.
+Simple questions deserve simple answers.
+Complex questions deserve thorough answers.
+
+Use tools only when they are necessary.
+Verify important information before responding.
+
+Do not add unnecessary explanations, introductions, or conclusions.
+Focus on solving the user's problem.
+
+Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
+"""
     if tts:
-        agent_messages=[
-            {
-                "role": "system",
-                "content": f"""
-            You are a capable AI assistant.
+        prompt += "\nYou will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.\n"
+    prompt += f"\nLong-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}\n"
 
-            Answer the user's request directly.
-
-            If the request requires actions, perform them using available tools instead of describing how they could be done.
-
-            Adapt the depth of your response to the user's request.
-            Simple questions deserve simple answers.
-            Complex questions deserve thorough answers.
-
-            Use tools only when they are necessary.
-            Verify important information before responding.
-
-            Do not add unnecessary explanations, introductions, or conclusions.
-            Focus on solving the user's problem.
-
-            Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
-
-            You will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.
-
-            Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}
-            """
-            }
-        ]
-    else:
-        agent_messages=[
-            {
-                "role": "system",
-                "content": f"""
-            You are a capable AI assistant.
-
-            Answer the user's request directly.
-
-            If the request requires actions, perform them using available tools instead of describing how they could be done.
-
-            Adapt the depth of your response to the user's request.
-            Simple questions deserve simple answers.
-            Complex questions deserve thorough answers.
-
-            Use tools only when they are necessary.
-            Verify important information before responding.
-
-            Do not add unnecessary explanations, introductions, or conclusions.
-            Focus on solving the user's problem.
-
-            Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
-
-            Long-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}
-            """
-            }
-        ]
-
+    agent_messages = [{"role": "system", "content": prompt}]
     refresh_tools()
 
 
@@ -655,13 +568,14 @@ def build_file_tools():
             }
         }
     ]
+
+
 def build_search_tools():
-    best_sites = [
-        {
-            "weather": ["localconditions.com"],
-            "news": ["bbc.com", "atoztimes.com"]
-        }
-    ]
+    # Sites worth steering the model toward for common query types.
+    best_sites = {
+        "weather": ["localconditions.com"],
+        "news": ["bbc.com", "atoztimes.com"],
+    }
     return [
         {
             "type": "function",
@@ -693,6 +607,8 @@ def build_search_tools():
             }
         }
     ]
+
+
 def build_utility_tools():
     return [
         {
@@ -724,7 +640,6 @@ def build_utility_tools():
             }
         }
     ]
-
 
 
 def _sanitize_tool_name(name):
@@ -800,9 +715,10 @@ def _run_tool(command_name, args_dict):
     whatever happens, every tool_call id the assistant message declared
     must end up with a response or the whole conversation is rejected by
     the provider on the next turn."""
-    parameter = args_dict.get('query') or args_dict.get('site') or args_dict.get('url') or args_dict.get('command') or args_dict.get('filename') or args_dict.get('contents') or args_dict.get('media_id') or None
-    print('Agent called tool: '+command_name)
-    print('Agent parameter: '+str(parameter) if parameter else ' ')
+    parameter = (args_dict.get('query') or args_dict.get('site') or args_dict.get('url')
+                 or args_dict.get('command') or args_dict.get('filename')
+                 or args_dict.get('contents') or None)
+    print(f"Agent called tool: {command_name}" + (f" — {parameter}" if parameter else ""))
 
     if command_name == 'create_user':
         new_name = args_dict.get('name')
@@ -822,10 +738,9 @@ def _run_tool(command_name, args_dict):
         return result
 
     if command_name == 'search':
-        site = args_dict.get('site') or None
-        print('Site: '+site if site else None)
-        if site is not None:
-            return scraper.get_result(parameter+' - '+site)
+        site = args_dict.get('site')
+        if site:
+            return scraper.get_result(parameter + ' - ' + site)
         return scraper.get_result(parameter)
 
     if command_name == 'read_file':
@@ -840,21 +755,22 @@ def _run_tool(command_name, args_dict):
             return "File not found."
 
     if command_name == 'get_image_description':
+        nvidia_key = os.getenv("NVIDIA_KEY")
+        if not nvidia_key:
+            return "Image description isn't configured — set NVIDIA_KEY in .env to enable it."
         filename = os.path.basename(args_dict.get('filename'))
         file_location = static_dir+filename
         try:
-            # Read and encode the image to base64
             with open(file_location, "rb") as image_file:
                 image_data = base64.b64encode(image_file.read()).decode("utf-8")
         except FileNotFoundError:
             return "File not found."
 
-        # Detect MIME type from file extension
         ext = filename.rsplit(".", 1)[-1].lower()
         mime_types = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
         mime_type = mime_types.get(ext, "image/jpeg")
 
-        vision_client = _client_for("nvidia", os.getenv("NVIDIA_KEY"), "https://integrate.api.nvidia.com/v1")
+        vision_client = _client_for("nvidia", nvidia_key, "https://integrate.api.nvidia.com/v1")
         completion = vision_client.chat.completions.create(
             model="qwen/qwen3.5-397b-a17b",
             messages=[
@@ -886,9 +802,6 @@ def _run_tool(command_name, args_dict):
     if command_name == 'list_files':
         return "Files in static directory: "+", ".join(os.listdir(static_dir))
 
-    if command_name == 'get_date':
-        return "Today's date is "+datetime.now().strftime('%B %d, %Y')
-
     if command_name == 'read_web':
         return scraper.scrape(parameter)
 
@@ -898,7 +811,7 @@ def _run_tool(command_name, args_dict):
             return "Invalid filename."
         with open(static_dir+filename, "w", encoding="utf-8") as f:
             f.write(args_dict.get('contents') or '')
-        return "Your file is accessable at "+_static_url(static_dir, filename)
+        return "Your file is accessible at "+_static_url(static_dir, filename)
 
     if command_name == 'delete_file':
         filename = args_dict.get('filename')
@@ -923,7 +836,7 @@ def _run_tool(command_name, args_dict):
             return "File not found."
         if old_str not in contents:
             return "String not found in file."
-        updated = contents.replace(old_str, new_str, 1)  # replace only first occurrence
+        updated = contents.replace(old_str, new_str, 1)
         with open(static_dir + filename, "w", encoding="utf-8") as f:
             f.write(updated)
         return "File edited successfully."
@@ -932,9 +845,9 @@ def _run_tool(command_name, args_dict):
         filename = args_dict.get('filename')
         if "/" in filename or "\\" in filename:
             return "Invalid filename."
-        with open(html_dir+filename, "w", encoding="utf-8") as f:
+        with open(static_dir+filename, "w", encoding="utf-8") as f:
             f.write(args_dict.get('contents') or '')
-        return "Your site is live at "+_static_url(html_dir, filename)
+        return "Your site is live at "+_static_url(static_dir, filename)
 
     if command_name == 'open_url':
         # Actually opening the tab happens client-side — the frontend
@@ -972,140 +885,87 @@ def _run_tool(command_name, args_dict):
     return "Unknown tool: " + command_name
 
 
-def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None,tool_name=None):
+# Per-intent settings for a turn: (recent messages to send, temperature,
+# tools offered). Simple conversational intents get a small context window
+# and no tools; precision-flavored intents run colder. The system message at
+# index 0 is always sent on top of the recent slice.
+_TAG_SETTINGS = {
+    'Greeting/goodbye':  (3, 1.0, 'none'),
+    'Personal-question': (5, 1.0, 'none'),
+    'Banter':            (5, 1.0, 'none'),
+    'About-user':        (5, 1.0, 'none'),
+    'Search':            (5, 0.4, 'search'),
+    'Context':           (9, 1.0, 'all'),
+    'Edit':              (9, 1.0, 'all'),
+    'Logic':             (7, 0.2, 'all'),
+    'Math':              (7, 0.2, 'all'),
+    'Explain':           (7, 0.2, 'all'),
+}
+_DEFAULT_TAG_SETTINGS = (7, 1.0, 'all')  # Coding, Writing, List, Suggest, Utility, ...
+
+
+def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
     them to the browser in real time:
       {"type": "token", "text": "..."}            - a chunk of assistant text
       {"type": "tool_call", "name": "...", "arguments": {...}} - tool invocation started
       {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
-    The full, final conversation is still available afterwards via
-    agent_messages (module-level), same as before.
+    The full, final conversation is available afterwards via agent_messages.
     """
-    global agent_messages
-    global scrape
-    global tags
-    global messages
-    global reset
-    global tools
-    model="openai/gpt-oss-120b"
-    temp=1
-    check_tools=tools
+    # Default model id — any provider with its own model set overrides it.
+    model = "openai/gpt-oss-120b"
+    temp = 1
+    check_tools = tools
     if user_input and system_input:
         raise Exception("You cannot have both user input and system input at the same time.")
     elif user_input:
-
         if user_input.lower() == 'reset':
             reset()
             yield {"type": "token", "text": "Agent reset."}
             return
 
+        intent, _ = Classy.classify(user_input, CLASSIFIER_PATH)
+        tag = intent[0]
+        print('Intent: ' + tag)
 
-        intent, certainty = Classy.classify(user_input,location)
-        print(intent)
-        tag=intent[0]
-        
+        agent_messages.append({"role": "user", "content": user_input})
+        agent_input = user_input
 
-
-
-        agent_messages.append(
-            {
-            "role": "user",
-            "content": user_input
-        }
-        )
-        agent_input=user_input
-
-#####################################################################################################################################
-        print(tag)
-        if tag == 'Greeting/goodbye':
-            if len(agent_messages) > 5:
-                eco_messages=[agent_messages[0], *agent_messages[-3:]]
-            else:
-                eco_messages=agent_messages
-            check_tools=None
-        elif tag == 'Personal-question' or  tag == 'Banter' or tag == 'About-user':
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], *agent_messages[-5:]]
-            else:
-                eco_messages=agent_messages
-            check_tools=None
-        elif tag == 'Search':
-            temp=0.4
-            if len(agent_messages) > 7:
-                eco_messages=[agent_messages[0], *agent_messages[-5:]]
-            else:
-                eco_messages=agent_messages
-            check_tools=build_search_tools()
-
-        elif tag == 'Context' or tag == 'Edit':
-            if len(agent_messages) > 11:
-                eco_messages=[agent_messages[0], *agent_messages[-9:]]
-            else:
-                eco_messages=agent_messages
-
-
-        elif tag == 'Coding' or tag == 'Writing' or tag == 'List' or tag == 'Suggest':
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
-
-
-        elif tag == 'Logic' or tag == 'Math' or tag == 'Explain':
-            temp=0.2
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
-        elif tag == 'Utility':
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
+        recent, temp, tool_mode = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
+        if len(agent_messages) > recent + 2:
+            eco_messages = [agent_messages[0], *agent_messages[-recent:]]
         else:
-            if len(agent_messages) > 9:
-                eco_messages=[agent_messages[0], *agent_messages[-7:]]
-            else:
-                eco_messages=agent_messages
-
-######################################################################################################################################
+            eco_messages = agent_messages
+        if tool_mode == 'none':
+            check_tools = None
+        elif tool_mode == 'search':
+            check_tools = build_search_tools()
     elif system_input:
-        # No caller in this codebase currently passes system_input (it's
-        # kept for direct/external callers of agent()/agent_stream()) — if
-        # one starts to, note that appending a second system-role message
-        # here breaks the single-leading-system-message invariant reset()
-        # now relies on (see the comment there) and will fail the same way
-        # on providers that enforce it.
-        agent_messages.append(
-            {
-            "role": "system",
-            "content": system_input
-        }
-        )
-        agent_input=system_input
-        eco_messages=agent_messages
+        # Kept for direct/external callers only — note that appending a
+        # second system-role message breaks the single-leading-system-message
+        # invariant reset() relies on, and some providers reject that.
+        agent_messages.append({"role": "system", "content": system_input})
+        agent_input = system_input
+        eco_messages = agent_messages
     # `is not None` (not truthiness): a tool can legitimately return "" —
     # e.g. reading an empty file — and that still has to be recorded as the
     # call's response and continue the turn, not fall through to the
     # "no input" error below with the tool_call left dangling.
     elif tool_input is not None:
-        temp=0.2
+        temp = 0.2
         yield {"type": "tool_result", "name": tool_name, "result": tool_input}
-        agent_messages.append(
-            {
+        agent_messages.append({
             "role": "tool",
             "tool_call_id": tool_id,
             "name": tool_name,
-            "content": tool_input
-        }
-        )
-        agent_input=tool_input
-        # Find all user message indices
+            "content": tool_input,
+        })
+        agent_input = tool_input
+        # Resume from 2 user messages ago, or the first user message if
+        # there aren't 2. A system-initiated conversation may have no user
+        # turns at all — keep everything after the one system message then.
         user_indices = [i for i, m in enumerate(agent_messages) if m['role'] == 'user']
-        # Start from 2 user messages ago, or the first user message if there
-        # aren't 2. A system-initiated conversation may have no user turns at
-        # all — keep everything after the one system message then.
         if len(user_indices) >= 2:
             start_index = user_indices[-2]
         elif user_indices:
@@ -1115,14 +975,7 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
         eco_messages = [agent_messages[0]] + agent_messages[start_index:]
     else:
         raise Exception("You must have either user input or system input.")
-    '''
-    print('##########################################################################')
-    print('\n')
-    print(eco_messages)
-    print('\n')
-    print('##########################################################################')
-    '''
-    print('Received: '+agent_input)
+    print('Received: ' + agent_input)
     try:
         stream, provider = _create_completion(
             model=model,
@@ -1193,15 +1046,8 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             buffer = f"(No response — the connection to {provider} was interrupted before anything came back. Please try again.)"
 
     tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
-    print('Agent: '+buffer if buffer else ' ')
-
-
-
-
-
-
-
-
+    if buffer:
+        print('Agent: ' + buffer)
 
     if tool_calls_list:
         # A provider that streams a tool call without an id would leave
@@ -1279,35 +1125,27 @@ def agent_stream(user_input=None, system_input=None,tool_input=None,tool_id=None
             else:
                 yield from agent_stream(tool_input=result, tool_id=tc["id"], tool_name=command_name)
         return
-    elif buffer is not None:
-        agent_messages.append(
-            {
-            "role": "assistant",
-            "provider": provider,
-            "content": buffer
-            }
-        )
-        print('\n')
-    print(agent_messages)
-    print('\n')
-    return
+
+    agent_messages.append({
+        "role": "assistant",
+        "provider": provider,
+        "content": buffer,
+    })
 
 
 def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):
-    """Backward-compatible, non-streaming entry point. Drains the
-    agent_stream() generator and returns the full conversation, exactly
-    like the old synchronous agent() used to."""
+    """Non-streaming entry point: drains agent_stream() and returns the
+    full conversation."""
     for _ in agent_stream(user_input=user_input, system_input=system_input,
-                           tool_input=tool_input, tool_id=tool_id, tool_name=tool_name):
+                          tool_input=tool_input, tool_id=tool_id, tool_name=tool_name):
         pass
     return agent_messages
 
 
 def api_complete(messages, model=None, stream=False, temperature=1.0, max_tokens=None):
-    """Stateless LLM call for the OpenAI-compatible API endpoint.
-    Does not touch agent_messages. Tries providers in order (starting with
-    whichever last succeeded), via the same cached, fast-fail clients as
-    agent_stream."""
+    """Stateless LLM call for the OpenAI-compatible API endpoint. Does not
+    touch agent_messages. Tries the configured providers in order, via the
+    same cached, fast-fail clients as agent_stream."""
     kwargs = dict(
         model=model or "openai/gpt-oss-120b",
         messages=messages,
@@ -1320,10 +1158,3 @@ def api_complete(messages, model=None, stream=False, temperature=1.0, max_tokens
 
     result, _ = _create_completion(**kwargs)
     return result
-
-
-'''
-while True:
-    output=agent(user_input=input(': '))
-    print(output)
-    '''

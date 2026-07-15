@@ -125,7 +125,6 @@
       transition: border-color 0.15s, transform 0.1s;
     }
     .user-card:active { transform: scale(0.99); }
-    .user-card.selected { border-color: var(--accent-dim); }
     .user-avatar {
       width: 34px; height: 34px; border-radius: 50%;
       background: #1a1f10; border: 1px solid #2a3318; color: var(--accent);
@@ -134,7 +133,6 @@
     }
     .user-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
     .user-name { font-size: 14px; font-weight: 600; }
-    .user-meta { font-family: var(--mono); font-size: 10px; color: var(--muted); }
     .user-card .chevron { margin-left: auto; color: var(--muted); font-size: 12px; flex-shrink: 0; }
 
     .user-delete-btn {
@@ -297,7 +295,7 @@
 
       const delBtn = card.querySelector('.user-delete-btn');
       delBtn.addEventListener('click', (e) => {
-        e.stopPropagation(); // don't trigger selectUser
+        e.stopPropagation(); // don't open the chat we're deleting
         if (!delBtn.classList.contains('confirm')) {
           delBtn.classList.add('confirm');
           delBtn.textContent = 'confirm?';

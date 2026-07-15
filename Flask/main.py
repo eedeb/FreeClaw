@@ -3,7 +3,7 @@ from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.mcp_client as mcp_client
 from src.users import (
-    STATIC_DIR, safe_username, user_dir, conversation_path, conv_files_dir,
+    STATIC_DIR, safe_username, user_dir, conv_files_dir,
     user_context_path, list_users, user_exists, create_user,
     load_conversation, save_conversation, derive_title, ensure_conversation,
     activate_session,
@@ -22,12 +22,10 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from dotenv import load_dotenv, dotenv_values
 import os
 load_dotenv()
-password  = os.getenv("FC_PASSWORD")
 
 logger = get_logger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-location = BASE_DIR + "/../models/data.pth"
 
 app = Flask(__name__, static_folder=None)
 
@@ -102,10 +100,6 @@ def _handle_uncaught(e):
     logger.exception("Unhandled exception on %s %s", request.method, request.path)
     return jsonify({'error': 'Internal server error — see logs/freeclaw.log for details.'}), 500
 
-TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
-# User/conversation storage (STATIC_DIR, safe_username, list_users, etc. —
-# imported above) lives in src/users.py, shared with the CLI, so both entry
-# points read and write the exact same on-disk layout.
 
 # A handful of users may legitimately hit /chat at the same moment, and the
 # agent module keeps its "active conversation" as module-level globals
@@ -305,7 +299,7 @@ def chat():
         with agent_lock:
             activate_session(name)
             agent.reset()
-            save_conversation(name, agent.get_messages())
+            save_conversation(name, agent.get_messages(), title="New chat")
         return jsonify({'response': 'Agent reset successfully'})
     elif user_input.lower() == '/startapi':
         open(_API_FLAG, 'w').close()
@@ -326,10 +320,8 @@ def chat():
             try:
                 activate_session(name)
                 session_active = True
-                had_title = False
                 try:
-                    with open(conversation_path(name), "r", encoding="utf-8") as f:
-                        had_title = bool(json.load(f).get("title", "") not in (None, "", "New chat"))
+                    had_title = load_conversation(name).get("title") not in (None, "", "New chat")
                 except (OSError, json.JSONDecodeError):
                     had_title = False
                 for event in agent.agent_stream(user_input=user_input):
@@ -363,12 +355,14 @@ def chat():
 
 @app.route('/reset', methods=['GET', 'POST'])
 def reset():
+    if not logged_in():
+        return redirect(url_for('login'))
     name = current_user()
     if name:
         with agent_lock:
             activate_session(name)
             agent.reset()
-            save_conversation(name, agent.get_messages())
+            save_conversation(name, agent.get_messages(), title="New chat")
     if request.method == 'POST':
         return jsonify({'response': 'Agent reset successfully'})
     return redirect(url_for('index'))
@@ -399,13 +393,6 @@ def upload():
     # (os.path.join would emit backslashes on Windows, breaking <img src>).
     rel_path = '/'.join(['static', name, 'files', safe_name])
     return jsonify({'path': rel_path, 'filename': file.filename})
-
-
-@app.route('/agent/<path:text>')
-def serve_template(text):
-    if not logged_in():
-        return redirect(url_for('login'))
-    return render_template(f"{text}.html")
 
 
 @app.route('/static/<path:filename>')
@@ -533,9 +520,6 @@ def v1_chat_completions():
                     }
                     yield f"data: {json.dumps(payload)}\n\n"
                 yield "data: [DONE]\n\n"
-            except agent.AllProvidersFailedError as e:
-                logger.error("v1_chat_completions stream: all providers failed: %s", e.failures)
-                yield f"data: {json.dumps({'type': 'error', 'error': agent._user_facing_error(e.failures)})}\n\n"
             except Exception as e:
                 logger.exception("v1_chat_completions stream failed")
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
@@ -625,8 +609,8 @@ def _write_env(updates: dict):
         f.writelines(new_lines)
 
     # Also update the live process environment so a key added/changed here
-    # (e.g. a PROVIDER_KEYS entry, or NVIDIA_KEY) is picked up on the very
-    # next request, without restarting the app.
+    # (e.g. a PROVIDER_KEYS entry) is picked up on the very next request,
+    # without restarting the app.
     for key, value in updates.items():
         os.environ[key] = value
 
@@ -783,11 +767,9 @@ def api_delete_mcp(name):
 # ── LLM PROVIDERS (env-backed parallel lists) ────────────────
 #
 # User-defined OpenAI-compatible endpoints. Stored + read by agent.py
-# (read_providers / providers_to_env), persisted the same single-quoted-
-# JSON way MCP servers are, and — when any enabled one exists — they
-# replace the built-in google/cerebras chain entirely (see
-# agent._active_providers). Reject the same characters MCP does so the
-# round-trip through .env is safe (the api key is the risky field here).
+# (read_providers / providers_to_env), persisted the same single-quoted-JSON
+# way MCP servers are. Reject the same characters MCP does so the round-trip
+# through .env is safe (the api key is the risky field here).
 
 def _provider_public(p):
     """Shape a stored provider for the client. The key is write-only — we
@@ -809,11 +791,7 @@ def api_list_providers():
         providers = agent.read_providers()
     except Exception as e:
         return _log_and_error(e, message=str(e))
-    # Surface whether the built-in google/cerebras fallback is what's
-    # actually live right now (i.e. the user has defined none of their own),
-    # so the UI can say so instead of looking mysteriously empty.
-    using_builtin = not any(p.get('enabled', True) and p.get('url') for p in providers)
-    return jsonify({'providers': [_provider_public(p) for p in providers], 'using_builtin': using_builtin})
+    return jsonify({'providers': [_provider_public(p) for p in providers]})
 
 
 @app.route('/api/providers', methods=['POST'])

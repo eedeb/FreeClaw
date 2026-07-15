@@ -9,15 +9,28 @@ from dotenv import load_dotenv
 # .env lives at the project root, one level above src/
 load_dotenv(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".env"))
 
+# Flag file that enables the OpenAI-compatible API (see api_is_enabled in
+# Flask/main.py) — toggled here by /startapi and /stopapi.
+API_FLAG = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "Flask", ".api_enabled")
+
 print("\033[38;5;242m  loading FreeClaw…\033[0m", flush=True)
 
-# Silence agent.py's debug prints during import
-with open(os.devnull, 'w') as devnull:
-    _real_stdout = sys.stdout
-    sys.stdout = devnull
+
+@contextmanager
+def silence():
+    """Suppress stdout for the duration — used to mute agent debug prints."""
+    with open(os.devnull, 'w') as devnull:
+        old = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old
+
+
+with silence():
     import src.agent as agent
     import src.users as users
-    sys.stdout = _real_stdout
 
 # ── ANSI colours ────────────────────────────────────────────────────────────────
 RESET  = "\033[0m"
@@ -30,17 +43,6 @@ GREY   = "\033[38;5;242m"
 
 def clr(text, *codes):
     return "".join(codes) + str(text) + RESET
-
-@contextmanager
-def silence():
-    """Suppress stdout for the duration — used to mute agent debug prints."""
-    with open(os.devnull, 'w') as devnull:
-        old = sys.stdout
-        sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old
 
 def print_banner():
     print()
@@ -90,32 +92,29 @@ def stream_silent(gen):
                 return
         yield event
 
+def collect_tool_results(messages):
+    """Index tool-result messages by tool_call_id for rendering."""
+    results = {}
+    for msg in messages:
+        if msg.get("role") == "tool":
+            results[msg.get("tool_call_id", "")] = {
+                "content": msg.get("content", ""),
+                "name":    msg.get("name", ""),
+            }
+    return results
+
 def render_tool_blocks(new_messages):
     """Render only the tool-call/result blocks contained in a slice of
     freshly-added conversation messages. Assistant *text* is skipped here
     since it has already been streamed live to the terminal."""
-    tool_results = {}
-    for msg in new_messages:
-        if msg.get("role") == "tool":
-            tool_results[msg.get("tool_call_id", "")] = {
-                "content": msg.get("content", ""),
-                "name":    msg.get("name", ""),
-            }
-
+    tool_results = collect_tool_results(new_messages)
     for msg in new_messages:
         if msg.get("role") == "assistant":
             for tc in msg.get("tool_calls") or []:
                 render_tool_call(tc, tool_results)
 
 def render_conversation(conversation):
-    tool_results = {}
-    for msg in conversation:
-        if msg.get("role") == "tool":
-            tool_results[msg.get("tool_call_id", "")] = {
-                "content": msg.get("content", ""),
-                "name":    msg.get("name", ""),
-            }
-
+    tool_results = collect_tool_results(conversation)
     for msg in conversation:
         role = msg.get("role")
         if role in ("system", "tool", "user"):
@@ -227,13 +226,12 @@ def main():
 
     print(clr(f"  logged in as {username}\n", GREEN))
 
-    conv_data = users.load_conversation(username)
-    had_title = bool(conv_data.get("title", "") not in (None, "", "New chat"))
+    had_title = users.load_conversation(username).get("title") not in (None, "", "New chat")
 
-    # A fresh reset() leaves just the 2 system messages; more than that means
+    # A fresh reset() leaves just the system message; more than that means
     # there's a real conversation to resume — show its scrollback.
     conversation = agent.agent_messages
-    if len(conversation) > 2:
+    if len(conversation) > 1:
         print(clr("  — resuming previous conversation —\n", GREY))
         render_conversation(conversation)
     last_rendered_index = len(conversation)
@@ -262,15 +260,13 @@ def main():
             continue
 
         if user_input.lower() == "/startapi":
-            flag = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "Flask", ".api_enabled")
-            open(flag, 'w').close()
+            open(API_FLAG, 'w').close()
             print(clr("  API enabled at /v1/chat/completions (use your FreeClaw password as the Bearer token)\n", GREY))
             continue
 
         if user_input.lower() == "/stopapi":
-            flag = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "Flask", ".api_enabled")
-            if os.path.exists(flag):
-                os.remove(flag)
+            if os.path.exists(API_FLAG):
+                os.remove(API_FLAG)
             print(clr("  API disabled\n", GREY))
             continue
 

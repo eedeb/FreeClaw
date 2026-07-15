@@ -134,7 +134,7 @@ _pip_install() {
 _pip_install "PyTorch (CPU)" torch --index-url https://download.pytorch.org/whl/cpu
 _pip_install "classy-ai" classy-ai
 _pip_install "sentence-transformers" sentence_transformers --no-deps
-_pip_install "web & API libs" flask openai ddgs beautifulsoup4 json-repair python-dotenv
+_pip_install "web & API libs" -r requirements.txt
 
 section_gap
 divider
@@ -145,7 +145,6 @@ section_gap
 step "4" "Setting up project directories..."
 section_gap
 mkdir -p Flask/static
-mkdir -p Flask/templates/agent
 success "Directories ready"
 
 section_gap

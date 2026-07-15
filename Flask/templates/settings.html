@@ -175,7 +175,7 @@
   <!-- ── ENVIRONMENT ── -->
   <section>
     <div class="sec-head"><h2>Environment</h2></div>
-    <div class="sec-desc">Login password, session secret, the built-in fallback keys, and other <span style="font-family:var(--mono)">.env</span> settings.</div>
+    <div class="sec-desc">Login password, session secret, and other <span style="font-family:var(--mono)">.env</span> settings.</div>
     <div id="env-fields"></div>
     <button id="env-save" class="primary">Save environment</button>
     <div id="env-msg" class="msg"></div>
@@ -215,10 +215,11 @@
   // ── Providers ──
   const provList = $('prov-list'), provMsg = $('prov-msg'), provBanner = $('prov-banner');
 
-  function renderProviders(providers, usingBuiltin) {
-    if (usingBuiltin) {
+  function renderProviders(providers) {
+    const anyEnabled = (providers || []).some(p => p.enabled !== false);
+    if (!anyEnabled) {
       provBanner.style.display = 'block';
-      provBanner.innerHTML = 'No providers configured — running on the <strong>built-in fallback</strong> (Google → Cerebras, using the keys in Environment below). Add one here to take full control of the chain.';
+      provBanner.innerHTML = 'No enabled providers — the agent has nothing to call and <strong>can\'t answer</strong> until one is added and enabled here.';
     } else {
       provBanner.style.display = 'none';
     }
@@ -301,7 +302,7 @@
       const res = await fetch('/api/providers');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-      renderProviders(data.providers, data.using_builtin);
+      renderProviders(data.providers);
     } catch (e) { provList.innerHTML = `<div class="empty" style="color:var(--err)">${escapeHtml(e.message)}</div>`; }
   }
 
@@ -315,7 +316,7 @@
       const res = await fetch('/api/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url, model, key }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-      renderProviders(data.providers, false);
+      renderProviders(data.providers);
       $('prov-name').value = ''; $('prov-url').value = ''; $('prov-model').value = ''; $('prov-key').value = '';
       showMsg(provMsg, 'Provider added.', true);
     } catch (e) { showMsg(provMsg, e.message, false); }
@@ -328,7 +329,7 @@
       const res = await fetch(`/api/providers/${encodeURIComponent(name)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-      renderProviders(data.providers, false);
+      renderProviders(data.providers);
     } catch (e) { toggle.checked = !enabled; showMsg(provMsg, e.message, false); }
     finally { toggle.disabled = false; }
   }

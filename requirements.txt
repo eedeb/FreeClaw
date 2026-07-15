@@ -1,0 +1,12 @@
+# Web app + agent dependencies, synced by install.sh and update.sh.
+# torch, classy-ai, and sentence-transformers are installed separately by
+# install.sh (they need a CPU wheel index / --no-deps flags).
+flask
+itsdangerous
+openai
+httpx
+requests
+ddgs
+beautifulsoup4
+json-repair
+python-dotenv

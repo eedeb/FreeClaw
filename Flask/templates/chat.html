@@ -1147,10 +1147,10 @@
             if (thinking.parentNode) thinking.remove();
             activeToolIndicator = addToolLive(evt.name);
 
-            // open_webpage/open_app run entirely client-side: the backend
-            // can't reach the user's browser, so it just reports the url
-            // in evt.arguments and leaves the actual opening to us.
-            if (evt.name === 'open_webpage' || evt.name === 'open_app') {
+            // open_url runs entirely client-side: the backend can't reach
+            // the user's browser, so it just reports the url in
+            // evt.arguments and leaves the actual opening to us.
+            if (evt.name === 'open_url') {
               const target = evt.arguments && evt.arguments.url;
               if (target) window.open(target, '_blank', 'noopener,noreferrer');
             }
