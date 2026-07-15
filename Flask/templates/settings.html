@@ -95,6 +95,11 @@
       padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
     }
     .form input:focus { outline: none; border-color: var(--accent-dim); }
+    .form select {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
+      padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
+    }
+    .form select:focus { outline: none; border-color: var(--accent-dim); }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
 
@@ -128,7 +133,7 @@
     <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
     <div>
       <h1>Settings</h1>
-      <div class="sub">providers · mcp · environment</div>
+      <div class="sub">providers · vision · mcp · environment</div>
     </div>
     <div class="spacer"></div>
     <a class="nav-btn" href="/">⌂ home</a>
@@ -154,6 +159,17 @@
       </div>
       <button id="prov-add" class="primary">Add provider</button>
       <div id="prov-msg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- ── VISION MODEL ── -->
+  <section>
+    <div class="sec-head"><h2>Vision Model</h2></div>
+    <div class="sec-desc">Which connected provider handles <span style="font-family:var(--mono)">get_image_description</span> — describing images the agent is asked about. The provider needs a model set in Providers above.</div>
+    <div class="form">
+      <select id="vision-select"></select>
+      <button id="vision-save" class="primary">Save vision model</button>
+      <div id="vision-msg" class="msg"></div>
     </div>
   </section>
 
@@ -216,6 +232,7 @@
   const provList = $('prov-list'), provMsg = $('prov-msg'), provBanner = $('prov-banner');
 
   function renderProviders(providers) {
+    renderVisionOptions(providers);
     const anyEnabled = (providers || []).some(p => p.enabled !== false);
     if (!anyEnabled) {
       provBanner.style.display = 'block';
@@ -345,6 +362,48 @@
 
   $('prov-add').addEventListener('click', addProvider);
   $('prov-key').addEventListener('keydown', e => { if (e.key === 'Enter') addProvider(); });
+
+  // ── Vision model ──
+  // Just references a provider by name (VISION_PROVIDER in .env) — the
+  // dropdown is rebuilt from the same provider list every time renderProviders()
+  // runs, so it stays in sync with adds/removes/renames automatically.
+  const visionSelect = $('vision-select'), visionMsg = $('vision-msg');
+  let currentVisionProvider = '';
+
+  function renderVisionOptions(providers) {
+    visionSelect.innerHTML = '<option value="">— none —</option>';
+    (providers || []).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name + (p.model ? ` (${p.model})` : ' (no model set)');
+      visionSelect.appendChild(opt);
+    });
+    visionSelect.value = (providers || []).some(p => p.name === currentVisionProvider) ? currentVisionProvider : '';
+  }
+
+  async function loadVisionModel() {
+    try {
+      const res = await fetch('/api/vision-model');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      currentVisionProvider = data.provider || '';
+      visionSelect.value = Array.from(visionSelect.options).some(o => o.value === currentVisionProvider) ? currentVisionProvider : '';
+    } catch (e) { showMsg(visionMsg, e.message, false); }
+  }
+
+  async function saveVisionModel() {
+    visionMsg.style.display = 'none';
+    const btn = $('vision-save'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/vision-model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: visionSelect.value }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      currentVisionProvider = data.provider || '';
+      showMsg(visionMsg, currentVisionProvider ? `Vision model set to '${currentVisionProvider}'.` : 'Vision model cleared.', true);
+    } catch (e) { showMsg(visionMsg, e.message, false); }
+    finally { btn.disabled = false; btn.textContent = 'Save vision model'; }
+  }
+  $('vision-save').addEventListener('click', saveVisionModel);
 
   // ── MCP servers ──
   const mcpList = $('mcp-list'), mcpMsg = $('mcp-msg');
@@ -497,7 +556,7 @@
   });
 
   // Initial load
-  loadProviders(); loadMcp(); loadEnv();
+  loadProviders().then(loadVisionModel); loadMcp(); loadEnv();
 </script>
 </body>
 </html>

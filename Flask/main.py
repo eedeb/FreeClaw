@@ -891,6 +891,30 @@ def api_delete_provider(name):
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in remaining]})
 
 
+# ── VISION MODEL (single scalar, references a provider by name) ──
+
+@app.route('/api/vision-model', methods=['GET'])
+def api_get_vision_model():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    return jsonify({'provider': _read_env().get('VISION_PROVIDER', '')})
+
+
+@app.route('/api/vision-model', methods=['POST'])
+def api_set_vision_model():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('provider', '')).strip()
+    if name and not any(p.get('name') == name for p in agent.read_providers()):
+        return jsonify({'error': f"No such provider: '{name}'."}), 400
+    try:
+        _write_env({'VISION_PROVIDER': name})
+    except Exception as e:
+        return _log_and_error(e, message=str(e))
+    return jsonify({'ok': True, 'provider': name})
+
+
 # ── SERVER RESTART ───────────────────────────────────────────
 
 @app.route('/api/restart', methods=['POST'])

@@ -110,6 +110,11 @@ _PROVIDER_KEYS_KEY = "PROVIDER_KEYS"
 _PROVIDER_MODELS_KEY = "PROVIDER_MODELS"
 _PROVIDER_ENABLED_KEY = "PROVIDER_ENABLED"
 
+# Which configured provider (by name) get_image_description uses — chosen in
+# Settings → Vision Model, stored as a single scalar env var (unlike the
+# parallel-list providers above, since there's only ever one selection).
+_VISION_PROVIDER_KEY = "VISION_PROVIDER"
+
 
 def _parse_env_list(raw):
     if not raw:
@@ -161,6 +166,14 @@ def providers_to_env(providers):
         _PROVIDER_MODELS_KEY: "'" + json.dumps([p.get("model", "") for p in providers]) + "'",
         _PROVIDER_ENABLED_KEY: "'" + json.dumps([bool(p.get("enabled", True)) for p in providers]) + "'",
     }
+
+
+def read_vision_provider():
+    """Name of the provider selected in Settings → Vision Model, or None if
+    unset — read fresh from .env on every call, same as read_providers()."""
+    if not os.path.exists(_ENV_PATH):
+        return None
+    return dotenv_values(_ENV_PATH).get(_VISION_PROVIDER_KEY) or None
 
 
 def _active_providers():
@@ -755,9 +768,17 @@ def _run_tool(command_name, args_dict):
             return "File not found."
 
     if command_name == 'get_image_description':
-        nvidia_key = os.getenv("NVIDIA_KEY")
-        if not nvidia_key:
-            return "Image description isn't configured — set NVIDIA_KEY in .env to enable it."
+        vision_provider_name = read_vision_provider()
+        if not vision_provider_name:
+            return "Image description isn't configured — pick a provider in Settings → Vision Model."
+        provider = next((p for p in read_providers() if p.get("name") == vision_provider_name), None)
+        if provider is None or not provider.get("url"):
+            return f"The vision provider '{vision_provider_name}' no longer exists — pick another in Settings → Vision Model."
+        if not provider.get("key"):
+            return f"Provider '{vision_provider_name}' has no API key set — add one in Settings → Providers."
+        if not provider.get("model"):
+            return f"Provider '{vision_provider_name}' has no model set — add one in Settings → Providers to use it for vision."
+
         filename = os.path.basename(args_dict.get('filename'))
         file_location = static_dir+filename
         try:
@@ -770,33 +791,37 @@ def _run_tool(command_name, args_dict):
         mime_types = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
         mime_type = mime_types.get(ext, "image/jpeg")
 
-        vision_client = _client_for("nvidia", nvidia_key, "https://integrate.api.nvidia.com/v1")
-        completion = vision_client.chat.completions.create(
-            model="qwen/qwen3.5-397b-a17b",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Describe images that the user sends in extreme detail"
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_data}"
+        vision_client = _client_for(provider["name"], provider["key"], provider["url"])
+        try:
+            completion = vision_client.chat.completions.create(
+                model=provider["model"],
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Describe images that the user sends in extreme detail"
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{image_data}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": "Please describe this image in extreme detail."
                             }
-                        },
-                        {
-                            "type": "text",
-                            "text": "Please describe this image in extreme detail."
-                        }
-                    ]
-                }
-            ],
-            temperature=1,
-            top_p=1,
-        )
+                        ]
+                    }
+                ],
+                temperature=1,
+                top_p=1,
+            )
+        except Exception as e:
+            logger.exception("Vision provider '%s' failed", vision_provider_name)
+            return f"Image description failed — vision provider '{vision_provider_name}' returned an error: {e}"
         return completion.choices[0].message.content or "No description returned."
 
     if command_name == 'list_files':
