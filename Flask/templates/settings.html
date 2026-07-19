@@ -125,6 +125,38 @@
     .restart-box p { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
     #restart-status { font-family: var(--mono); font-size: 11px; color: var(--accent-dim); margin-top: 10px; display: none; }
     #restart-status.show { display: block; }
+
+    .sec-head .spacer { flex: 1; }
+    button.small {
+      background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 6px 11px; font-family: var(--mono); font-weight: 500; font-size: 11px; cursor: pointer; transition: all 0.15s;
+    }
+    button.small:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
+      display: flex; align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-overlay[hidden] { display: none; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 18px; max-width: 420px; width: 100%; max-height: 90vh; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 9px;
+    }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+    .modal-head h3 { font-size: 16px; font-weight: 700; }
+    .modal-close {
+      background: none; border: none; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-desc { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 4px; }
+    .modal .form-label a { color: var(--accent-dim); text-decoration: none; }
+    .modal .form-label a:hover { text-decoration: underline; }
+    .modal input {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
+      padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
+    }
+    .modal input:focus { outline: none; border-color: var(--accent-dim); }
   </style>
 </head>
 <body>
@@ -141,7 +173,7 @@
 
   <!-- ── PROVIDERS ── -->
   <section>
-    <div class="sec-head"><h2>Providers</h2></div>
+    <div class="sec-head"><h2>Providers</h2><div class="spacer"></div><button id="quick-setup-btn" class="small" type="button">⚡ quick setup</button></div>
     <div class="sec-desc">
       Any OpenAI-compatible chat endpoint. The agent tries your enabled providers in order, top to bottom,
       falling through to the next if one fails or is rate-limited. Free option:
@@ -208,6 +240,28 @@
       <div id="restart-status"></div>
     </div>
   </section>
+</div>
+
+<!-- ── QUICK SETUP MODAL ── -->
+<div id="quick-setup-overlay" class="modal-overlay" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Quick setup</h3>
+      <button id="qs-close" class="modal-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-desc">
+      Paste in free API keys and this adds Groq, Cerebras, and NVIDIA NIM as chat providers, plus
+      an NVIDIA NIM vision model — all saved to your <span style="font-family:var(--mono)">.env</span>.
+    </div>
+    <div class="form-label">Groq API key — <a href="https://console.groq.com/keys" target="_blank" rel="noopener">get one</a></div>
+    <input id="qs-groq" type="password" placeholder="gsk_…" autocomplete="off" spellcheck="false"/>
+    <div class="form-label">Cerebras API key — <a href="https://cloud.cerebras.ai" target="_blank" rel="noopener">get one</a></div>
+    <input id="qs-cerebras" type="password" placeholder="csk-…" autocomplete="off" spellcheck="false"/>
+    <div class="form-label">NVIDIA NIM API key — <a href="https://build.nvidia.com" target="_blank" rel="noopener">get one</a></div>
+    <input id="qs-nvidia" type="password" placeholder="nvapi-…" autocomplete="off" spellcheck="false"/>
+    <button id="qs-submit" class="primary">Add providers</button>
+    <div id="qs-msg" class="msg"></div>
+  </div>
 </div>
 
 <!-- --CREDITS -- -->
@@ -410,6 +464,72 @@
     finally { btn.disabled = false; btn.textContent = 'Save vision model'; }
   }
   $('vision-save').addEventListener('click', saveVisionModel);
+
+  // ── Quick setup ──
+  // Adds Groq, Cerebras, and NVIDIA NIM as chat providers from their API
+  // keys alone (fixed base URLs + free-tier models below), plus a disabled
+  // "NVIDIA-vision" duplicate of the NVIDIA entry pointing at NVIDIA's
+  // vision-capable model, set as the vision model. Just drives the same
+  // /api/providers, /api/providers/<name>, and /api/vision-model endpoints
+  // the manual forms above use — no new backend route needed.
+  const qsOverlay = $('quick-setup-overlay'), qsMsg = $('qs-msg');
+
+  function openQuickSetup() {
+    qsMsg.style.display = 'none';
+    $('qs-groq').value = ''; $('qs-cerebras').value = ''; $('qs-nvidia').value = '';
+    qsOverlay.hidden = false;
+  }
+  function closeQuickSetup() { qsOverlay.hidden = true; }
+
+  $('quick-setup-btn').addEventListener('click', openQuickSetup);
+  $('qs-close').addEventListener('click', closeQuickSetup);
+  qsOverlay.addEventListener('click', e => { if (e.target === qsOverlay) closeQuickSetup(); });
+
+  async function qsAddProvider(name, url, model, key) {
+    const res = await fetch('/api/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url, model, key }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+    return data;
+  }
+
+  async function runQuickSetup() {
+    const groq = $('qs-groq').value.trim(), cerebras = $('qs-cerebras').value.trim(), nvidia = $('qs-nvidia').value.trim();
+    qsMsg.style.display = 'none';
+    if (!groq || !cerebras || !nvidia) { showMsg(qsMsg, 'All three API keys are required.', false); return; }
+
+    const btn = $('qs-submit'); btn.disabled = true; btn.textContent = 'Adding…';
+    const jobs = [
+      ['Groq', 'https://api.groq.com/openai/v1', 'openai/gpt-oss-120b', groq],
+      ['Cerebras', 'https://api.cerebras.ai/v1', 'gpt-oss-120b', cerebras],
+      ['NVIDIA', 'https://integrate.api.nvidia.com/v1', 'nvidia/nemotron-3-super-120b-a12b', nvidia],
+      ['NVIDIA-vision', 'https://integrate.api.nvidia.com/v1', 'meta/llama-3.2-11b-vision-instruct', nvidia],
+    ];
+    const errors = [];
+    for (const [name, url, model, key] of jobs) {
+      try { await qsAddProvider(name, url, model, key); }
+      catch (e) { errors.push(`${name}: ${e.message}`); }
+    }
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent('NVIDIA-vision')}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+    } catch (e) { errors.push(`Disabling NVIDIA-vision: ${e.message}`); }
+    try {
+      const res = await fetch('/api/vision-model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'NVIDIA-vision' }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+    } catch (e) { errors.push(`Setting vision model: ${e.message}`); }
+
+    await loadProviders(); await loadVisionModel();
+    btn.disabled = false; btn.textContent = 'Add providers';
+    if (errors.length) {
+      showMsg(qsMsg, 'Some steps failed — ' + errors.join('; '), false);
+    } else {
+      showMsg(qsMsg, 'Added Groq, Cerebras, and NVIDIA NIM — vision set to NVIDIA-vision.', true);
+      setTimeout(closeQuickSetup, 1200);
+    }
+  }
+  $('qs-submit').addEventListener('click', runQuickSetup);
 
   // ── MCP servers ──
   const mcpList = $('mcp-list'), mcpMsg = $('mcp-msg');
