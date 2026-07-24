@@ -424,6 +424,36 @@ def set_messages(messages):
     agent_messages = _heal_history(messages)
 
 
+# reset() builds the system message once; a conversation can then run for
+# days (a ping delivered next week reuses the same one) without another
+# reset(), so a timestamp baked in at reset() would go stale fast. Instead
+# the current date/time is kept as the system message's first line and
+# refreshed on every turn (see _refresh_system_clock) — this is what fixes
+# add_ping resolving "today"/"tomorrow" against a guess instead of the real
+# clock. Kept to one short line, deliberately: it's resent on every request.
+_NOW_LINE_PREFIX = "Current date/time: "
+
+
+def _now_line():
+    now = datetime.now()
+    return (f"{_NOW_LINE_PREFIX}{now.strftime('%Y-%m-%d %H:%M %A')} "
+            f"— resolve relative dates/times against this, never guess.")
+
+
+def _refresh_system_clock():
+    """Rewrite agent_messages[0]'s first line to the current _now_line(),
+    replacing whatever was there before. Called at the top of every
+    agent_stream() turn (and after reset()) so the model always sees a live
+    timestamp, however old the conversation is."""
+    if not agent_messages or agent_messages[0].get("role") != "system":
+        return
+    content = agent_messages[0].get("content", "")
+    first_line, _, rest = content.partition("\n")
+    if first_line.startswith(_NOW_LINE_PREFIX):
+        content = rest
+    agent_messages[0]["content"] = _now_line() + "\n" + content
+
+
 def reset(tts=False):
     """Start a fresh conversation for the current static_dir, seeded with
     that user's context.md.
@@ -467,6 +497,7 @@ Scheduled events are stored in the ping.md file
     prompt += f"\nLong-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}\n"
 
     agent_messages = [{"role": "system", "content": prompt}]
+    _refresh_system_clock()
     refresh_tools()
 
 
@@ -606,7 +637,7 @@ def build_file_tools():
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "date_time": { "type": "string", "description": "Absolute fire time, format 'YYYY-MM-DD HH:MM' (e.g. '2026-07-23 14:30'). Resolve relative times yourself." },
+                        "date_time": { "type": "string", "description": "Absolute fire time, format 'YYYY-MM-DD HH:MM' (e.g. '2026-07-23 14:30'). Compute relative times ('today', 'tomorrow') from the live clock in the system prompt — never guess." },
                         "action": { "type": "string", "description": "What to do when it fires, as an instruction to yourself, e.g. 'Remind the user to take their medication.'" },
                     },
                     "required": ["date_time", "action"]
@@ -1023,6 +1054,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
       {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
     The full, final conversation is available afterwards via agent_messages.
     """
+    _refresh_system_clock()
     # Default model id — any provider with its own model set overrides it.
     model = "openai/gpt-oss-120b"
     temp = 1
