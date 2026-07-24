@@ -536,7 +536,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Reads a file's contents from /static. Use this to view the context.md file.",
+                "description": "Reads a file's contents from /static. Use this to view the context.md file and the ping.md.",
                 "parameters": {
                     "type": "object",
                     "properties": {
