@@ -956,7 +956,6 @@ def api_restart():
 # so the exchange is already there the next time they open their chat.
 
 PING_POLL_SECONDS = 30
-PING_TIME_FORMAT = "%Y-%m-%d %H:%M"
 _ping_scheduler_started = False
 _ping_scheduler_start_lock = threading.Lock()
 
@@ -964,10 +963,15 @@ _ping_scheduler_start_lock = threading.Lock()
 def _pop_due_pings(name, now):
     """Read this user's ping.md, remove every entry whose time is <= now, and
     return those due entries as (timestamp, action) pairs. Future entries —
-    and any line whose timestamp doesn't parse — are written back untouched.
-    We compare with <= (not ==) so a ping is still delivered if the exact
-    minute's poll was missed (server busy, asleep, just restarted). The caller
-    holds agent_lock, so this can't race add_ping rewriting the same file."""
+    and any line whose timestamp genuinely can't be parsed — are written back
+    untouched.
+
+    We compare with <= (not ==) so a ping still fires if the exact minute's
+    poll was missed (server busy, asleep, or only just restarted): any overdue
+    ping runs on the next pass and is then removed. Timestamps are parsed with
+    agent.parse_ping_time(), which accepts the off-format shapes models emit —
+    a strict single-format parse here was silently skipping real pings. The
+    caller holds agent_lock, so this can't race add_ping rewriting the file."""
     path = user_ping_path(name)
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -977,12 +981,13 @@ def _pop_due_pings(name, now):
     due, remaining = [], []
     for ln in lines:
         stamp, _, action = ln.partition(" - ")
-        try:
-            when = datetime.strptime(stamp.strip(), PING_TIME_FORMAT)
-        except ValueError:
-            remaining.append(ln)  # unparseable — leave it in place
-            continue
-        if when <= now:
+        when = agent.parse_ping_time(stamp)
+        if when is None:
+            # Keep it (we can't know when it's meant to fire) but make the
+            # skip visible — this is exactly the failure that hid before.
+            logger.warning("Skipping unparseable ping for user=%s: %r", name, ln)
+            remaining.append(ln)
+        elif when <= now:
             due.append((stamp.strip(), action.strip()))
         else:
             remaining.append(ln)

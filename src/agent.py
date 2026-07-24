@@ -470,6 +470,51 @@ Scheduled events are stored in the ping.md file
     refresh_tools()
 
 
+# Canonical timestamp the add_ping tool asks the model for. Both the add_ping
+# sort and the ping scheduler parse times through parse_ping_time() rather than
+# a single strict format, so a timestamp that's slightly off-format (seconds,
+# a 'T' separator, AM/PM, ISO offset) still fires instead of sitting unnoticed
+# in ping.md forever — that silent-skip was why scheduled pings weren't running.
+PING_TIME_FORMAT = "%Y-%m-%d %H:%M"
+_PING_TIME_FALLBACK_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%Y.%m.%d %H:%M",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y %I:%M %p",
+    "%Y-%m-%d %I:%M %p",
+    "%Y-%m-%d %I:%M%p",
+)
+
+
+def parse_ping_time(stamp):
+    """Parse a ping timestamp into a naive local datetime, tolerating the
+    common shapes a model emits instead of the exact PING_TIME_FORMAT. Returns
+    None if nothing matches. A tz-aware value (e.g. an ISO string with an
+    offset) is converted to local time and made naive so it compares cleanly
+    against datetime.now()."""
+    if not stamp:
+        return None
+    stamp = stamp.strip()
+    parsed = None
+    try:
+        parsed = datetime.fromisoformat(stamp)  # tolerant on 3.11+ (space/T, secs)
+    except ValueError:
+        for fmt in (PING_TIME_FORMAT, *_PING_TIME_FALLBACK_FORMATS):
+            try:
+                parsed = datetime.strptime(stamp, fmt)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
 def build_file_tools():
     return [
         {
@@ -899,11 +944,8 @@ def _run_tool(command_name, args_dict):
             entries = [line for line in f.read().splitlines() if line.strip()]
 
         def _ping_sort_key(line):
-            stamp = line.split(" - ", 1)[0].strip()
-            try:
-                return (0, datetime.strptime(stamp, "%Y-%m-%d %H:%M"))
-            except ValueError:
-                return (1, datetime.max)
+            parsed = parse_ping_time(line.split(" - ", 1)[0])
+            return (1, datetime.max) if parsed is None else (0, parsed)
 
         entries.sort(key=_ping_sort_key)
         with open(static_dir+filename, "w", encoding="utf-8") as f:
