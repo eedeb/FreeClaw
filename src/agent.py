@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import subprocess
+from datetime import datetime
 
 import Classy
 import httpx
@@ -458,6 +459,8 @@ Do not add unnecessary explanations, introductions, or conclusions.
 Focus on solving the user's problem.
 
 Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
+
+Scheduled events are stored in the ping.md file
 """
     if tts:
         prompt += "\nYou will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.\n"
@@ -540,7 +543,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "delete_file",
-                "description": "Deletes a file from /static.",
+                "description": "Deletes a file from /static. Never delte context.md or ping.md.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -550,11 +553,26 @@ def build_file_tools():
                 }
             }
         },
+    {
+            "type": "function",
+            "function": {
+                "name": "add_ping",
+                "description": "Schedules a reminder or future action. The action text is delivered to the user as a prompt when its time arrives.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "date_time": { "type": "string", "description": "Absolute fire time, format 'YYYY-MM-DD HH:MM' (e.g. '2026-07-23 14:30'). Resolve relative times yourself." },
+                        "action": { "type": "string", "description": "What to do when it fires, as an instruction to yourself, e.g. 'Remind the user to take their medication.'" },
+                    },
+                    "required": ["date_time", "action"]
+                }
+            }
+        },
         {
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content. Use this to edit the context.md file.",
+                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content. Use this to edit the context.md and ping.md files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -865,7 +883,32 @@ def _run_tool(command_name, args_dict):
         with open(static_dir + filename, "w", encoding="utf-8") as f:
             f.write(updated)
         return "File edited successfully."
+    if command_name == 'add_ping':
+        filename = "ping.md"
+        date_time = args_dict.get('date_time')
+        action = args_dict.get('action')
+        with open(static_dir+filename, "a", encoding="utf-8") as f:
+            f.write(f"{date_time} - {action}\n")
 
+        # Re-sort ping.md on every update so the next scheduled event is
+        # always the first line and the furthest-out event is the last.
+        # Each entry is "YYYY-MM-DD HH:MM - <action>"; sort by the parsed
+        # timestamp. Any line whose timestamp doesn't parse is kept in its
+        # existing order at the bottom rather than dropped.
+        with open(static_dir+filename, "r", encoding="utf-8") as f:
+            entries = [line for line in f.read().splitlines() if line.strip()]
+
+        def _ping_sort_key(line):
+            stamp = line.split(" - ", 1)[0].strip()
+            try:
+                return (0, datetime.strptime(stamp, "%Y-%m-%d %H:%M"))
+            except ValueError:
+                return (1, datetime.max)
+
+        entries.sort(key=_ping_sort_key)
+        with open(static_dir+filename, "w", encoding="utf-8") as f:
+            f.write("\n".join(entries) + "\n" if entries else "")
+        return "Ping added successfully."
     if command_name == 'create_page':
         filename = args_dict.get('filename')
         if "/" in filename or "\\" in filename:

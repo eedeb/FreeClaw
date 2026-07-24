@@ -91,6 +91,14 @@ def user_context_path(name):
     return os.path.join(conv_files_dir(name), "context.md")
 
 
+def user_ping_path(name):
+    """Path to this user's ping.md — their scheduled pings, kept in the same
+    files folder as context.md so the agent's normal file tools (and the
+    add_ping tool) can reach it. Creates static/<user>/files/ as a side
+    effect, same as user_context_path()."""
+    return os.path.join(conv_files_dir(name), "ping.md")
+
+
 def list_users():
     if not os.path.isdir(STATIC_DIR):
         return []
@@ -115,6 +123,10 @@ def create_user(name):
     ctx_path = user_context_path(name)  # creates static/<user>/files/ too
     if not os.path.exists(ctx_path):
         with open(ctx_path, "w", encoding="utf-8") as f:
+            f.write("")
+    ping_path = user_ping_path(name)
+    if not os.path.exists(ping_path):
+        with open(ping_path, "w", encoding="utf-8") as f:
             f.write("")
     ensure_conversation(name)
 
