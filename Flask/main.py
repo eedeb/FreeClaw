@@ -1018,11 +1018,7 @@ def _fire_due_pings():
                     activate_session(name)
                     # Injected as a normal user turn ("physically entered"),
                     # so the model acts on it and the bubble shows in the UI.
-                    # full_tools=True forces the whole tool set on regardless
-                    # of how the classifier tags the action text — without it a
-                    # ping like "Turn on LED lights" can land on a no-tool
-                    # intent and silently do nothing.
-                    agent.agent(user_input=action, full_tools=True)
+                    agent.agent(user_input=action)
                     save_conversation(name, agent.get_messages())
                     logger.info("Delivered ping for user=%s scheduled=%s action=%r", name, stamp, action)
                 except Exception:
