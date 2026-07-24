@@ -1239,18 +1239,63 @@
   homeBtn.addEventListener('click', () => { window.location.href = '/'; });
 
   // ── Load the conversation this session is currently pointed at ───
+  let lastUpdatedAt = null;
+
+  function applyConversation(data) {
+    if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
+    if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
+    const msgs = data.messages || [];
+    const hasVisible = msgs.some(m => m.role === 'user' || (m.role === 'assistant' && m.content));
+    if (hasVisible) {
+      renderConversation(msgs);
+    } else {
+      // renderConversation() always clears messagesEl and doesn't know how
+      // to rebuild the eagle placeholder, so an empty conversation (e.g.
+      // right after /reset) has to put it back itself.
+      messagesEl.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.id = 'empty-state';
+      empty.innerHTML = `
+        <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+        <div class="empty-name">FreeClaw</div>
+        <div class="empty-sub">search the web · run bash<br>connect MCP tools · write files</div>`;
+      messagesEl.appendChild(empty);
+    }
+  }
+
   (async function loadConversation() {
     try {
       const res = await fetch('/api/conversation');
       if (!res.ok) return;
       const data = await res.json();
-      if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
-      if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
-      const msgs = data.messages || [];
-      const hasVisible = msgs.some(m => m.role === 'user' || (m.role === 'assistant' && m.content));
-      if (hasVisible) renderConversation(msgs);
+      lastUpdatedAt = data.updated_at;
+      applyConversation(data);
     } catch (_) { /* ignore — stay on empty state */ }
   })();
+
+  // ── Pick up pings delivered while this tab is open ────────────────
+  // A scheduled ping fires from a background thread on the server, outside
+  // any request from this tab, so there's nothing that can push it to us —
+  // poll a tiny endpoint instead and only pull the full conversation (and
+  // re-render) once its updated_at actually moves.
+  async function checkForUpdates() {
+    if (sendBtn.disabled) return; // a live turn is streaming — don't clobber it
+    try {
+      const res = await fetch('/api/conversation/meta');
+      if (!res.ok) return;
+      const meta = await res.json();
+      if (meta.updated_at == null || meta.updated_at === lastUpdatedAt) return;
+      const full = await fetch('/api/conversation');
+      if (!full.ok) return;
+      const data = await full.json();
+      lastUpdatedAt = data.updated_at;
+      applyConversation(data);
+    } catch (_) { /* transient network hiccup — next tick will retry */ }
+  }
+
+  setInterval(() => {
+    if (document.visibilityState === 'visible') checkForUpdates();
+  }, 8000);
 
   // Keep messages scrolled when iOS keyboard resizes the viewport
   if (window.visualViewport) {

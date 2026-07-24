@@ -257,8 +257,26 @@ def api_get_conversation():
     return jsonify({
         'user': name,
         'title': data.get('title'),
-        'messages': data.get('messages', [])
+        'messages': data.get('messages', []),
+        'updated_at': data.get('updated_at')
     })
+
+
+@app.route('/api/conversation/meta', methods=['GET'])
+def api_get_conversation_meta():
+    """Cheap poll target: just the conversation's updated_at, not the full
+    message history. The chat page polls this every few seconds so a ping
+    delivered in the background (see PING SCHEDULER below) shows up without
+    a manual page refresh — only fetching /api/conversation in full once
+    this value actually changes."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = current_user()
+    if not name:
+        return jsonify({'error': 'No active conversation'}), 400
+    ensure_conversation(name)
+    data = load_conversation(name)
+    return jsonify({'updated_at': data.get('updated_at')})
 
 
 # ── CHAT ENTRY POINT ─────────────────────────────────────────
