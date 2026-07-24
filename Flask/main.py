@@ -4,7 +4,7 @@ import src.agent as agent
 import src.mcp_client as mcp_client
 from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
-    user_context_path, list_users, user_exists, create_user,
+    user_context_path, user_ping_path, list_users, user_exists, create_user,
     load_conversation, save_conversation, derive_title, ensure_conversation,
     activate_session,
 )
@@ -16,6 +16,7 @@ import time
 import threading
 import shutil
 import functools
+from datetime import datetime
 
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
@@ -945,5 +946,108 @@ def api_restart():
     return jsonify({'ok': True})
 
 
+# ── PING SCHEDULER ───────────────────────────────────────────
+#
+# One daemon thread wakes every PING_POLL_SECONDS and delivers any pings
+# whose time has arrived. Each user's pings live in their own ping.md (written
+# by the agent's add_ping tool), one per line as "YYYY-MM-DD HH:MM - <action>",
+# kept sorted soonest-first. Delivering a ping runs a normal agent turn for
+# that user with the action text as the prompt, then saves the conversation —
+# so the exchange is already there the next time they open their chat.
+
+PING_POLL_SECONDS = 30
+PING_TIME_FORMAT = "%Y-%m-%d %H:%M"
+_ping_scheduler_started = False
+_ping_scheduler_start_lock = threading.Lock()
+
+
+def _pop_due_pings(name, now):
+    """Read this user's ping.md, remove every entry whose time is <= now, and
+    return those due entries as (timestamp, action) pairs. Future entries —
+    and any line whose timestamp doesn't parse — are written back untouched.
+    We compare with <= (not ==) so a ping is still delivered if the exact
+    minute's poll was missed (server busy, asleep, just restarted). The caller
+    holds agent_lock, so this can't race add_ping rewriting the same file."""
+    path = user_ping_path(name)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+    except FileNotFoundError:
+        return []
+    due, remaining = [], []
+    for ln in lines:
+        stamp, _, action = ln.partition(" - ")
+        try:
+            when = datetime.strptime(stamp.strip(), PING_TIME_FORMAT)
+        except ValueError:
+            remaining.append(ln)  # unparseable — leave it in place
+            continue
+        if when <= now:
+            due.append((stamp.strip(), action.strip()))
+        else:
+            remaining.append(ln)
+    if due:  # only rewrite when we actually removed something
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(("\n".join(remaining) + "\n") if remaining else "")
+    return due
+
+
+def _fire_due_pings():
+    """One scheduler pass: deliver every due ping for every user."""
+    now = datetime.now()
+    for name in list_users():
+        # Hold agent_lock across pop+deliver for this user: it serialises the
+        # scheduler against live chat turns (which share the agent module's
+        # globals) and against add_ping writing the same ping.md. The lock is
+        # released between users so a burst of pings can't starve the web UI.
+        with agent_lock:
+            try:
+                due = _pop_due_pings(name, now)
+            except Exception:
+                logger.exception("Couldn't read pings for user=%s", name)
+                continue
+            for stamp, action in due:
+                if not action:
+                    continue
+                try:
+                    activate_session(name)
+                    # Injected as a normal user turn ("physically entered"),
+                    # so the model acts on it and the bubble shows in the UI.
+                    # Prefix it here if you'd rather mark it as system-sent.
+                    agent.agent(user_input=action)
+                    save_conversation(name, agent.get_messages())
+                    logger.info("Delivered ping for user=%s scheduled=%s", name, stamp)
+                except Exception:
+                    # A failed turn must not wedge the scheduler or replay the
+                    # same ping forever — it's already been removed from
+                    # ping.md, so log it and move on.
+                    logger.exception("Ping delivery failed for user=%s scheduled=%s", name, stamp)
+
+
+def _ping_scheduler_loop():
+    while True:
+        try:
+            _fire_due_pings()
+        except Exception:
+            logger.exception("Ping scheduler pass crashed")
+        time.sleep(PING_POLL_SECONDS)
+
+
+def start_ping_scheduler():
+    """Start the background ping thread exactly once per process."""
+    global _ping_scheduler_started
+    with _ping_scheduler_start_lock:
+        if _ping_scheduler_started:
+            return
+        _ping_scheduler_started = True
+    threading.Thread(target=_ping_scheduler_loop, daemon=True, name="ping-scheduler").start()
+    logger.info("Ping scheduler started (polling every %ss)", PING_POLL_SECONDS)
+
+
 if __name__ == '__main__':
+    # debug=True runs Werkzeug's reloader, which re-execs this module in a
+    # child process; only that child has WERKZEUG_RUN_MAIN set. Start the
+    # scheduler there so pings aren't fired twice (once per process).
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        start_ping_scheduler()
     app.run(host='0.0.0.0', port=6767, debug=True)
