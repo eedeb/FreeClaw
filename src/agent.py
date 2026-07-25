@@ -440,6 +440,36 @@ def _now_line():
             f"— resolve relative dates/times against this, never guess.")
 
 
+# Marks where the injected context.md copy starts in the system message, so
+# it can be swapped out in place without disturbing the instructions above it.
+_CTX_HEADER = "\ncontext.md:\n"
+
+
+def _context_block():
+    """The current context.md, formatted for the system message."""
+    try:
+        with open(static_dir + "context.md", "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        content = ""
+    return _CTX_HEADER + (content.strip() or "(empty — use create_file to start it)") + "\n"
+
+
+def _refresh_context():
+    """Re-read context.md into the system message at the top of every turn.
+
+    Without this the injected copy is a snapshot taken at reset(), so anything
+    the model saved earlier in the same conversation stays invisible to it —
+    and once history trimming drops the turn where it was mentioned, the fact
+    is gone from both places. Cheap: one small local file read per turn.
+    """
+    if not agent_messages or agent_messages[0].get("role") != "system":
+        return
+    head, sep, _ = agent_messages[0].get("content", "").partition(_CTX_HEADER)
+    if sep:
+        agent_messages[0]["content"] = head + _context_block()
+
+
 def _refresh_system_clock():
     """Rewrite agent_messages[0]'s first line to the current _now_line(),
     replacing whatever was there before. Called at the top of every
@@ -464,12 +494,12 @@ def reset(tts=False):
     anywhere else in the list. The eco_messages slicing in agent_stream
     assumes this is the only header message."""
     global agent_messages
+    # Create the file if it's missing so the model's first edit_file/create_file
+    # lands somewhere; _context_block() reads it back below.
     ctx_path = static_dir + "context.md"
     if not os.path.exists(ctx_path):
         with open(ctx_path, "w", encoding="utf-8") as f:
             f.write("")
-    with open(ctx_path, "r", encoding="utf-8") as f:
-        content = f.read()
 
     prompt = """
 You are a capable AI assistant.
@@ -488,13 +518,14 @@ Verify important information before responding.
 Do not add unnecessary explanations, introductions, or conclusions.
 Focus on solving the user's problem.
 
-Keep context.md up to date with important information you may need later — use edit_file or create_file on it, the same as any other file.
+context.md is your long-term memory — its contents are below, so never read it with a tool.
+Record durable facts immediately and silently: name, location, preferences, ongoing projects, corrections. Skip one-off details and anything already there.
 
 Scheduled events are stored in the ping.md file
 """
     if tts:
         prompt += "\nYou will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.\n"
-    prompt += f"\nLong-term context about the user is stored in context.md, alongside their other files — read/edit it with the normal file tools. Here are its current contents: {content}\n"
+    prompt += _context_block()
 
     agent_messages = [{"role": "system", "content": prompt}]
     _refresh_system_clock()
@@ -567,7 +598,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Reads a file's contents from /static. Use this to view the context.md file and the ping.md.",
+                "description": "Reads a file's contents from /static. Use for ping.md and created or uploaded files; context.md is already in your system prompt.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -619,7 +650,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "delete_file",
-                "description": "Deletes a file from /static. Never delte context.md or ping.md.",
+                "description": "Deletes a file from /static. Never delete context.md or ping.md.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -928,8 +959,18 @@ def _run_tool(command_name, args_dict):
         filename = args_dict.get('filename')
         if "/" in filename or "\\" in filename:
             return "Invalid filename."
-        with open(static_dir+filename, "w", encoding="utf-8") as f:
-            f.write(args_dict.get('contents') or '')
+        contents = args_dict.get('contents') or ''
+        path = static_dir + filename
+        # "w" truncates, which on context.md would silently destroy every fact
+        # learned so far — and create_file is exactly what a model reaches for
+        # when it wants to "save" something. Append there instead, so memory
+        # can only ever grow; edit_file remains the way to change or remove.
+        if filename == "context.md" and os.path.exists(path) and os.path.getsize(path) > 0:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n" + contents.strip() + "\n")
+            return "Appended to context.md. Existing memory was kept — use edit_file to change or remove a line."
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(contents)
         return "Your file is accessible at "+_static_url(static_dir, filename)
 
     if command_name == 'delete_file':
@@ -953,6 +994,10 @@ def _run_tool(command_name, args_dict):
                 contents = f.read()
         except FileNotFoundError:
             return "File not found."
+        # An empty file can never match old_str, so say what will work rather
+        # than letting the model retry the same failing call.
+        if not contents.strip():
+            return "File is empty — use create_file to write its first contents."
         if old_str not in contents:
             return "String not found in file."
         updated = contents.replace(old_str, new_str, 1)
@@ -1054,6 +1099,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
       {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
     The full, final conversation is available afterwards via agent_messages.
     """
+    _refresh_context()
     _refresh_system_clock()
     # Default model id — any provider with its own model set overrides it.
     model = "openai/gpt-oss-120b"
