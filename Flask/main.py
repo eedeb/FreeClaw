@@ -1071,9 +1071,17 @@ def start_ping_scheduler():
 
 
 if __name__ == '__main__':
+    # FC_DEBUG=0 turns off the reloader and the interactive debugger. Defaults
+    # to on, so a native install behaves exactly as before; the Docker image
+    # sets it to 0.
+    debug = os.getenv("FC_DEBUG", "1").strip().lower() not in ("0", "false", "no", "off")
+
     # debug=True runs Werkzeug's reloader, which re-execs this module in a
     # child process; only that child has WERKZEUG_RUN_MAIN set. Start the
-    # scheduler there so pings aren't fired twice (once per process).
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    # scheduler there so pings aren't fired twice (once per process). With the
+    # reloader off there is only ever one process and WERKZEUG_RUN_MAIN is
+    # never set, so start it directly or pings would never fire at all.
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         start_ping_scheduler()
-    app.run(host='0.0.0.0', port=6767, debug=True)
+
+    app.run(host='0.0.0.0', port=6767, debug=debug)

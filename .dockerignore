@@ -1,0 +1,23 @@
+# Keep the build context small and free of host-specific state.
+
+.git/
+.github/
+
+# Native Linux install artifacts — the image builds its own environment.
+venv/
+install.sh
+update.sh
+uninstall.sh
+
+# Secrets and per-install config: bind-mounted at runtime, never baked in.
+.env
+Flask/.secret_key
+Flask/.api_enabled
+
+# Per-user instance data — bind-mounted at runtime.
+Flask/static/
+logs/
+
+__pycache__/
+*.pyc
+.DS_Store

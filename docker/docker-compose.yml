@@ -1,0 +1,48 @@
+# FreeClaw — macOS / Docker deployment.
+#
+# Paths are relative to this file, so the repo root is "..".
+# Run it from the repo root with:  docker compose -f docker/docker-compose.yml up -d
+
+services:
+  freeclaw:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: freeclaw:local
+    container_name: freeclaw
+
+    # Settings -> Restart (and the Settings save path) call os._exit(0) and
+    # rely on a supervisor to bring the process back. This policy is what
+    # plays the role systemd plays on Linux, so keep it.
+    restart: unless-stopped
+
+    ports:
+      - "6767:6767"
+
+    environment:
+      # No reloader, no interactive debugger inside the container. Deliberately
+      # the only value set here: anything the Settings UI can edit belongs in
+      # .env instead, because a var set here wins over the file on every
+      # restart (load_dotenv doesn't override the live environment) and would
+      # silently revert the user's saved setting. CUSTOM_DOMAIN in particular
+      # is seeded into .env by install-mac.sh for exactly that reason.
+      FC_DEBUG: "0"
+
+    volumes:
+      # Settings -> Providers / MCP / .env rewrites this file in place, so it
+      # must be a writable bind mount for configuration to survive a restart.
+      # It has to exist before the first `up` or Docker will create a
+      # directory in its place — install-mac.sh writes it first.
+      - ../.env:/app/.env
+      # Per-user chats, uploads, context.md and agent-created pages.
+      - ../Flask/static:/app/Flask/static
+      # Tracebacks, matching the Linux install's logs/freeclaw.log.
+      - ../logs:/app/logs
+      #
+      # Deliberately NOT mounted: Flask/.api_enabled, the on/off flag for the
+      # OpenAI-compatible API. The flag is the file's *existence*, so creating
+      # it on the host to mount would mean "always enabled". It therefore
+      # lives in the container and resets to off whenever the container is
+      # recreated (i.e. after ./update-mac.sh). Re-enable with /startapi or
+      # the API chip on the homepage. Flask/.secret_key is likewise in the
+      # container, but is unused because the installer sets SECRET_KEY in .env.

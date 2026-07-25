@@ -2,9 +2,23 @@
 set -e
 
 # ─────────────────────────────────────────────
-#  FreeClaw — Installer
+#  FreeClaw — Installer (Linux / systemd)
 #  github.com/eedeb/FreeClaw
+#
+#  macOS has no systemd; it runs FreeClaw in Docker instead. See
+#  install-mac.sh.
 # ─────────────────────────────────────────────
+
+# Top-level paths that only make sense for the Docker/macOS install. Excluded
+# from the checkout below so a Linux install doesn't carry container files it
+# never uses. install-mac.sh does the mirror image of this.
+MAC_ONLY=(
+    "/docker/"
+    "/install-mac.sh"
+    "/update-mac.sh"
+    "/uninstall-mac.sh"
+    "/.dockerignore"
+)
 
 # Colors & styles
 RESET="\033[0m"
@@ -79,6 +93,13 @@ print_banner
 step "0" "Checking prerequisites..."
 section_gap
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    error "This installer registers a systemd service, which macOS doesn't have."
+    info "Use the macOS installer instead — it runs FreeClaw in Docker:"
+    info "  ${LIME}curl -fsSL https://freeclaw.eedeb.dev/install-mac.sh | bash${RESET}"
+    exit 1
+fi
+
 for cmd in git python3 sudo; do
     if command -v "$cmd" &>/dev/null; then
         success "${cmd} found"
@@ -98,9 +119,35 @@ step "1" "Cloning repository..."
 section_gap
 info "Fetching from github.com/eedeb/FreeClaw"
 
-git clone https://github.com/eedeb/FreeClaw 2>&1 | sed 's/^/       /'
+git clone --no-checkout https://github.com/eedeb/FreeClaw 2>&1 | sed 's/^/       /'
 cd FreeClaw || exit 1
-success "Repository ready"
+
+# Piping through sed masks git's exit status (a pipeline reports the last
+# command's), so check PIPESTATUS rather than relying on set -e here.
+checkout_main() {
+    git checkout main 2>&1 | sed 's/^/       /'
+    if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+        error "Checkout failed — see the output above."
+        exit 1
+    fi
+}
+
+# Check out everything except the Docker/macOS files. Non-cone mode is what
+# allows negated patterns; it needs git 2.25+, so fall back to deleting the
+# files after a normal checkout on anything older.
+if git sparse-checkout init --no-cone &>/dev/null; then
+    {
+        echo '/*'
+        for path in "${MAC_ONLY[@]}"; do echo "!${path}"; done
+    } | git sparse-checkout set --stdin
+    checkout_main
+    success "Repository ready (macOS-only files skipped)"
+else
+    warn "git is too old for sparse-checkout — pruning after checkout instead"
+    checkout_main
+    for path in "${MAC_ONLY[@]}"; do rm -rf ".${path}"; done
+    success "Repository ready (macOS-only files removed)"
+fi
 
 section_gap
 divider

@@ -8,7 +8,9 @@ FreeClaw is a cost-efficient, tool-using AI agent that runs on your own machine.
 
 ## Installation
 
-Install FreeClaw with a single command:
+### Linux
+
+Runs natively, supervised by systemd. Needs `git`, `python3`, and `sudo`.
 
 ```bash
 curl -fsSL https://freeclaw.eedeb.dev/install.sh | bash
@@ -20,6 +22,24 @@ The script will:
 3. Register FreeClaw as a systemd service (`FreeClaw.service`) so it starts automatically, and install the `freeclaw` terminal client
 4. Point you to the web UI, where **Settings → Providers** is where you add your AI provider(s) — FreeClaw can't answer until at least one is configured
 5. Print the local URL to open in your browser
+
+### macOS
+
+macOS has no systemd, so FreeClaw runs in a container instead. Needs `git` and [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running).
+
+```bash
+curl -fsSL https://freeclaw.eedeb.dev/install-mac.sh | bash
+```
+
+Same flow — clone, set a password, start — but step 1 builds a Docker image rather than a virtualenv, and step 3 runs the container with `restart: unless-stopped` in place of a systemd unit. The `freeclaw` CLI is installed as a wrapper around `docker compose exec`. Once it's up, open **http://localhost:6767**.
+
+The first build downloads PyTorch and takes a few minutes; the resulting image is on the order of a gigabyte. Later builds are cached.
+
+Your chats, uploads, `context.md`, logs, and `.env` are bind-mounted from the install directory, so they survive rebuilds and updates.
+
+One difference from the Linux install: the OpenAI-compatible API's on/off state is stored inside the container, so it resets to **off** after `./update-mac.sh` recreates it. Turn it back on with `/startapi` or the API chip on the homepage.
+
+> **Note:** each installer checks out only the files for its own platform — a Linux install has no `docker/` directory or `*-mac.sh` scripts, and a macOS install has no systemd scripts. Run the wrong one and it will tell you and point at the other.
 
 ---
 
@@ -114,11 +134,20 @@ FreeClaw/
 │   └── data.pth              # Classy intent classifier weights
 ├── logs/
 │   └── freeclaw.log          # Created at first run; full error detail, see Debugging below
-├── install.sh                # One-line installer
-├── update.sh                 # Pulls and applies the latest changes from GitHub
+├── docker/                   # macOS install only
+│   ├── Dockerfile            # CPU-only PyTorch + the agent, mirroring what install.sh does natively
+│   └── docker-compose.yml    # Port 6767, restart policy, bind mounts for .env / static / logs
+├── install.sh                # One-line installer      (Linux)
+├── update.sh                 # Pull and apply updates  (Linux)
+├── uninstall.sh              # Remove service + files  (Linux)
+├── install-mac.sh            # One-line installer      (macOS, Docker)
+├── update-mac.sh             # Pull, rebuild, restart  (macOS, Docker)
+├── uninstall-mac.sh          # Remove container + files (macOS, Docker)
 ├── requirements.txt          # Python dependencies (web/agent libs)
 └── .env                      # Password, providers, MCP servers, and other config (created during install)
 ```
+
+Only one platform's scripts are checked out at install time, so you'll see either the Linux set or the macOS set — not both.
 
 ---
 
@@ -158,19 +187,26 @@ Settings live in a `.env` file in the project root, created for you during insta
 | `PROVIDER_NAMES` / `PROVIDER_URLS` / `PROVIDER_KEYS` / `PROVIDER_MODELS` / `PROVIDER_ENABLED` | Yes | Your LLM provider(s) — managed entirely from **Settings → Providers**; the agent has nothing to call until at least one exists here |
 | `VISION_PROVIDER` | No | Name of the configured provider (from **Settings → Providers**) used to describe uploaded images — pick it in **Settings → Vision Model** |
 | `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` | No | Connected MCP servers — managed from **Settings → MCP Servers** |
-| `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns |
+| `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns. Set to `http://localhost:6767` by the macOS installer, since a container can't see the host's LAN address |
+| `FC_DEBUG` | No | `0` turns off Werkzeug's reloader and interactive debugger. Defaults to on for native installs; the Docker image sets it to `0` |
 
 ---
 
 ## Updating
 
-From your FreeClaw install directory:
+From your FreeClaw install directory — on Linux:
 
 ```bash
 ./update.sh
 ```
 
-This pulls the latest `src/`, `Flask/templates/`, and `Flask/main.py` from `origin/main`, leaves your `Flask/static/` data (context, uploads, generated pages) untouched, syncs dependencies, and restarts the service.
+On macOS:
+
+```bash
+./update-mac.sh
+```
+
+Both pull the latest `src/`, `Flask/templates/`, and `Flask/main.py` from `origin/main` and leave your `Flask/static/` data (context, uploads, generated pages) untouched. The Linux script syncs the virtualenv and restarts the systemd service; the macOS one rebuilds the image (the source is baked in at build time, so a rebuild is what makes new code take effect) and restarts the container.
 
 ---
 
@@ -182,7 +218,9 @@ Every unexpected failure — a provider erroring out, a tool crashing, an MCP se
 tail -f logs/freeclaw.log
 ```
 
-Warnings and errors are also mirrored to the console, so they show up live under `journalctl -u FreeClaw.service -f` too if you're running as a systemd service. `logs/` is never served by the app (unlike `Flask/static/`), so it's safe to keep tracebacks there even though they can include file paths and request shapes.
+Warnings and errors are also mirrored to the console. On Linux that means `journalctl -u FreeClaw.service -f`; on macOS, `docker compose -f docker/docker-compose.yml logs -f`. Either way `logs/freeclaw.log` holds the same detail — on macOS the directory is bind-mounted out of the container, so you can tail it from the host exactly as above.
+
+`logs/` is never served by the app (unlike `Flask/static/`), so it's safe to keep tracebacks there even though they can include file paths and request shapes.
 
 ---
 
