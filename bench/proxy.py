@@ -257,8 +257,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"measuring proxy on http://localhost:{PORT}/v1  ->  {UPSTREAM}")
-    print(f"logging to {LOG_PATH}")
+    # flush=True so these still appear immediately when stdout is redirected
+    # to a log file, which block-buffers by default.
+    print(f"measuring proxy on http://localhost:{PORT}/v1  ->  {UPSTREAM}", flush=True)
+    print(f"logging to {LOG_PATH}", flush=True)
     try:
         http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
     except KeyboardInterrupt:
