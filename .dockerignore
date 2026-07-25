@@ -9,6 +9,9 @@ install.sh
 update.sh
 uninstall.sh
 
+# Server-side telemetry collector — deployed to Cloudflare, never run here.
+telemetry/
+
 # Secrets and per-install config: bind-mounted at runtime, never baked in.
 .env
 Flask/.secret_key

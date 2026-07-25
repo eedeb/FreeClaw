@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.mcp_client as mcp_client
+import src.telemetry as telemetry
 from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
     user_context_path, user_ping_path, list_users, user_exists, create_user,
@@ -584,6 +585,7 @@ SETTINGS_KEYS = [
     ("FC_PASSWORD",      "Login Password",          False),
     ("SECRET_KEY",       "Session Secret Key",      False),
     ("CUSTOM_DOMAIN",    "Custom Domain",           False),
+    ("FC_TELEMETRY",     "Anonymous Install Ping (1 = on, 0 = off)", False),
 ]
 KNOWN_KEYS = {k for k, _, _ in SETTINGS_KEYS}
 
@@ -1083,5 +1085,8 @@ if __name__ == '__main__':
     # never set, so start it directly or pings would never fire at all.
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         start_ping_scheduler()
+        # Same one-process-only guard: under the reloader this would otherwise
+        # run in both the parent and the child. No-op unless FC_TELEMETRY=1.
+        telemetry.maybe_send_install_ping()
 
     app.run(host='0.0.0.0', port=6767, debug=debug)

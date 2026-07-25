@@ -221,6 +221,24 @@ while true; do
 done
 
 secret_key=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+
+# ── Telemetry opt-in ─────────────────────────
+# Default is no: anything other than an explicit "y" leaves it off, and the
+# empty answer from just hitting Enter lands there too.
+section_gap
+echo -e "     ${GRAY}Optional: send one anonymous ping so I can count installs.${RESET}"
+echo -e "     ${GRAY}It contains a random ID, the FreeClaw version, your OS, and${RESET}"
+echo -e "     ${GRAY}the word \"native\". That's the whole payload — no chats, no${RESET}"
+echo -e "     ${GRAY}prompts, no API keys, no provider names.${RESET}"
+echo -e "     ${GRAY}Sent once, never repeated. Off by default, and you can flip${RESET}"
+echo -e "     ${GRAY}it either way later in ${BOLD}Settings${RESET}${GRAY}.${RESET}"
+section_gap
+
+read -p "$(echo -e "     ${LIME}?${RESET}  Send the install ping? [y/${BOLD}N${RESET}]: ")" fc_telemetry_answer < /dev/tty
+case "$fc_telemetry_answer" in
+    [Yy]*) fc_telemetry=1 ;;
+    *)     fc_telemetry=0 ;;
+esac
 # Write .env: just login password + session secret. Chat providers are
 # added afterward from Settings → Providers in the web UI (persisted into
 # PROVIDER_* lists) — no API keys collected here. The one exception: NVIDIA
@@ -230,8 +248,14 @@ secret_key=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 printf 'FC_PASSWORD=%s\n' "$fc_password" > .env
 chmod 600 .env
 printf 'SECRET_KEY=%s\n' "$secret_key" >> .env
+printf 'FC_TELEMETRY=%s\n' "$fc_telemetry" >> .env
 success "Password saved"
 success "Session secret generated"
+if [[ "$fc_telemetry" == "1" ]]; then
+    success "Anonymous install ping enabled — thank you"
+else
+    success "Telemetry off"
+fi
 
 section_gap
 divider

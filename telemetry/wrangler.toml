@@ -1,0 +1,21 @@
+name = "freeclaw-telemetry"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+
+# Intercepts the two telemetry paths on the existing hostname; every other
+# path on freeclaw.eedeb.dev keeps going to the normal origin (the marketing
+# page and install scripts are unaffected).
+[[routes]]
+pattern = "freeclaw.eedeb.dev/telemetry/*"
+zone_name = "eedeb.dev"
+
+# Create with:  wrangler d1 create freeclaw-telemetry
+# then paste the printed database_id here.
+[[d1_databases]]
+binding = "DB"
+database_name = "freeclaw-telemetry"
+database_id = "PASTE_DATABASE_ID_HERE"
+
+# STATS_KEY is a secret, not a var — set it with:
+#   wrangler secret put STATS_KEY
+# Without it, /telemetry/stats returns 404 for everyone.

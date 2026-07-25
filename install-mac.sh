@@ -105,19 +105,47 @@ else
     exit 1
 fi
 
-if docker compose version &>/dev/null; then
-    success "docker compose found"
-else
-    error "The 'docker compose' plugin (Compose v2) is required but not available."
-    info "Update Docker Desktop to a current version and try again."
-    exit 1
-fi
-
+# Checked before the compose plugin on purpose. Docker Desktop symlinks its
+# binaries into /usr/local/bin at install time but only creates
+# ~/.docker/cli-plugins on first launch, so an installed-but-never-opened
+# Desktop fails the compose check too — and "the daemon isn't running" is the
+# message that actually tells you what to do about it.
 if docker info &>/dev/null; then
     success "Docker daemon is running"
 else
     error "Docker is installed but the daemon isn't running."
-    info "Open Docker Desktop, wait for it to finish starting, then re-run this."
+    section_gap
+    if [[ ! -d "$HOME/.docker" ]] && [[ -d /Applications/Docker.app ]]; then
+        info "It looks like Docker Desktop hasn't been opened yet. Start it with:"
+        info "  ${LIME}open -a Docker${RESET}"
+    else
+        info "Open Docker Desktop and wait for it to finish starting."
+    fi
+    info "Then re-run this installer."
+    exit 1
+fi
+
+if docker compose version &>/dev/null; then
+    success "docker compose found"
+else
+    error "The 'docker compose' plugin (Compose v2) is required but not available."
+    section_gap
+    info "docker reported:"
+    docker compose version 2>&1 | head -3 | sed 's/^/         /'
+    section_gap
+    # The plugin ships inside Docker Desktop; the CLI only finds it via the
+    # symlinks in ~/.docker/cli-plugins. If the bundle is there but the link
+    # isn't, linking it is the fix — not updating Docker.
+    bundled="/Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose"
+    if [[ -x "$bundled" ]]; then
+        info "Docker Desktop bundles the plugin but the CLI can't see it."
+        info "Link it with:"
+        info "  ${LIME}mkdir -p ~/.docker/cli-plugins${RESET}"
+        info "  ${LIME}ln -sf '${bundled}' ~/.docker/cli-plugins/docker-compose${RESET}"
+    else
+        info "Install or update Docker Desktop, then try again:"
+        info "  ${LIME}https://www.docker.com/products/docker-desktop/${RESET}"
+    fi
     exit 1
 fi
 
@@ -204,6 +232,24 @@ done
 secret_key=$(python3 -c "import secrets; print(secrets.token_hex(32))" 2>/dev/null \
     || LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64)
 
+# ── Telemetry opt-in ─────────────────────────
+# Default is no: anything other than an explicit "y" leaves it off, and the
+# empty answer from just hitting Enter lands there too.
+section_gap
+echo -e "     ${GRAY}Optional: send one anonymous ping so I can count installs.${RESET}"
+echo -e "     ${GRAY}It contains a random ID, the FreeClaw version, your OS, and${RESET}"
+echo -e "     ${GRAY}the word \"docker\". That's the whole payload — no chats, no${RESET}"
+echo -e "     ${GRAY}prompts, no API keys, no provider names.${RESET}"
+echo -e "     ${GRAY}Sent once, never repeated. Off by default, and you can flip${RESET}"
+echo -e "     ${GRAY}it either way later in ${BOLD}Settings${RESET}${GRAY}.${RESET}"
+section_gap
+
+read -p "$(echo -e "     ${LIME}?${RESET}  Send the install ping? [y/${BOLD}N${RESET}]: ")" fc_telemetry_answer < /dev/tty
+case "$fc_telemetry_answer" in
+    [Yy]*) fc_telemetry=1 ;;
+    *)     fc_telemetry=0 ;;
+esac
+
 # Written under umask 077 so the password is never briefly world-readable.
 # Providers and MCP servers are added afterward from the web UI, which
 # rewrites this same file in place — which is why it's a bind mount and not
@@ -219,10 +265,16 @@ secret_key=$(python3 -c "import secrets; print(secrets.token_hex(32))" 2>/dev/nu
         printf 'FC_PASSWORD=%s\n' "$fc_password"
         printf 'SECRET_KEY=%s\n' "$secret_key"
         printf 'CUSTOM_DOMAIN=%s\n' "http://localhost:6767"
+        printf 'FC_TELEMETRY=%s\n' "$fc_telemetry"
     } > .env
 )
 success "Password saved"
 success "Session secret generated"
+if [[ "$fc_telemetry" == "1" ]]; then
+    success "Anonymous install ping enabled — thank you"
+else
+    success "Telemetry off"
+fi
 
 section_gap
 divider

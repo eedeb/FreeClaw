@@ -2,6 +2,10 @@
 
 > **An AI agent that doesn't burn your money.**
 
+<p align="center">
+  <img src="https://freeclaw.eedeb.dev/demo.gif" alt="FreeClaw answering a question by searching the web, in its dark-themed chat UI" width="720">
+</p>
+
 FreeClaw is a cost-efficient, tool-using AI agent that runs on your own machine. It comes with a password-protected, dark-themed web UI you can chat with from any browser on your network. It remembers things about you, searches the web, runs bash commands, connects to external tools through MCP servers, reads images, and reads/writes files — and does it all while routing as much traffic as possible to small, cheap models.
 
 ---
@@ -34,6 +38,8 @@ curl -fsSL https://freeclaw.eedeb.dev/install-mac.sh | bash
 Same flow — clone, set a password, start — but step 1 builds a Docker image rather than a virtualenv, and step 3 runs the container with `restart: unless-stopped` in place of a systemd unit. The `freeclaw` CLI is installed as a wrapper around `docker compose exec`. Once it's up, open **http://localhost:6767**.
 
 The first build downloads PyTorch and takes a few minutes; the resulting image is on the order of a gigabyte. Later builds are cached.
+
+> **Apple Silicon:** if Docker Desktop fails to start with `Failed to install Rosetta`, choose **Disable Rosetta** in that dialog. Rosetta is only needed to run x86/amd64 images; FreeClaw builds natively for arm64, so turning it off costs you nothing.
 
 Your chats, uploads, `context.md`, logs, and `.env` are bind-mounted from the install directory, so they survive rebuilds and updates.
 
@@ -189,6 +195,36 @@ Settings live in a `.env` file in the project root, created for you during insta
 | `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` | No | Connected MCP servers — managed from **Settings → MCP Servers** |
 | `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns. Set to `http://localhost:6767` by the macOS installer, since a container can't see the host's LAN address |
 | `FC_DEBUG` | No | `0` turns off Werkzeug's reloader and interactive debugger. Defaults to on for native installs; the Docker image sets it to `0` |
+| `FC_TELEMETRY` | No | `1` sends the one-off anonymous install ping described under [Telemetry](#telemetry). Off unless you opted in during install |
+| `FC_INSTALL_ID` | No | Random UUID written here after that ping is sent, so it's only ever sent once. Delete the line to reset |
+
+---
+
+## Telemetry
+
+**Off by default.** The installer asks once, the default answer is no, and if you say no nothing is ever sent.
+
+If you say yes, FreeClaw sends **one** HTTP request, the first time it starts, containing exactly four fields:
+
+```json
+{
+  "install_id": "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+  "version": "0.1.0",
+  "os": "darwin",
+  "install_method": "docker"
+}
+```
+
+That's the entire payload. Not sent, ever: your messages, prompts, provider names, URLs, API keys, file contents, file paths, hostname, or username. The receiving end ([`telemetry/`](telemetry/)) stores those four fields and a timestamp — its schema has no column for anything else — and does not log IP addresses.
+
+It exists to answer one question: how many people actually installed this. That's it.
+
+- **Sent once**, not on a schedule. After a successful send the `install_id` is written to your `.env` as `FC_INSTALL_ID` and never sent again.
+- **Turn it off** any time in **Settings → Anonymous Install Ping**, or set `FC_TELEMETRY=0` in `.env`.
+- **Turn it on** later the same way, if you didn't at install time.
+- **Read the code** — it's ~100 lines in [`src/telemetry.py`](src/telemetry.py), and the log line it writes shows you the exact payload it sent.
+
+If the endpoint is unreachable the failure is swallowed silently and start-up is unaffected — the ping runs on a background thread with a 5-second timeout, and no `install_id` is saved, so it simply tries again next time.
 
 ---
 

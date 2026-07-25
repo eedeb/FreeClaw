@@ -32,6 +32,9 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then \
 COPY Flask/ ./Flask/
 COPY src/ ./src/
 COPY models/ ./models/
+# Read by src/telemetry.py; .git isn't in the image, so the version has to be
+# baked in as a plain file.
+COPY VERSION ./
 
 # Both are bind-mounted by docker-compose so data survives a rebuild; creating
 # them here keeps the image runnable on its own too.
