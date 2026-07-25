@@ -20,6 +20,14 @@ MAC_ONLY=(
     "/.dockerignore"
 )
 
+# Development-only paths, skipped on every platform: the benchmark harness is
+# run against an install rather than by it, and the telemetry collector is
+# deployed to Cloudflare, not executed here. Keep in sync with install-mac.sh.
+DEV_ONLY=(
+    "/bench/"
+    "/telemetry/"
+)
+
 # Colors & styles
 RESET="\033[0m"
 BOLD="\033[1m"
@@ -138,15 +146,15 @@ checkout_main() {
 if git sparse-checkout init --no-cone &>/dev/null; then
     {
         echo '/*'
-        for path in "${MAC_ONLY[@]}"; do echo "!${path}"; done
+        for path in "${MAC_ONLY[@]}" "${DEV_ONLY[@]}"; do echo "!${path}"; done
     } | git sparse-checkout set --stdin
     checkout_main
-    success "Repository ready (macOS-only files skipped)"
+    success "Repository ready (macOS-only and dev files skipped)"
 else
     warn "git is too old for sparse-checkout — pruning after checkout instead"
     checkout_main
-    for path in "${MAC_ONLY[@]}"; do rm -rf ".${path}"; done
-    success "Repository ready (macOS-only files removed)"
+    for path in "${MAC_ONLY[@]}" "${DEV_ONLY[@]}"; do rm -rf ".${path}"; done
+    success "Repository ready (macOS-only and dev files removed)"
 fi
 
 section_gap

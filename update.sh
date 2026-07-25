@@ -98,6 +98,9 @@ git checkout origin/main -- src/
 git checkout origin/main -- Flask/templates/
 git checkout origin/main -- Flask/main.py
 git checkout origin/main -- requirements.txt 2>/dev/null || true
+# src/telemetry.py reports this, and the ff-only merge below is skipped when
+# the index is dirty — so refresh it explicitly rather than relying on that.
+git checkout origin/main -- VERSION 2>/dev/null || true
 
 # Advance local HEAD to match origin/main so git log is correct next run
 git merge --ff-only origin/main 2>/dev/null || git reset --soft origin/main 2>/dev/null || true

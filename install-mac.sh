@@ -37,6 +37,14 @@ LINUX_ONLY=(
     "/uninstall.sh"
 )
 
+# Development-only paths, skipped on every platform: the benchmark harness is
+# run against an install rather than by it, and the telemetry collector is
+# deployed to Cloudflare, not executed here. Keep in sync with install.sh.
+DEV_ONLY=(
+    "/bench/"
+    "/telemetry/"
+)
+
 # ── Helpers ──────────────────────────────────
 
 print_banner() {
@@ -174,15 +182,15 @@ cd FreeClaw || exit 1
 if git sparse-checkout init --no-cone &>/dev/null; then
     {
         echo '/*'
-        for path in "${LINUX_ONLY[@]}"; do echo "!${path}"; done
+        for path in "${LINUX_ONLY[@]}" "${DEV_ONLY[@]}"; do echo "!${path}"; done
     } | git sparse-checkout set --stdin
     git checkout main 2>&1 | indent
-    success "Repository ready (Linux-only files skipped)"
+    success "Repository ready (Linux-only and dev files skipped)"
 else
     warn "git is too old for sparse-checkout — pruning after checkout instead"
     git checkout main 2>&1 | indent
-    for path in "${LINUX_ONLY[@]}"; do rm -rf ".${path}"; done
-    success "Repository ready (Linux-only files removed)"
+    for path in "${LINUX_ONLY[@]}" "${DEV_ONLY[@]}"; do rm -rf ".${path}"; done
+    success "Repository ready (Linux-only and dev files removed)"
 fi
 
 INSTALL_DIR=$(pwd)
