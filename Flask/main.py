@@ -347,8 +347,12 @@ def chat():
                     yield f"data: {json.dumps(event)}\n\n"
                 messages = agent.get_messages()
                 title = None if had_title else derive_title(messages)
-                save_conversation(name, messages, title=title)
-                yield f"data: {json.dumps({'type': 'done', 'conversation': messages})}\n\n"
+                updated_at = save_conversation(name, messages, title=title)
+                # Hand back the stamp we just wrote so the page can retire its
+                # own turn without the ping poller then seeing updated_at move
+                # and re-fetching/re-rendering the whole thread a few seconds
+                # later.
+                yield f"data: {json.dumps({'type': 'done', 'conversation': messages, 'updated_at': updated_at})}\n\n"
             except Exception as e:
                 logger.exception("Chat request failed for user=%s", name)
                 if session_active:

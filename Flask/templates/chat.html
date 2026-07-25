@@ -1088,6 +1088,9 @@
         if (data.error) addMessage('agent', `**Error:** ${data.error}`);
         else if (data.conversation) renderConversation(data.conversation);
         else addMessage('agent', data.response || '');
+        // Slash-commands can rewrite the conversation too (/reset clears it),
+        // so re-baseline the poller here as well.
+        syncUpdatedAt();
         sendBtn.disabled = false;
         if (!isStandalone) inputEl.focus();
         return;
@@ -1195,6 +1198,10 @@
             if (thinking.parentNode) thinking.remove();
             dropLiveBubble();
             if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+            // Take the server's stamp for the save we just caused, so the
+            // ping poller doesn't mistake our own turn for a background
+            // update and re-render the thread from scratch.
+            if (evt.updated_at != null) lastUpdatedAt = evt.updated_at;
             renderConversation(evt.conversation);
           }
         }
@@ -1223,6 +1230,7 @@
 
   resetBtn.addEventListener('click', async () => {
     try { await fetch('/reset', { method: 'POST' }); } catch (_) {}
+    syncUpdatedAt();  // the reset itself bumped updated_at — don't re-render on it
     messagesEl.innerHTML = '';
     totalTokens = 0;
     updateCount();
@@ -1288,14 +1296,37 @@
       const full = await fetch('/api/conversation');
       if (!full.ok) return;
       const data = await full.json();
+      // The user can hit send while these two fetches are in flight; re-check
+      // before touching the DOM so we don't wipe their just-sent bubble and
+      // the thinking dots out from under a turn that's already started.
+      if (sendBtn.disabled) return;
       lastUpdatedAt = data.updated_at;
       applyConversation(data);
     } catch (_) { /* transient network hiccup — next tick will retry */ }
   }
 
+  // Re-baseline after a change this tab caused itself (its own turn, /reset),
+  // so the next poll doesn't treat our own write as a background update.
+  async function syncUpdatedAt() {
+    try {
+      const res = await fetch('/api/conversation/meta');
+      if (!res.ok) return;
+      const meta = await res.json();
+      if (meta.updated_at != null) lastUpdatedAt = meta.updated_at;
+    } catch (_) { /* worst case the next poll re-renders — harmless */ }
+  }
+
   setInterval(() => {
     if (document.visibilityState === 'visible') checkForUpdates();
   }, 8000);
+
+  // Timers are throttled (iOS: suspended outright) while the page is
+  // backgrounded, so a ping delivered with the phone locked would otherwise
+  // sit unseen until the interval next gets a turn. Check the moment the tab
+  // comes back instead of waiting on it.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkForUpdates();
+  });
 
   // Keep messages scrolled when iOS keyboard resizes the viewport
   if (window.visualViewport) {

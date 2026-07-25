@@ -138,6 +138,9 @@ def load_conversation(name):
 
 
 def save_conversation(name, messages, title=None):
+    """Writes the conversation and returns the updated_at stamp it wrote, so
+    callers can hand that value straight to the browser (the chat page keys
+    its "has this conversation changed?" poll off it)."""
     path = conversation_path(name)
     data = {}
     if os.path.exists(path):
@@ -154,6 +157,7 @@ def save_conversation(name, messages, title=None):
     data["updated_at"] = time.time()
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f)
+    return data["updated_at"]
 
 
 def derive_title(messages):
