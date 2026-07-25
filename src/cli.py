@@ -3,6 +3,7 @@
 import sys
 import os
 import json
+import time
 from contextlib import contextmanager
 
 from dotenv import load_dotenv
@@ -54,29 +55,79 @@ def print_banner():
     print(clr("  ╚═╝     ╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ", GREEN, BOLD))
     print()
     print(clr("  search the web · run bash · connect MCP tools · write files", GREY))
-    print(clr("  /reset  — clear conversation      /exit — quit", GREY))
+    print(clr("  /reset — clear conversation   /verbose — full tool output   /exit — quit", GREY))
     print()
+
+# Full tool output is off by default — a single search result is thousands of
+# lines of scraped page text, which buries everything else. Toggle with
+# /verbose when you actually need to inspect what a tool returned.
+VERBOSE = False
+
+# How much of a tool result to show when verbose is on, so even then one
+# scrape can't run away with the scrollback.
+VERBOSE_MAX_LINES = 40
+
+
+def shorten(value, limit):
+    """Collapse whitespace onto one line and cap the length."""
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def fmt_args(args):
+    """Tool arguments as one short line: query="weather"  site=bbc.com"""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (ValueError, TypeError):
+            return shorten(args, 72)
+    if not isinstance(args, dict) or not args:
+        return ""
+    # Optional arguments the model left blank are noise, not information.
+    return "  ".join(
+        f"{k}={shorten(v if isinstance(v, str) else json.dumps(v), 44)}"
+        for k, v in args.items()
+        if v not in (None, "", [], {})
+    )
+
+
+def fmt_size(value):
+    n = len(str(value))
+    return f"{n} B" if n < 1024 else f"{n / 1024:.1f} KB"
+
+
+def is_error(result):
+    return isinstance(result, str) and result.strip().lower().startswith("error")
+
+
+def print_tool_result(name, result, seconds=None):
+    """One line per result: what ran, how long, how much came back.
+
+    Errors print in full regardless of VERBOSE — a failed tool call is the one
+    thing you always need to see during a run.
+    """
+    err = is_error(result)
+    timing = f"{seconds:.1f}s · " if seconds is not None else ""
+    mark, color = ("✗", RED) if err else ("✓", GREY)
+    print(clr(f"  {mark} {name}  {timing}{fmt_size(result)}", color))
+    if err or VERBOSE:
+        lines = str(result).splitlines()
+        for line in lines[:VERBOSE_MAX_LINES]:
+            print(clr(f"      {line}", GREY))
+        if len(lines) > VERBOSE_MAX_LINES:
+            print(clr(f"      … {len(lines) - VERBOSE_MAX_LINES} more lines", GREY))
+
 
 def render_tool_call(tc, tool_results):
-    fn   = tc.get("function", {})
+    """Compact replay of a stored tool call — used for resumed scrollback."""
+    fn = tc.get("function", {})
     name = fn.get("name", tc.get("id", "unknown"))
-    args = fn.get("arguments", "")
-    result_obj  = tool_results.get(tc.get("id", ""))
-    result_text = result_obj.get("content", "(no result)") if result_obj else "(no result)"
-    is_err      = isinstance(result_text, str) and result_text.lower().startswith("error")
+    result_obj = tool_results.get(tc.get("id", ""))
+    result = result_obj.get("content", "(no result)") if result_obj else "(no result)"
 
-    try:
-        args_pretty = json.dumps(json.loads(args), indent=2)
-    except Exception:
-        args_pretty = args or ""
-
-    print(clr(f"  ┌─ tool: {name}", CYAN))
-    for line in args_pretty.splitlines():
-        print(clr(f"  │  {line}", GREY))
-    result_color = RED if is_err else GREY
-    for line in str(result_text).splitlines():
-        print(clr(f"  └─ {line}", result_color))
-    print()
+    args = fmt_args(fn.get("arguments", ""))
+    print(clr(f"  ⟶ {name}", CYAN) + (clr(f"  {args}", GREY) if args else ""))
+    print_tool_result(name, result)
 
 def stream_silent(gen):
     """Advance a generator one step at a time, suppressing stdout only
@@ -102,16 +153,6 @@ def collect_tool_results(messages):
                 "name":    msg.get("name", ""),
             }
     return results
-
-def render_tool_blocks(new_messages):
-    """Render only the tool-call/result blocks contained in a slice of
-    freshly-added conversation messages. Assistant *text* is skipped here
-    since it has already been streamed live to the terminal."""
-    tool_results = collect_tool_results(new_messages)
-    for msg in new_messages:
-        if msg.get("role") == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                render_tool_call(tc, tool_results)
 
 def render_conversation(conversation):
     tool_results = collect_tool_results(conversation)
@@ -234,7 +275,6 @@ def main():
     if len(conversation) > 1:
         print(clr("  — resuming previous conversation —\n", GREY))
         render_conversation(conversation)
-    last_rendered_index = len(conversation)
 
     while True:
         try:
@@ -255,8 +295,14 @@ def main():
                 agent.reset()
                 users.save_conversation(username, agent.get_messages(), title="New chat")
             had_title = False
-            last_rendered_index = 0
             print(clr("  conversation reset\n", GREY))
+            continue
+
+        if user_input.lower() == "/verbose":
+            global VERBOSE
+            VERBOSE = not VERBOSE
+            state = "on — tool results printed in full" if VERBOSE else "off — tool results summarised"
+            print(clr(f"  verbose {state}\n", GREY))
             continue
 
         if user_input.lower() == "/startapi":
@@ -270,46 +316,76 @@ def main():
             print(clr("  API disabled\n", GREY))
             continue
 
-        agent_label_printed = False
-        buffer = ""
+        streaming = False   # mid-way through an "agent › ..." line
+
+        def close_line():
+            """Finish a partially streamed line before printing anything else."""
+            nonlocal streaming
+            if streaming:
+                print()
+                streaming = False
+
+        # agent_stream recurses once per tool round trip and emits "provider"
+        # at the top of each, so counting them gives the round-trip total —
+        # the number to cross-check against the proxy's.
+        request_n = 0
+        last_provider = None
+        started_at = {}
+        turn_start = time.monotonic()
 
         try:
             for event in stream_silent(agent.agent_stream(user_input=user_input)):
                 etype = event.get("type")
 
-                if etype == "token":
-                    if not agent_label_printed:
+                if etype == "provider":
+                    request_n += 1
+                    name = event.get("name", "?")
+                    # Only worth a line when it *changes* — a silent fallback
+                    # mid-turn otherwise looks identical to a normal run while
+                    # quietly changing the token numbers.
+                    if last_provider is not None and name != last_provider:
+                        close_line()
+                        print(clr(f"  ⚠ provider fell back → {name}", YELLOW))
+                    last_provider = name
+
+                elif etype == "token":
+                    if not streaming:
                         sys.stdout.write(clr("agent › ", GREEN, BOLD))
-                        agent_label_printed = True
+                        streaming = True
                     sys.stdout.write(event.get("text", ""))
                     sys.stdout.flush()
-                    buffer += event.get("text", "")
 
                 elif etype == "tool_call":
-                    if agent_label_printed:
-                        print()  # close out any partial streamed line
-                        agent_label_printed = False
-                        buffer = ""
+                    close_line()
                     name = event.get("name", "unknown")
-                    print(clr(f"  … calling tool: {name}", GREY))
+                    started_at[name] = time.monotonic()
+                    args = fmt_args(event.get("arguments"))
+                    print(clr(f"  ⟶ {name}", CYAN) + (clr(f"  {args}", GREY) if args else ""))
 
                 elif etype == "tool_result":
                     name = event.get("name", "unknown")
-                    print(clr(f"  ✓ {name} done", GREY))
+                    began = started_at.pop(name, None)
+                    print_tool_result(
+                        name,
+                        event.get("result", ""),
+                        None if began is None else time.monotonic() - began,
+                    )
 
         except Exception as exc:
-            if agent_label_printed:
-                print()
+            close_line()
             print(clr(f"  error: {exc}\n", RED))
             continue
 
-        if agent_label_printed:
-            print()
-            print()
+        close_line()
 
+        # Tool activity was shown live above, so replaying the stored messages
+        # here would print all of it a second time.
         conversation = agent.agent_messages
-        render_tool_blocks(conversation[last_rendered_index:])
-        last_rendered_index = len(conversation)
+
+        plural = "" if request_n == 1 else "s"
+        print(clr(f"\n  {request_n} request{plural} · {time.monotonic() - turn_start:.1f}s"
+                  + (f" · {last_provider}" if last_provider else ""), GREY))
+        print()
 
         title = None if had_title else users.derive_title(conversation)
         users.save_conversation(username, conversation, title=title)
