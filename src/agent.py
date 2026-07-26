@@ -512,14 +512,16 @@ Adapt the depth of your response to the user's request.
 Simple questions deserve simple answers.
 Complex questions deserve thorough answers.
 
-Use tools only when they are necessary.
+Use tools only when they are necessary — saving to context.md always is.
 Verify important information before responding.
 
 Do not add unnecessary explanations, introductions, or conclusions.
 Focus on solving the user's problem.
 
 context.md is your long-term memory — its contents are below, so never read it with a tool.
-Grow it every conversation: record durable facts immediately and silently, via edit_file — name, location, preferences, ongoing projects, people, corrections. Writing too little is the failure mode. Skip one-off details and anything already there.
+Ask on every turn: what did I just learn about the user? Save it with edit_file immediately and
+silently — names, places, preferences, projects, people, corrections. Writing too little is the
+failure mode; skip only one-off details and what is already there.
 
 Scheduled events are stored in the ping.md file
 """
@@ -1090,6 +1092,31 @@ _TAG_SETTINGS = {
 _DEFAULT_TAG_SETTINGS = (7, 1.0, 'all')  # Coding, Writing, List, Suggest, Utility, ...
 
 
+def _window_start(messages, recent):
+    """Index the recent-history slice should start at, aiming for `recent`
+    messages but widening to keep a tool call whole.
+
+    A tool result is only valid directly after the assistant message whose
+    tool_calls it answers — providers 400 on a 'tool' role that opens the
+    conversation ("must be a response to a preceeding message with
+    'tool_calls'"). The fixed-size tail has no notion of that pairing, so a
+    turn ending in assistant{tool_calls} → tool → assistant gets cut straight
+    through the middle. Walk back past any tool results the cut orphaned so
+    their assistant comes along: a message or two over budget, but what the
+    tool returned stays in context instead of being dropped.
+
+    Never crosses index 0 — that's the system message, and everything after it
+    that isn't a tool result is a valid place to start."""
+    start = max(1, len(messages) - recent)
+    while start > 1 and messages[start].get("role") == "tool":
+        start -= 1
+    # Only reachable if the history itself is malformed (a tool result with no
+    # assistant ahead of it); skipping them beats sending a request that 400s.
+    while start < len(messages) and messages[start].get("role") == "tool":
+        start += 1
+    return start
+
+
 def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
@@ -1122,7 +1149,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
 
         recent, temp, tool_mode = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
         if len(agent_messages) > recent + 2:
-            eco_messages = [agent_messages[0], *agent_messages[-recent:]]
+            eco_messages = [agent_messages[0], *agent_messages[_window_start(agent_messages, recent):]]
         else:
             eco_messages = agent_messages
         if tool_mode == 'none':
