@@ -8,9 +8,20 @@ bench/*.csv
 .env
 Flask/.secret_key
 Flask/.api_enabled
+# Set once the Setup Wizard has been handed to this install, so update.sh
+# won't bring it back after the user deletes it.
+Flask/.wizard_installed
 
 # Per-user instance data (chats, uploaded/created files, context.md).
-Flask/static/
+# Globbed rather than "Flask/static/" so git still descends into the folder —
+# an ignored directory can't have anything re-included out of it.
+Flask/static/*
+
+# ...except the Setup Wizard, the preloaded user that walks a new install
+# through adding providers. It ships with the repo so a fresh install has
+# something to talk to before any provider exists. Note this makes a live
+# user folder tracked: chatting with the wizard shows up as local changes.
+!Flask/static/Setup Wizard/
 
 # Python
 __pycache__/

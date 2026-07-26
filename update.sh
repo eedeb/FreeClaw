@@ -109,6 +109,23 @@ success "Source files updated"
 
 info "Restoring Flask/static/ (user files preserved)..."
 mkdir -p Flask/static
+# The Setup Wizard is the one tracked thing under static/, and it's a live user
+# folder — so never check it out over an existing copy, which would wipe the
+# conversation and context.md of anyone using it. It's also deletable from the
+# home page, and a delete has to stick: the marker records that this install
+# has already been given the wizard once, so an update never resurrects it.
+# Installs that predate the wizard have no marker and no folder, and get it on
+# their next update; everyone else is left exactly as they are.
+WIZARD_DIR="Flask/static/Setup Wizard"
+WIZARD_MARKER="Flask/.wizard_installed"
+if [[ -d "$WIZARD_DIR" ]]; then
+    touch "$WIZARD_MARKER"
+elif [[ ! -f "$WIZARD_MARKER" ]]; then
+    if git checkout origin/main -- "$WIZARD_DIR/" 2>/dev/null; then
+        touch "$WIZARD_MARKER"
+        info "Added the Setup Wizard user"
+    fi
+fi
 success "Static directory intact"
 
 section_gap
