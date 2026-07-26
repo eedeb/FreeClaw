@@ -1078,10 +1078,10 @@ def _run_tool(command_name, args_dict):
 # and no tools; precision-flavored intents run colder. The system message at
 # index 0 is always sent on top of the recent slice.
 _TAG_SETTINGS = {
-    'Greeting/goodbye':  (3, 1.0, 'none'),
-    'Personal-question': (5, 1.0, 'none'),
-    'Banter':            (5, 1.0, 'none'),
-    'About-user':        (5, 1.0, 'none'),
+    'Greeting/goodbye':  (3, 1.0, 'file'),
+    'Personal-question': (5, 1.0, 'file'),
+    'Banter':            (5, 1.0, 'file'),
+    'About-user':        (5, 1.0, 'file'),
     'Search':            (5, 0.4, 'search'),
     'Context':           (9, 1.0, 'all'),
     'Edit':              (9, 1.0, 'all'),
@@ -1156,6 +1156,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             check_tools = None
         elif tool_mode == 'search':
             check_tools = build_search_tools()
+        elif tool_mode == 'file':
+            check_tools = build_file_tools()
     elif system_input:
         # Kept for direct/external callers only — note that appending a
         # second system-role message breaks the single-leading-system-message
