@@ -31,6 +31,7 @@ def silence():
 
 with silence():
     import src.agent as agent
+    import src.approvals as approvals
     import src.users as users
 
 # ── ANSI colours ────────────────────────────────────────────────────────────────
@@ -116,6 +117,59 @@ def print_tool_result(name, result, seconds=None):
             print(clr(f"      {line}", GREY))
         if len(lines) > VERBOSE_MAX_LINES:
             print(clr(f"      … {len(lines) - VERBOSE_MAX_LINES} more lines", GREY))
+
+
+def ask_approval(event):
+    """Ask on the terminal whether a bash command may run, and record the
+    answer.
+
+    Called from the event loop, which means the agent generator is suspended at
+    its `yield` and hasn't started waiting yet — so by the time it resumes,
+    approvals.resolve() has already stored the decision and its wait returns
+    at once. Same code path the web UI drives from another thread; the CLI just
+    happens to answer before the wait begins.
+
+    An interrupt or EOF at this prompt counts as a refusal — the safe reading
+    of someone hitting Ctrl-C at "run this command?"."""
+    print()
+    print(clr("  ⚠ the agent wants to run a shell command", RED, BOLD))
+    print(clr(f"    {event.get('command', '')}", YELLOW))
+    program = event.get("program")
+    options = [("1", "once", "run it this once"),
+               ("2", "always_exact", "always allow this exact command")]
+    if program:
+        options.append(("3", "always_program", f'always allow all "{program}" commands'))
+    options.append(("n", "deny", "don't run it"))
+    for key, _, label in options:
+        print(clr(f"    {key}) {label}", CYAN))
+    by_key = {key: decision for key, decision, _ in options}
+
+    decision = "deny"
+    while True:
+        try:
+            answer = input(clr("  choose › ", YELLOW, BOLD)).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not answer:
+            continue
+        if answer in by_key:
+            decision = by_key[answer]
+            break
+        print(clr("    not a valid option.", RED))
+
+    ok, error = approvals.resolve(event.get("id"), decision)
+    if not ok:
+        print(clr(f"    couldn't record that: {error}", RED))
+    elif decision == "deny":
+        print(clr("    denied — not running it", GREY))
+    elif decision == "always_exact":
+        print(clr("    approved, and saved so it won't ask again", GREY))
+    elif decision == "always_program":
+        print(clr(f'    approved, and saved: all "{program}" commands', GREY))
+    else:
+        print(clr("    approved for this one call", GREY))
+    print()
 
 
 def render_tool_call(tc, tool_results):
@@ -263,7 +317,9 @@ def main():
             agent.refresh_tools()
         except Exception:
             pass
-        users.activate_session(username)
+        # interactive=True: there's a terminal here that can answer a bash
+        # approval prompt (see ask_approval).
+        users.activate_session(username, interactive=True)
 
     print(clr(f"  logged in as {username}\n", GREEN))
 
@@ -331,6 +387,7 @@ def main():
         request_n = 0
         last_provider = None
         started_at = {}
+        turn_usage = {}
         turn_start = time.monotonic()
 
         try:
@@ -362,6 +419,16 @@ def main():
                     args = fmt_args(event.get("arguments"))
                     print(clr(f"  ⟶ {name}", CYAN) + (clr(f"  {args}", GREY) if args else ""))
 
+                elif etype == "approval_request":
+                    close_line()
+                    ask_approval(event)
+
+                elif etype == "usage":
+                    # Exact counts from the provider (those that report them).
+                    # event["turn"] already holds the running totals for every
+                    # request in this turn, so take them rather than summing.
+                    turn_usage = event.get("turn") or {}
+
                 elif etype == "tool_result":
                     name = event.get("name", "unknown")
                     began = started_at.pop(name, None)
@@ -383,8 +450,17 @@ def main():
         conversation = agent.agent_messages
 
         plural = "" if request_n == 1 else "s"
-        print(clr(f"\n  {request_n} request{plural} · {time.monotonic() - turn_start:.1f}s"
-                  + (f" · {last_provider}" if last_provider else ""), GREY))
+        summary = (f"\n  {request_n} request{plural} · {time.monotonic() - turn_start:.1f}s"
+                   + (f" · {last_provider}" if last_provider else ""))
+        if turn_usage.get("reported"):
+            # Exact, from the provider. Only shown when it actually reported —
+            # printing "0 tokens" for an endpoint that stays silent would read
+            # as a free turn rather than an unknown one.
+            summary += (f" · {turn_usage['prompt_tokens']:,} in"
+                        f" / {turn_usage['completion_tokens']:,} out")
+            if turn_usage.get("cached_tokens"):
+                summary += f" ({turn_usage['cached_tokens']:,} cached)"
+        print(clr(summary, GREY))
         print()
 
         title = None if had_title else users.derive_title(conversation)

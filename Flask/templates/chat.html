@@ -150,7 +150,11 @@
       font-size: 10px;
       color: var(--muted);
       white-space: nowrap;
+      cursor: default;
     }
+    /* An exact count from the provider, as opposed to the '~' estimate —
+       worth distinguishing, since the two measure different things. */
+    #token-count.exact { color: var(--accent-dim); }
     @media (max-width: 380px) { #token-count { display: none; } }
 
     #reset-btn {
@@ -614,6 +618,41 @@
     .tool-result-ok   { color: #c8e6a0; }
     .tool-result-err  { color: #e07070; }
 
+    /* ── Bash approval prompt ──
+       Shown when the agent wants to run a shell command not already covered by
+       a saved always-allow rule. The agent's turn is blocked on the other side
+       of it, so it's styled to demand attention rather than blend in with the
+       tool pills. Reuses .tool-group (width/animation) and .tool-code (the
+       command block) — only what differs is defined here. */
+    .approval {
+      border: 1px solid rgba(224,85,85,0.45);
+      border-left: 2px solid var(--err);
+      border-radius: var(--radius);
+      background: #17131a;
+      padding: 11px 13px;
+    }
+    .approval-head {
+      font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--err); margin-bottom: 7px;
+    }
+    .approval .tool-code { color: #e8d8a0; margin-bottom: 9px; }
+    .approval-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    .approval-btn {
+      font-family: var(--mono); font-size: 10.5px; padding: 7px 10px;
+      border-radius: var(--radius); border: 1px solid var(--border);
+      background: var(--surface); color: var(--text); cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, opacity 0.15s;
+    }
+    .approval-btn:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+    .approval-btn.deny:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+    .approval-btn:disabled { opacity: 0.4; cursor: default; }
+    .approval-note {
+      font-family: var(--mono); font-size: 9.5px; color: var(--muted);
+      margin-top: 8px; line-height: 1.5;
+    }
+    .approval.settled { border-color: var(--border); border-left-color: var(--muted); }
+    .approval.settled .approval-head { color: var(--muted); }
+
   </style>
 </head>
 <body>
@@ -707,16 +746,72 @@
   let pendingFile  = null;
   let uploading    = false;
 
+  // Exact token counts as reported by the provider, when it reports any. Not
+  // every OpenAI-compatible endpoint does, so the length/4 estimate stays as
+  // the fallback — hence the leading '~' only ever appearing on estimates.
+  //
+  // Worth knowing what these mean, because they aren't the same thing the
+  // estimate measures: `context` is the prompt size of the LAST request, i.e.
+  // what the model actually read. History windowing sends only a slice of the
+  // conversation, so this is normally well below the whole-conversation
+  // estimate — that's the windowing working, not tokens going missing.
+  // `scope` is 'turn' when these totals cover a whole turn we watched happen
+  // (possibly several requests), or 'message' when they were recovered from a
+  // saved assistant message on load — which only ever describes one request.
+  let realUsage = null;   // { context, prompt, completion, cached, requests, scope }
+
   const estimate = str => Math.ceil((str || '').length / 4);
+  const fmt = n => (n || 0).toLocaleString();
   marked.setOptions({ breaks: true, gfm: true });
 
   function updateCount() {
-    countEl.textContent = '~' + totalTokens.toLocaleString() + ' tokens';
+    if (realUsage) {
+      countEl.textContent = fmt(realUsage.context) + ' tokens';
+      const lines = [
+        `${fmt(realUsage.context)} tokens in the last request's prompt — what the model read.`,
+        '',
+        (realUsage.scope === 'turn' ? 'This turn: ' : 'Last reply: ')
+          + `${fmt(realUsage.prompt)} sent, ${fmt(realUsage.completion)} received`
+          + (realUsage.requests > 1 ? ` across ${realUsage.requests} requests` : ''),
+      ];
+      if (realUsage.cached > 0) {
+        const pct = realUsage.prompt > 0
+          ? Math.round((realUsage.cached / realUsage.prompt) * 100) : 0;
+        lines.push(`${fmt(realUsage.cached)} of those sent tokens came from the provider's cache (${pct}%)`);
+      }
+      lines.push('', 'Reported by the provider, not estimated.');
+      countEl.title = lines.join('\n');
+      countEl.classList.add('exact');
+    } else {
+      countEl.textContent = '~' + fmt(totalTokens) + ' tokens';
+      countEl.title = 'Estimated from message length — this provider doesn\'t report '
+        + 'token counts. Covers the whole conversation, not just what each request sends.';
+      countEl.classList.remove('exact');
+    }
   }
 
   function removeEmpty() {
     const el = document.getElementById('empty-state');
     if (el) el.remove();
+  }
+
+  // ── Agent message label: "agent · via groq · 412 out · 3.1k cached" ──
+  // The token parts only appear when the provider reported them.
+  function tokenLabel(usage) {
+    if (!usage) return '';
+    const parts = [];
+    if (usage.completion_tokens) parts.push(fmt(usage.completion_tokens) + ' out');
+    if (usage.cached_tokens) parts.push(fmt(usage.cached_tokens) + ' cached');
+    return parts.length ? ' · ' + parts.join(' · ') : '';
+  }
+
+  function agentLabelText(provider, usage) {
+    return 'agent' + (provider ? ' · via ' + provider : '') + tokenLabel(usage);
+  }
+
+  function updateLiveLabel(wrap, provider, usage) {
+    const lbl = wrap.querySelector('.msg-label');
+    if (lbl) lbl.textContent = agentLabelText(provider, usage);
   }
 
   // ── Render a single user/agent text bubble ──────────────
@@ -737,7 +832,8 @@
     const label = document.createElement('div');
     label.className = 'msg-label';
     const provider = opts && opts.provider;
-    label.textContent = role === 'user' ? 'you' : ('agent' + (provider ? ' · via ' + provider : ''));
+    label.textContent = role === 'user' ? 'you'
+      : agentLabelText(provider, opts && opts.usage);
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
@@ -889,12 +985,33 @@
   }
 
   // ── Render full conversation returned by the agent ───────
-  function renderConversation(conversation) {
+  // opts.keepLiveUsage: don't recompute the token totals from the saved
+  // messages. Set when re-rendering right after a turn we streamed, because
+  // the live totals cover every request in that turn while a saved message
+  // only records the one that produced it — recomputing there would silently
+  // throw away the tool-call requests' share of the cost.
+  function renderConversation(conversation, opts) {
     messagesEl.innerHTML = '';
 
     // Token estimate covers the ENTIRE payload (system + user + assistant
-    // text + tool call args + tool results), not just visible bubbles.
+    // text + tool call args + tool results), not just visible bubbles. Only
+    // used when the provider gave us nothing exact to show instead.
     totalTokens = estimateConversationTokens(conversation);
+    if (!opts || !opts.keepLiveUsage) {
+      // Real counts ride along on the assistant messages, so they survive a
+      // reload rather than dropping back to the estimate. The last one that
+      // has them is the current context size.
+      const lastReported = [...conversation].reverse()
+        .find(m => m.role === 'assistant' && m.usage);
+      realUsage = lastReported ? {
+        context: lastReported.usage.prompt_tokens,
+        prompt: lastReported.usage.prompt_tokens,
+        completion: lastReported.usage.completion_tokens,
+        cached: lastReported.usage.cached_tokens,
+        requests: 1,
+        scope: 'message',
+      } : null;
+    }
     updateCount();
 
     // Index tool results by tool_call_id for quick lookup
@@ -932,7 +1049,8 @@
           ? msg.content
           : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
         if (text && text.trim()) {
-          addMessage('agent', text, null, { countTokens: false, provider: msg.provider });
+          addMessage('agent', text, null,
+                     { countTokens: false, provider: msg.provider, usage: msg.usage });
         }
       }
     }
@@ -961,6 +1079,90 @@
     // Don't clobber the fallback "open <url>" link that open_url may
     // have inserted into the label when window.open() was blocked.
     if (label && !label.querySelector('a')) label.textContent = `ran tool: ${name}`;
+  }
+
+  // ── Bash approval prompt ─────────────────────────────────
+  // The agent's turn is blocked server-side while this is on screen, so it
+  // renders its own buttons rather than routing through the chat box. Posting
+  // the answer is what releases the waiting turn.
+  function addApprovalPrompt(evt) {
+    removeEmpty();
+    const wrap = document.createElement('div');
+    wrap.className = 'tool-group approval';   // tool-group: width + fade-in
+    wrap.dataset.id = evt.id;
+
+    const head = document.createElement('div');
+    head.className = 'approval-head';
+    head.textContent = 'run this command?';
+
+    const cmd = document.createElement('div');
+    cmd.className = 'tool-code';
+    cmd.textContent = evt.command;   // textContent, never innerHTML
+
+    const actions = document.createElement('div');
+    actions.className = 'approval-actions';
+
+    const note = document.createElement('div');
+    note.className = 'approval-note';
+    note.textContent = 'Always-allow applies to you only, on this machine. '
+      + 'Manage saved rules in Settings → Bash Approvals.';
+
+    // "Always allow this exact command" is offered for anything; the broader
+    // program-level rule only when the server says the command is simple
+    // enough for one to be safe (evt.program is null otherwise).
+    const choices = [
+      { decision: 'once', label: 'allow once' },
+      { decision: 'always_exact', label: 'always allow this command' },
+    ];
+    if (evt.program) {
+      choices.push({ decision: 'always_program', label: `always allow all "${evt.program}" commands` });
+    }
+    choices.push({ decision: 'deny', label: 'deny', cls: 'deny' });
+
+    const buttons = [];
+    choices.forEach(c => {
+      const btn = document.createElement('button');
+      btn.className = 'approval-btn' + (c.cls ? ' ' + c.cls : '');
+      btn.type = 'button';
+      btn.textContent = c.label;
+      btn.addEventListener('click', () => send(c.decision, c.label));
+      actions.appendChild(btn);
+      buttons.push(btn);
+    });
+
+    function settle(text) {
+      buttons.forEach(b => { b.disabled = true; });
+      actions.remove();
+      note.remove();
+      wrap.classList.add('settled');
+      head.textContent = text;
+    }
+
+    async function send(decision, label) {
+      buttons.forEach(b => { b.disabled = true; });
+      try {
+        const res = await fetch('/api/approval', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: evt.id, decision })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+        settle(decision === 'deny' ? 'denied' : label);
+      } catch (e) {
+        // The prompt may have timed out while it sat on screen — say so
+        // instead of leaving dead buttons behind.
+        settle('could not answer: ' + e.message);
+      }
+    }
+
+    wrap.appendChild(head);
+    wrap.appendChild(cmd);
+    wrap.appendChild(actions);
+    wrap.appendChild(note);
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return { wrap, settle };
   }
 
   // ── Thinking indicator ───────────────────────────────────
@@ -1063,6 +1265,7 @@
     let liveWrap = null, liveBubble = null, liveText = '';
     let activeToolIndicator = null;
     let currentProvider = null;
+    let activeApproval = null;
 
     const dropLiveBubble = () => {
       if (liveWrap) liveWrap.remove();
@@ -1120,10 +1323,10 @@
             // continuation — so it also catches a mid-conversation fallback
             // switch, not just the provider used at the start of the turn.
             currentProvider = evt.name;
-            if (liveWrap) {
-              const lbl = liveWrap.querySelector('.msg-label');
-              if (lbl) lbl.textContent = 'agent' + (currentProvider ? ' · via ' + currentProvider : '');
-            }
+            // A new request starts here, so any token counts on the label
+            // belong to the previous one — clear them rather than leave a
+            // stale number attached to a different call.
+            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null);
 
           } else if (evt.type === 'token') {
             if (thinking.parentNode) thinking.remove();
@@ -1132,7 +1335,7 @@
               liveWrap.className = 'message agent';
               const label = document.createElement('div');
               label.className = 'msg-label';
-              label.textContent = 'agent' + (currentProvider ? ' · via ' + currentProvider : '');
+              label.textContent = agentLabelText(currentProvider, null);
               liveBubble = document.createElement('div');
               liveBubble.className = 'bubble';
               liveWrap.appendChild(label);
@@ -1179,6 +1382,41 @@
               }
             }
 
+          } else if (evt.type === 'approval_request') {
+            // The turn is now blocked server-side until we post an answer.
+            // Drop the thinking dots — nothing is happening until the user
+            // decides — and show the command with its buttons.
+            if (thinking.parentNode) thinking.remove();
+            activeApproval = addApprovalPrompt(evt);
+
+          } else if (evt.type === 'approval_resolved') {
+            // Fires however the wait ended, including a timeout or another
+            // tab answering first, so the card gets updated even when this
+            // page wasn't what resolved it.
+            if (activeApproval) {
+              if (activeApproval.wrap.dataset.id === evt.id
+                  && !activeApproval.wrap.classList.contains('settled')) {
+                activeApproval.settle(evt.approved ? 'approved' : 'not run: ' + evt.decision);
+              }
+              activeApproval = null;
+            }
+            if (!thinking.parentNode) thinking = addThinking();
+
+          } else if (evt.type === 'usage') {
+            // Exact counts straight from the provider. Fires once per LLM
+            // request, so on a turn with tool calls this arrives several
+            // times — evt.turn carries the running totals for the whole turn.
+            realUsage = {
+              context: evt.context_tokens,
+              prompt: evt.turn.prompt_tokens,
+              completion: evt.turn.completion_tokens,
+              cached: evt.turn.cached_tokens,
+              requests: evt.turn.requests,
+              scope: 'turn',
+            };
+            updateCount();
+            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, evt);
+
           } else if (evt.type === 'tool_result') {
             if (activeToolIndicator) {
               markToolLiveDone(activeToolIndicator, evt.name);
@@ -1192,17 +1430,30 @@
             if (thinking.parentNode) thinking.remove();
             dropLiveBubble();
             if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+            // An unanswered prompt can't be answered any more once the turn
+            // has failed — take its buttons away rather than leaving them
+            // there to post into nothing.
+            if (activeApproval) {
+              if (!activeApproval.wrap.classList.contains('settled')) activeApproval.settle('turn ended');
+              activeApproval = null;
+            }
             addMessage('agent', `**Error:** ${evt.error}`);
 
           } else if (evt.type === 'done') {
             if (thinking.parentNode) thinking.remove();
             dropLiveBubble();
             if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+            // renderConversation() below clears the whole thread, so the
+            // approval card goes with it — just drop our handle on it.
+            activeApproval = null;
             // Take the server's stamp for the save we just caused, so the
             // ping poller doesn't mistake our own turn for a background
             // update and re-render the thread from scratch.
             if (evt.updated_at != null) lastUpdatedAt = evt.updated_at;
-            renderConversation(evt.conversation);
+            // keepLiveUsage: the totals we just streamed cover this whole
+            // turn, including its tool-call requests. Rebuilding them from the
+            // saved messages would drop back to the last request alone.
+            renderConversation(evt.conversation, { keepLiveUsage: true });
           }
         }
       }
@@ -1212,6 +1463,10 @@
       if (thinking.parentNode) thinking.remove();
       dropLiveBubble();
       if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+      if (activeApproval) {
+        if (!activeApproval.wrap.classList.contains('settled')) activeApproval.settle('connection lost');
+        activeApproval = null;
+      }
       addMessage('agent', '**Connection error.** Is the server running?');
     }
 
@@ -1233,6 +1488,7 @@
     syncUpdatedAt();  // the reset itself bumped updated_at — don't re-render on it
     messagesEl.innerHTML = '';
     totalTokens = 0;
+    realUsage = null;   // a cleared conversation has no reported usage yet
     updateCount();
     clearFile();
     const empty = document.createElement('div');
@@ -1259,8 +1515,12 @@
     } else {
       // renderConversation() always clears messagesEl and doesn't know how
       // to rebuild the eagle placeholder, so an empty conversation (e.g.
-      // right after /reset) has to put it back itself.
+      // right after /reset) has to put it back itself — and zero the counts,
+      // which renderConversation() would otherwise have recomputed.
       messagesEl.innerHTML = '';
+      totalTokens = 0;
+      realUsage = null;
+      updateCount();
       const empty = document.createElement('div');
       empty.id = 'empty-state';
       empty.innerHTML = `

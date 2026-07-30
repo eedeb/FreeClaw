@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session, Response, stream_with_context
 from werkzeug.exceptions import HTTPException
 import src.agent as agent
+import src.approvals as approvals
 import src.mcp_client as mcp_client
 import src.telemetry as telemetry
 from src.users import (
@@ -338,7 +339,10 @@ def chat():
             # stream.
             session_active = False
             try:
-                activate_session(name)
+                # interactive=True: there's a browser on the other end of this
+                # stream that can answer a bash approval prompt (see
+                # /api/approval below).
+                activate_session(name, interactive=True)
                 session_active = True
                 try:
                     had_title = load_conversation(name).get("title") not in (None, "", "New chat")
@@ -356,6 +360,10 @@ def chat():
                 yield f"data: {json.dumps({'type': 'done', 'conversation': messages, 'updated_at': updated_at})}\n\n"
             except Exception as e:
                 logger.exception("Chat request failed for user=%s", name)
+                # A turn that blew up mid-flight may have left an approval
+                # prompt on screen with nothing behind it; release any waiter
+                # instead of letting it sit out the full timeout.
+                approvals.abandon_all()
                 if session_active:
                     # agent_stream can append several messages (e.g. a
                     # completed tool call) before failing on a later step —
@@ -375,6 +383,67 @@ def chat():
         mimetype='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     )
+
+
+# ── BASH APPROVALS ───────────────────────────────────────────
+#
+# When a command isn't covered by a saved rule, the agent turn emits an
+# `approval_request` SSE event and blocks; the browser shows the command and
+# posts the answer back here. These routes deliberately do NOT take agent_lock
+# — the turn that's waiting is holding it. That's the whole mechanism: a
+# blocked generator on one thread, released by a request on another.
+
+@app.route('/api/approval', methods=['POST'])
+def api_resolve_approval():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    request_id = str(data.get('id', '')).strip()
+    decision = str(data.get('decision', '')).strip()
+    if not request_id:
+        return jsonify({'error': "Body must include 'id'."}), 400
+    if decision not in approvals.DECISIONS:
+        return jsonify({'error': f"decision must be one of: {', '.join(approvals.DECISIONS)}."}), 400
+    ok, error = approvals.resolve(request_id, decision)
+    if not ok:
+        # 409, not 400: the request was well-formed, the prompt just isn't
+        # waiting any more (answered already, or timed out).
+        return jsonify({'error': error}), 409
+    return jsonify({'ok': True})
+
+
+@app.route('/api/bash-approvals', methods=['GET'])
+def api_list_bash_approvals():
+    """The always-allow rules saved for the session's current user."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = current_user()
+    if not name:
+        return jsonify({'error': 'No active user selected'}), 400
+    return jsonify({'user': name, **approvals.list_rules(name)})
+
+
+@app.route('/api/bash-approvals', methods=['DELETE'])
+def api_delete_bash_approval():
+    """Revoke one saved rule, or all of them with {"all": true}. Anything
+    revoked here goes back to prompting on the next attempt."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = current_user()
+    if not name:
+        return jsonify({'error': 'No active user selected'}), 400
+    data = request.get_json(silent=True) or {}
+    if data.get('all'):
+        approvals.clear_rules(name)
+    else:
+        kind = str(data.get('kind', '')).strip()
+        value = data.get('value')
+        if kind not in ('exact', 'programs') or not isinstance(value, str):
+            return jsonify({'error': "Body must include kind ('exact' or 'programs') and value, "
+                                     "or {\"all\": true}."}), 400
+        if not approvals.remove_rule(name, kind, value):
+            return jsonify({'error': 'No such rule'}), 404
+    return jsonify({'ok': True, **approvals.list_rules(name)})
 
 
 @app.route('/reset', methods=['GET', 'POST'])
@@ -677,15 +746,25 @@ def api_update_settings():
 # or python-dotenv's parsing. Rejected on input so the round-trip is safe.
 _MCP_BAD_CHARS = ("'", '"', '\n', '\r')
 
+# A stdio command legitimately needs quoting for paths with spaces, and a
+# double quote survives our .env encoding intact (json.dumps escapes it, and
+# python-dotenv doesn't reinterpret escapes inside a single-quoted value). A
+# single quote would terminate that value, so it's still out.
+_MCP_BAD_COMMAND_CHARS = ("'", '\n', '\r')
+
 
 def _mcp_server_public(s):
     """Shape a stored server for the client. The token is write-only — we only
-    report whether one is set, never echo it back."""
+    report whether one is set, never echo it back. The command is not a
+    secret (it's what the user typed) so it round-trips, which is what lets
+    the UI show what a stdio server actually runs."""
     return {
         'name': s.get('name', ''),
         'url': s.get('url', ''),
         'has_token': bool((s.get('token') or '').strip()),
         'enabled': s.get('enabled', True),
+        'transport': s.get('transport') or mcp_client.HTTP,
+        'command': s.get('command', ''),
     }
 
 
@@ -708,35 +787,61 @@ def api_add_mcp():
     name = str(data.get('name', '')).strip()
     url = str(data.get('url', '')).strip()
     token = str(data.get('token', '')).strip()
+    transport = str(data.get('transport', '') or mcp_client.HTTP).strip().lower()
+    command = str(data.get('command', '')).strip()
 
-    if not name or not url:
-        return jsonify({'error': 'A name and URL are both required.'}), 400
-    if not re.match(r'^https?://', url, re.IGNORECASE):
-        return jsonify({'error': 'URL must start with http:// or https://.'}), 400
+    if transport not in mcp_client.TRANSPORTS:
+        return jsonify({'error': f"Transport must be one of: {', '.join(mcp_client.TRANSPORTS)}."}), 400
+    if not name:
+        return jsonify({'error': 'A name is required.'}), 400
+
+    if transport == mcp_client.STDIO:
+        # A stdio server has no URL or bearer token — it's a local process, so
+        # anything it needs to authenticate comes from the environment (see
+        # the module docstring in src/mcp_client.py).
+        url, token = '', ''
+        if not command:
+            return jsonify({'error': 'A command is required for a stdio server.'}), 400
+        if any(c in command for c in _MCP_BAD_COMMAND_CHARS):
+            return jsonify({'error': 'The command cannot contain single quotes or newlines. '
+                                     'Use double quotes to wrap a path with spaces.'}), 400
+    else:
+        command = ''
+        if not url:
+            return jsonify({'error': 'A URL is required for an HTTP server.'}), 400
+        if not re.match(r'^https?://', url, re.IGNORECASE):
+            return jsonify({'error': 'URL must start with http:// or https://.'}), 400
+
     for field, val in (('name', name), ('URL', url), ('token', token)):
         if any(c in val for c in _MCP_BAD_CHARS):
             return jsonify({'error': f'The {field} contains unsupported characters (quotes or newlines).'}), 400
+
+    entry = {'name': name, 'url': url, 'token': token, 'enabled': True,
+             'transport': transport, 'command': command}
 
     with agent_lock:
         servers = mcp_client.read_servers()
         if any(s.get('name') == name for s in servers):
             return jsonify({'error': f"An MCP server named '{name}' already exists."}), 409
-        servers.append({'name': name, 'url': url, 'token': token, 'enabled': True})
+        servers.append(entry)
         try:
             _write_env(mcp_client.servers_to_env(servers))
         except Exception as e:
             return _log_and_error(e, message=f'Could not save: {e}')
 
         # Verify the server is reachable and pick up its tool count now, so
-        # the user gets immediate feedback instead of a silent no-op.
+        # the user gets immediate feedback instead of a silent no-op. For
+        # stdio this is also what spawns the process for the first time, so a
+        # bad command line surfaces here rather than mid-conversation.
         mcp_client.clear_cache()
         error = None
         tool_count = 0
         try:
-            tool_count = len(mcp_client.list_tools({'name': name, 'url': url, 'token': token}))
+            tool_count = len(mcp_client.list_tools(entry))
         except Exception as e:
             error = str(e)
-            logger.exception("New MCP server '%s' (%s) unreachable at add time", name, url)
+            logger.exception("New MCP server '%s' (%s) unreachable at add time",
+                             name, mcp_client.describe(entry))
         agent.refresh_tools()
 
     resp = {'ok': True, 'servers': [_mcp_server_public(s) for s in servers], 'tool_count': tool_count}
@@ -767,6 +872,9 @@ def api_toggle_mcp(name):
             _write_env(mcp_client.servers_to_env(servers))
         except Exception as e:
             return _log_and_error(e, message=f'Could not save: {e}')
+        # Disabling a stdio server has to actually stop its child process, not
+        # just hide its tools — clear_cache() is what shuts those down.
+        mcp_client.clear_cache()
         agent.refresh_tools()
     return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in servers]})
 
@@ -846,6 +954,7 @@ def api_add_provider():
             _write_env(agent.providers_to_env(providers))
         except Exception as e:
             return _log_and_error(e, message=f'Could not save: {e}')
+        agent.forget_provider_capabilities()
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in providers]})
 
 
@@ -857,17 +966,17 @@ def api_toggle_provider(name):
     data = request.get_json(silent=True) or {}
     if 'enabled' not in data:
         return jsonify({'error': "Body must include 'enabled'."}), 400
-    enabled = bool(data.get('enabled'))
     with agent_lock:
         providers = agent.read_providers()
         match = next((p for p in providers if p.get('name') == name), None)
         if match is None:
             return jsonify({'error': 'No such provider'}), 404
-        match['enabled'] = enabled
+        match['enabled'] = bool(data.get('enabled'))
         try:
             _write_env(agent.providers_to_env(providers))
         except Exception as e:
             return _log_and_error(e, message=f'Could not save: {e}')
+        agent.forget_provider_capabilities()
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in providers]})
 
 
@@ -897,6 +1006,7 @@ def api_reorder_providers():
             _write_env(agent.providers_to_env(reordered))
         except Exception as e:
             return _log_and_error(e, message=f'Could not save: {e}')
+        agent.forget_provider_capabilities()
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in reordered]})
 
 
@@ -913,6 +1023,7 @@ def api_delete_provider(name):
             _write_env(agent.providers_to_env(remaining))
         except Exception as e:
             return _log_and_error(e, message=f'Could not save: {e}')
+        agent.forget_provider_capabilities()
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in remaining]})
 
 

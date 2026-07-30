@@ -165,7 +165,7 @@
     <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
     <div>
       <h1>Settings</h1>
-      <div class="sub">providers · vision · mcp · environment</div>
+      <div class="sub">providers · vision · mcp · approvals · environment</div>
     </div>
     <div class="spacer"></div>
     <a class="nav-btn" href="/">⌂ home</a>
@@ -178,6 +178,8 @@
       Any OpenAI-compatible chat endpoint. The agent tries your enabled providers in order, top to bottom,
       falling through to the next if one fails or is rate-limited. Free option:
       <a href="https://cloud.cerebras.ai" target="_blank" rel="noopener" style="color:var(--accent-dim)">get a Cerebras API key</a>.
+      Prompt caching needs no setup — FreeClaw sends what each model requires and drops it for any endpoint
+      that objects.
     </div>
     <div id="prov-banner" class="banner" style="display:none"></div>
     <div id="prov-list" class="card-list"></div>
@@ -208,16 +210,51 @@
   <!-- ── MCP SERVERS ── -->
   <section>
     <div class="sec-head"><h2>MCP Servers</h2></div>
-    <div class="sec-desc">Connect external <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" style="color:var(--accent-dim)">Model Context Protocol</a> servers to give the agent new tools.</div>
+    <div class="sec-desc">
+      Connect external <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" style="color:var(--accent-dim)">Model Context Protocol</a> servers to give the agent new tools.
+      <b>Remote (HTTP)</b> talks to a hosted server over a URL. <b>Local (stdio)</b> runs a command on this
+      machine and speaks to it over its stdin/stdout — which is how most published MCP servers ship.
+    </div>
     <div id="mcp-list" class="card-list"></div>
     <div class="form">
       <div class="form-label">Add a server</div>
-      <input id="mcp-name" placeholder="Name, e.g. github" maxlength="60" autocomplete="off" spellcheck="false"/>
-      <input id="mcp-url" placeholder="Server URL — https://…/mcp" autocomplete="off" spellcheck="false"/>
-      <input id="mcp-token" placeholder="Token / API key (optional)" type="password" autocomplete="off" spellcheck="false"/>
+      <div class="grid2">
+        <input id="mcp-name" placeholder="Name, e.g. github" maxlength="60" autocomplete="off" spellcheck="false"/>
+        <select id="mcp-transport">
+          <option value="http">Remote — HTTP</option>
+          <option value="stdio">Local — stdio</option>
+        </select>
+      </div>
+      <div id="mcp-http-fields">
+        <input id="mcp-url" placeholder="Server URL — https://…/mcp" autocomplete="off" spellcheck="false"/>
+        <input id="mcp-token" placeholder="Token / API key (optional)" type="password" autocomplete="off" spellcheck="false" style="margin-top:8px"/>
+      </div>
+      <div id="mcp-stdio-fields" hidden>
+        <input id="mcp-command" placeholder='Command — npx -y @modelcontextprotocol/server-filesystem /srv' autocomplete="off" spellcheck="false"/>
+        <div class="sec-desc" style="margin:6px 0 0">
+          Runs on the machine FreeClaw runs on, so the runtime it needs (node/npx, uv/uvx, python) has to be
+          installed there — inside the container, on a Docker install. Wrap paths containing spaces in
+          double quotes. Secrets go in <span style="font-family:var(--mono)">.env</span> under Environment
+          below; the process inherits them.
+        </div>
+      </div>
       <button id="mcp-add" class="primary">Add server</button>
       <div id="mcp-msg" class="msg"></div>
     </div>
+  </section>
+
+  <!-- ── BASH APPROVALS ── -->
+  <section>
+    <div class="sec-head"><h2>Bash Approvals</h2></div>
+    <div class="sec-desc">
+      Every shell command the agent tries to run is put to you for approval first — the agent is never asked
+      and can't approve itself. Commands you marked <b>always allow</b> are listed here and run without
+      prompting; remove one to go back to being asked. These are saved per user, for
+      <span id="ba-user" style="font-family:var(--mono);color:var(--accent-dim)">the current user</span>.
+    </div>
+    <div id="ba-list" class="card-list"></div>
+    <button id="ba-clear" class="ghost" style="display:none">Remove all rules</button>
+    <div id="ba-msg" class="msg"></div>
   </section>
 
   <!-- ── ENVIRONMENT ── -->
@@ -531,6 +568,88 @@
   }
   $('qs-submit').addEventListener('click', runQuickSetup);
 
+  // ── Bash approvals ──
+  // Read-and-revoke only: rules are created by answering the prompt in chat,
+  // never typed in here — there's no field to add one, on purpose, so a rule
+  // can only ever come from a command the user was actually shown.
+  const baList = $('ba-list'), baMsg = $('ba-msg'), baClear = $('ba-clear');
+
+  function renderBashApprovals(data) {
+    baList.innerHTML = '';
+    const exact = data.exact || [], programs = data.programs || [];
+    if (data.user) $('ba-user').textContent = data.user;
+    if (exact.length === 0 && programs.length === 0) {
+      baList.innerHTML = '<div class="empty">Nothing always-allowed — every command will be put to you.</div>';
+      baClear.style.display = 'none';
+      return;
+    }
+    baClear.style.display = '';
+    const rows = programs.map(v => ({ kind: 'programs', value: v, label: `all "${v}" commands` }))
+      .concat(exact.map(v => ({ kind: 'exact', value: v, label: v })));
+    rows.forEach(r => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `
+        <div class="card-info">
+          <div class="card-sub" style="margin-top:0"><span class="k">${r.kind === 'programs' ? 'program' : 'exact'}</span> ${escapeHtml(r.label)}</div>
+        </div>
+        <button class="del" type="button">remove</button>`;
+      wireDelete(card.querySelector('.del'), () => deleteBashApproval(r.kind, r.value));
+      baList.appendChild(card);
+    });
+  }
+
+  async function loadBashApprovals() {
+    baList.innerHTML = '<div class="empty">loading…</div>';
+    try {
+      const res = await fetch('/api/bash-approvals');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderBashApprovals(data);
+    } catch (e) {
+      // Most likely "no active user selected" — reached Settings without
+      // opening a chat first. Say what to do rather than showing a raw error.
+      baList.innerHTML = `<div class="empty">${escapeHtml(e.message)} — open a chat first, then come back.</div>`;
+      baClear.style.display = 'none';
+    }
+  }
+
+  async function deleteBashApproval(kind, value) {
+    try {
+      const res = await fetch('/api/bash-approvals', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, value })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderBashApprovals(data);
+      showMsg(baMsg, 'Rule removed — you\'ll be asked next time.', true);
+    } catch (e) { showMsg(baMsg, e.message, false); }
+  }
+
+  baClear.addEventListener('click', async () => {
+    if (!baClear.classList.contains('confirm')) {
+      baClear.classList.add('confirm'); baClear.textContent = 'Confirm — remove all?';
+      setTimeout(() => {
+        if (baClear.classList.contains('confirm')) {
+          baClear.classList.remove('confirm'); baClear.textContent = 'Remove all rules';
+        }
+      }, 3000);
+      return;
+    }
+    baClear.classList.remove('confirm'); baClear.textContent = 'Remove all rules';
+    try {
+      const res = await fetch('/api/bash-approvals', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ all: true })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderBashApprovals(data);
+      showMsg(baMsg, 'All rules removed.', true);
+    } catch (e) { showMsg(baMsg, e.message, false); }
+  });
+
   // ── MCP servers ──
   const mcpList = $('mcp-list'), mcpMsg = $('mcp-msg');
 
@@ -541,10 +660,12 @@
       const enabled = s.enabled !== false;
       const card = document.createElement('div');
       card.className = 'card' + (enabled ? '' : ' disabled');
+      const isStdio = s.transport === 'stdio';
+      const target = isStdio ? s.command : s.url;
       card.innerHTML = `
         <div class="card-info">
           <div class="card-name">${escapeHtml(s.name)}</div>
-          <div class="card-sub">${escapeHtml(s.url)}${s.has_token ? ' · 🔑' : ''}</div>
+          <div class="card-sub"><span class="k">${isStdio ? 'stdio' : 'http'}</span> ${escapeHtml(target || '')}${s.has_token ? ' · 🔑' : ''}</div>
         </div>
         <input class="toggle" type="checkbox" ${enabled ? 'checked' : ''} title="${enabled ? 'Disable' : 'Enable'}"/>
         <button class="del" type="button">remove</button>`;
@@ -565,17 +686,36 @@
     } catch (e) { mcpList.innerHTML = `<div class="empty" style="color:var(--err)">${escapeHtml(e.message)}</div>`; }
   }
 
+  // Swap the URL/token pair for the command box depending on transport, so
+  // only the fields that apply to the chosen kind of server are on screen.
+  function syncMcpTransport() {
+    const stdio = $('mcp-transport').value === 'stdio';
+    $('mcp-http-fields').hidden = stdio;
+    $('mcp-stdio-fields').hidden = !stdio;
+  }
+
   async function addMcp() {
-    const name = $('mcp-name').value.trim(), url = $('mcp-url').value.trim(), token = $('mcp-token').value.trim();
+    const name = $('mcp-name').value.trim();
+    const transport = $('mcp-transport').value;
+    const url = $('mcp-url').value.trim(), token = $('mcp-token').value.trim();
+    const command = $('mcp-command').value.trim();
     mcpMsg.style.display = 'none';
-    if (!name || !url) { showMsg(mcpMsg, 'Name and URL are required.', false); return; }
-    const btn = $('mcp-add'); btn.disabled = true; btn.textContent = 'Connecting…';
+    if (!name) { showMsg(mcpMsg, 'A name is required.', false); return; }
+    if (transport === 'stdio' && !command) { showMsg(mcpMsg, 'A command is required for a local (stdio) server.', false); return; }
+    if (transport === 'http' && !url) { showMsg(mcpMsg, 'A URL is required for a remote (HTTP) server.', false); return; }
+    const btn = $('mcp-add'); btn.disabled = true;
+    // Starting a stdio server can mean npx fetching the package first, which
+    // is slow enough that the button needs to say so.
+    btn.textContent = transport === 'stdio' ? 'Starting…' : 'Connecting…';
     try {
-      const res = await fetch('/api/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url, token }) });
+      const res = await fetch('/api/mcp', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, url, token, transport, command })
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       renderMcp(data.servers);
-      $('mcp-name').value = ''; $('mcp-url').value = ''; $('mcp-token').value = '';
+      $('mcp-name').value = ''; $('mcp-url').value = ''; $('mcp-token').value = ''; $('mcp-command').value = '';
       if (data.warning) showMsg(mcpMsg, data.warning, false);
       else showMsg(mcpMsg, `Added — ${data.tool_count} tool${data.tool_count === 1 ? '' : 's'} available.`, true);
     } catch (e) { showMsg(mcpMsg, e.message, false); }
@@ -603,7 +743,10 @@
   }
 
   $('mcp-add').addEventListener('click', addMcp);
+  $('mcp-transport').addEventListener('change', syncMcpTransport);
   $('mcp-token').addEventListener('keydown', e => { if (e.key === 'Enter') addMcp(); });
+  $('mcp-command').addEventListener('keydown', e => { if (e.key === 'Enter') addMcp(); });
+  syncMcpTransport();
 
   // ── Environment (.env keys) ──
   const envFields = $('env-fields'), envMsg = $('env-msg');
@@ -682,7 +825,7 @@
   });
 
   // Initial load
-  loadProviders().then(loadVisionModel); loadMcp(); loadEnv();
+  loadProviders().then(loadVisionModel); loadMcp(); loadBashApprovals(); loadEnv();
 </script>
 </body>
 </html>

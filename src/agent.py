@@ -12,6 +12,7 @@ from dotenv import dotenv_values, load_dotenv
 from json_repair import repair_json
 from openai import OpenAI, APIConnectionError
 
+import src.approvals as approvals
 import src.mcp_client as mcp_client
 import src.scraper as scraper
 from src.logging_setup import get_logger
@@ -127,6 +128,16 @@ def _parse_env_list(raw):
     return val if isinstance(val, list) else []
 
 
+# Models that need an explicit cache_control breakpoint to cache anything.
+# Everyone else (OpenAI, DeepSeek, Groq, Cerebras, xAI) caches a repeated
+# prefix on their own and needs no request-side opt-in — only a stable prefix,
+# which _VOLATILE_HEADER provides. Matched on the model id rather than asked
+# of the user: the models that need it are the ones whose names say so, and a
+# wrong guess is self-correcting (see the bad_request retry in
+# _create_completion). A provider behind an opaque model id just misses out.
+_WANTS_CACHE_BREAKPOINT = re.compile(r"claude|anthropic|gemini|qwen", re.I)
+
+
 def read_providers():
     """Return the user-defined providers as a list of
     {"name","url","key","model","enabled"} dicts, read fresh from .env on
@@ -179,14 +190,16 @@ def read_vision_provider():
 
 def _active_providers():
     """The provider chain _create_completion actually tries, in order.
-    Each item is (name, base_url, api_key, model_override, extra_body).
+    Each item is (name, base_url, api_key, model_override, extra_body,
+    cache_mode).
 
     Purely the enabled entries from Settings → Providers, in the order the
     user listed them — no built-in fallback. Empty if the user hasn't
     configured any yet. A provider with a blank model sends no override
     (the endpoint's own default model is used)."""
     user = [p for p in read_providers() if p.get("enabled", True) and p.get("url")]
-    return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None), None) for p in user]
+    return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None), None)
+            for p in user]
 
 # Short timeouts + no SDK-level retries so a dead provider fails in seconds
 # (not the SDK's 600s default compounded by exponential-backoff retries) and
@@ -253,6 +266,124 @@ class AllProvidersFailedError(RuntimeError):
         )
 
 
+def _cache_breakpoint_messages(messages):
+    """`messages` with the system message split at _VOLATILE_HEADER into two
+    content blocks: the stable instructions marked `cache_control: ephemeral`,
+    and the live tail left unmarked. A provider honouring this caches
+    everything up to the marker and re-reads only the short tail.
+
+    Returns the input unchanged when there's no useful split — no system
+    message, no marker, or nothing stable above it (a breakpoint over text that
+    changes every turn could never be reused). Builds a new list, so
+    agent_messages keeps its plain string content and nothing is persisted."""
+    if not messages or messages[0].get("role") != "system":
+        return messages
+    head = messages[0]
+    content = head.get("content")
+    if not isinstance(content, str):
+        return messages  # already blocks, or an unexpected shape — leave it
+    stable, sep, volatile = content.partition(_VOLATILE_HEADER)
+    if not sep or not stable.strip():
+        return messages
+    return [{**head, "content": [
+        {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": _VOLATILE_HEADER + volatile},
+    ]}, *messages[1:]]
+
+
+# Keys we hang on our own message dicts for the UI's benefit and that no
+# provider should ever see. Stripped in _create_completion.
+_INTERNAL_MESSAGE_KEYS = ("provider", "usage")
+
+# Optional request extras that most OpenAI-compatible endpoints accept and some
+# reject outright:
+#   "usage" — stream_options.include_usage, so a streamed response reports its
+#             token counts (it carries none otherwise).
+#   "cache" — a cache_control breakpoint on the system message, for the models
+#             that need one (_WANTS_CACHE_BREAKPOINT).
+# Both are sent optimistically. A provider that 400s with them on is retried
+# once without, and then never asked again — so an endpoint that doesn't
+# understand them costs one wasted request ever, nothing needs configuring, and
+# no working call is lost to a field the user didn't know about.
+_unsupported_extras = set()   # {provider_name, ...} — see forget_provider_capabilities
+
+
+def forget_provider_capabilities():
+    """Forget what we've learned about providers' quirks. Called when the
+    provider list is edited, so re-adding a name doesn't carry over a verdict
+    reached against whatever endpoint used to hold it."""
+    _unsupported_extras.clear()
+
+
+def _apply_optional_extras(call_kwargs, model):
+    """Add the optional extras this request can use, or return it unchanged if
+    none apply. Returns (kwargs, applied) so the caller knows whether there's
+    anything to retry without."""
+    applied = []
+    out = call_kwargs
+    if call_kwargs.get("stream"):
+        out = {**out, "stream_options": {"include_usage": True}}
+        applied.append("usage")
+    if model and _WANTS_CACHE_BREAKPOINT.search(str(model)) and "messages" in out:
+        blocked = _cache_breakpoint_messages(out["messages"])
+        if blocked is not out["messages"]:
+            out = {**out, "messages": blocked}
+            applied.append("cache")
+    return out, applied
+
+
+# Running token totals for the turn in flight. One turn can make several LLM
+# requests — every tool round-trip recurses into agent_stream and issues
+# another — so per-turn cost is only visible by summing them. Module-level
+# because the recursion means locals wouldn't aggregate; safe for the same
+# reason agent_messages is, in that agent_lock serialises whole turns.
+# `requests` counts every call made, `reported` only those that came back with
+# numbers — so "zero tokens" stays distinguishable from "this provider doesn't
+# say".
+_turn_usage = {}
+
+
+def _reset_turn_usage():
+    global _turn_usage
+    _turn_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                   "cached_tokens": 0, "requests": 0, "reported": 0}
+
+
+_reset_turn_usage()
+
+
+def _num(obj, *names):
+    """First of `names` present on `obj` as a number, else None. Tolerates both
+    attributes and dict keys, since a provider's usage block may arrive as
+    either an SDK model or a plain dict."""
+    for n in names:
+        val = getattr(obj, n, None)
+        if val is None and isinstance(obj, dict):
+            val = obj.get(n)
+        if isinstance(val, (int, float)):
+            return int(val)
+    return None
+
+
+def _usage_summary(usage):
+    """Prompt/cached/completion token counts from a provider's usage block, or
+    None if it holds nothing useful. The cache-hit figure is nested under
+    prompt_tokens_details by OpenAI and OpenRouter, and reported flat by
+    Anthropic-flavoured shims — both spellings are checked."""
+    if usage is None:
+        return None
+    details = _num(getattr(usage, "prompt_tokens_details", None)
+                   or (usage.get("prompt_tokens_details") if isinstance(usage, dict) else None)
+                   or {}, "cached_tokens")
+    cached = details if details is not None else _num(usage, "cache_read_input_tokens")
+    prompt = _num(usage, "prompt_tokens", "input_tokens")
+    completion = _num(usage, "completion_tokens", "output_tokens")
+    if prompt is None and completion is None and cached is None:
+        return None
+    return {"prompt_tokens": prompt or 0, "cached_tokens": cached or 0,
+            "completion_tokens": completion or 0}
+
+
 def _create_completion(**kwargs):
     """Try each configured provider in the order _active_providers() returns
     them — first entry first, every call — and return (response_or_stream,
@@ -271,15 +402,34 @@ def _create_completion(**kwargs):
         # Gemini shim 400s on any optional field sent as JSON null.
         call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
         if "messages" in call_kwargs:
-            # Our assistant messages carry a non-standard "provider" key (so
-            # the UI can show which provider answered) — strip it before it
-            # goes over the wire; some providers 400 on unrecognized fields.
+            # Our assistant messages carry non-standard bookkeeping keys (which
+            # provider answered, what it reported for token usage) — strip them
+            # before they go over the wire; some providers 400 on unrecognized
+            # message fields.
             call_kwargs = {**call_kwargs, "messages": [
-                {k: v for k, v in m.items() if k != "provider"} for m in call_kwargs["messages"]
+                {k: v for k, v in m.items() if k not in _INTERNAL_MESSAGE_KEYS}
+                for m in call_kwargs["messages"]
             ]}
+
+        plain_kwargs = call_kwargs
+        applied = []
+        if name not in _unsupported_extras:
+            call_kwargs, applied = _apply_optional_extras(call_kwargs, call_kwargs.get("model"))
+
         try:
             c = _client_for(name, key, base_url)
-            result = c.chat.completions.create(**call_kwargs)
+            try:
+                result = c.chat.completions.create(**call_kwargs)
+            except Exception as e:
+                # Retry without the optional extras if that's plausibly what it
+                # objected to. A provider must never lose a working call over a
+                # field we added for our own benefit.
+                if not applied or _classify_error(e) != "bad_request":
+                    raise
+                logger.info("Provider '%s' rejected %s — retrying without, and not "
+                            "sending them again", name, "/".join(applied))
+                result = c.chat.completions.create(**plain_kwargs)
+                _unsupported_extras.add(name)
             if name != _last_provider:
                 print(f"LLM provider switched: {_last_provider} -> {name}")
             _last_provider = name
@@ -426,11 +576,11 @@ def set_messages(messages):
 
 # reset() builds the system message once; a conversation can then run for
 # days (a ping delivered next week reuses the same one) without another
-# reset(), so a timestamp baked in at reset() would go stale fast. Instead
-# the current date/time is kept as the system message's first line and
-# refreshed on every turn (see _refresh_system_clock) — this is what fixes
-# add_ping resolving "today"/"tomorrow" against a guess instead of the real
-# clock. Kept to one short line, deliberately: it's resent on every request.
+# reset(), so a timestamp baked in at reset() would go stale fast. Instead the
+# current date/time is refreshed on every turn (see _refresh_volatile) — this
+# is what fixes add_ping resolving "today"/"tomorrow" against a guess instead
+# of the real clock. Kept to one short line, deliberately: it's resent on
+# every request.
 _NOW_LINE_PREFIX = "Current date/time: "
 
 
@@ -440,9 +590,16 @@ def _now_line():
             f"— resolve relative dates/times against this, never guess.")
 
 
-# Marks where the injected context.md copy starts in the system message, so
-# it can be swapped out in place without disturbing the instructions above it.
+# Marks where the injected context.md copy starts, inside the volatile block.
 _CTX_HEADER = "\ncontext.md:\n"
+
+# Everything after this marker is rebuilt every turn (clock + context.md);
+# everything before it is fixed for the conversation's life. That split is what
+# makes prompt caching possible: providers cache a byte-identical *prefix*, and
+# this text used to open with the live timestamp, so every turn differed from
+# byte 0 and nothing could ever be reused. _cache_breakpoint_messages() marks
+# this exact boundary for the models that need an explicit one.
+_VOLATILE_HEADER = "\n\n--- live context (refreshed every turn) ---\n"
 
 
 def _context_block():
@@ -455,33 +612,43 @@ def _context_block():
     return _CTX_HEADER + (content.strip() or "(empty — use create_file to start it)") + "\n"
 
 
-def _refresh_context():
-    """Re-read context.md into the system message at the top of every turn.
+def _volatile_block():
+    return _VOLATILE_HEADER + _now_line() + "\n" + _context_block()
 
-    Without this the injected copy is a snapshot taken at reset(), so anything
-    the model saved earlier in the same conversation stays invisible to it —
-    and once history trimming drops the turn where it was mentioned, the fact
-    is gone from both places. Cheap: one small local file read per turn.
-    """
-    if not agent_messages or agent_messages[0].get("role") != "system":
-        return
-    head, sep, _ = agent_messages[0].get("content", "").partition(_CTX_HEADER)
+
+def _stable_prefix(content):
+    """The cacheable part of a system message: everything before the volatile
+    block.
+
+    Handles the older layout too — a conversation saved before the split has
+    the clock as its first line and the context.md block glued to the end,
+    with no marker. Those pieces are stripped out here so the migrated message
+    ends up in the new shape rather than accumulating two copies of each."""
+    head, sep, _ = content.partition(_VOLATILE_HEADER)
     if sep:
-        agent_messages[0]["content"] = head + _context_block()
+        return head
+    # Legacy layout: drop the leading clock line...
+    first_line, _, rest = head.partition("\n")
+    if first_line.startswith(_NOW_LINE_PREFIX):
+        head = rest
+    # ...and the trailing context.md block.
+    head, _, _ = head.partition(_CTX_HEADER)
+    return head.rstrip()
 
 
-def _refresh_system_clock():
-    """Rewrite agent_messages[0]'s first line to the current _now_line(),
-    replacing whatever was there before. Called at the top of every
-    agent_stream() turn (and after reset()) so the model always sees a live
-    timestamp, however old the conversation is."""
+def _refresh_volatile():
+    """Rebuild the volatile tail of the system message at the top of every
+    turn: the live clock and a fresh copy of context.md.
+
+    context.md has to be re-read (not left as the snapshot reset() took)
+    because anything the model saved earlier in the same conversation would
+    otherwise stay invisible to it — and once history trimming drops the turn
+    where the fact was mentioned, it's gone from both places. Cheap: one small
+    local file read per turn."""
     if not agent_messages or agent_messages[0].get("role") != "system":
         return
-    content = agent_messages[0].get("content", "")
-    first_line, _, rest = content.partition("\n")
-    if first_line.startswith(_NOW_LINE_PREFIX):
-        content = rest
-    agent_messages[0]["content"] = _now_line() + "\n" + content
+    stable = _stable_prefix(agent_messages[0].get("content", ""))
+    agent_messages[0]["content"] = stable + _volatile_block()
 
 
 def reset(tts=False):
@@ -492,7 +659,10 @@ def reset(tts=False):
     index 0: some providers' chat templates (confirmed on NVIDIA's qwen3.5)
     reject the request the moment a second system-role message shows up
     anywhere else in the list. The eco_messages slicing in agent_stream
-    assumes this is the only header message."""
+    assumes this is the only header message.
+
+    Its content is ordered stable-instructions-first, volatile-tail-last (see
+    _VOLATILE_HEADER) so the bulk of it can be cached by the provider."""
     global agent_messages
     # Create the file if it's missing so the model's first edit_file/create_file
     # lands somewhere; _context_block() reads it back below.
@@ -527,10 +697,12 @@ Scheduled events are stored in the ping.md file
 """
     if tts:
         prompt += "\nYou will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.\n"
-    prompt += _context_block()
 
-    agent_messages = [{"role": "system", "content": prompt}]
-    _refresh_system_clock()
+    # Instructions above, live clock + context.md below — _refresh_volatile()
+    # rewrites everything from the marker down on every turn and leaves the
+    # text above it byte-identical, which is what a provider's prompt cache
+    # needs in order to hit.
+    agent_messages = [{"role": "system", "content": prompt.rstrip() + _volatile_block()}]
     refresh_tools()
 
 
@@ -769,7 +941,7 @@ def build_utility_tools():
             "type": "function",
             "function": {
                 "name": "run_bash_command",
-                "description": "Runs a shell command on this machine. Execute immediately when asked — don't chain multiple commands without reporting back first.",
+                "description": "Runs a shell command on this machine. Execute immediately when asked — don't chain multiple commands without reporting back first. Permission is handled by FreeClaw itself, outside this conversation: never ask the user whether you may run something, never describe a command instead of running it, and never treat your own judgement as approval. Just call this tool; the user is prompted automatically and you'll be told if they refused.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -807,7 +979,8 @@ def load_mcp_tools():
             server_tools = mcp_client.list_tools(server)
         except Exception as e:
             print(f"[mcp] '{server.get('name')}' unavailable: {e}")
-            logger.exception("MCP server '%s' (%s) unavailable", server.get('name'), server.get('url'))
+            logger.exception("MCP server '%s' (%s) unavailable",
+                             server.get('name'), mcp_client.describe(server))
             continue
         for t in server_tools:
             real_name = t.get("name")
@@ -845,7 +1018,7 @@ def refresh_tools():
     return tools
 
 
-def _run_tool(command_name, args_dict):
+def _run_tool(command_name, args_dict, bash_approved=False):
     """Execute a single tool call and return its result as a string.
 
     Pure dispatch: appending the tool-response message and making the
@@ -854,7 +1027,12 @@ def _run_tool(command_name, args_dict):
     escape freely — the caller converts them into an error result, because
     whatever happens, every tool_call id the assistant message declared
     must end up with a response or the whole conversation is rejected by
-    the provider on the next turn."""
+    the provider on the next turn.
+
+    `bash_approved` has to be passed explicitly by the caller that ran the
+    approval gate (see agent_stream). It defaults to False so there is no code
+    path — not a future caller, not a mistake — that reaches the shell without
+    a decision having been made first."""
     parameter = (args_dict.get('query') or args_dict.get('site') or args_dict.get('url')
                  or args_dict.get('command') or args_dict.get('filename')
                  or args_dict.get('contents') or None)
@@ -1044,8 +1222,21 @@ def _run_tool(command_name, args_dict):
         return "URL opened: "+args_dict.get('url', '')
 
     if command_name == 'run_bash_command':
+        # Read `command` directly rather than using the shared `parameter`
+        # above: that falls back through query/site/url/…, so a call carrying a
+        # stray `url` key alongside `command` would have run the url. Harmless
+        # noise before the approval gate existed — a hole in it now, since the
+        # gate checks args_dict['command'] and this is what actually executes.
+        # Same key on both sides means the string approved is the string run.
+        command = args_dict.get('command') or ''
+        # Second line of defence. agent_stream has already run the gate and
+        # passed the outcome in; this makes it impossible for a caller that
+        # skipped it to execute anything regardless.
+        if not bash_approved:
+            logger.warning("Blocked an unapproved bash command: %.300r", command)
+            return approvals.denial_message(approvals.DECISION_DENY)
         proc = subprocess.Popen(
-            f'{parameter}',
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1126,8 +1317,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
       {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
     The full, final conversation is available afterwards via agent_messages.
     """
-    _refresh_context()
-    _refresh_system_clock()
+    _refresh_volatile()
     # Default model id — any provider with its own model set overrides it.
     model = "openai/gpt-oss-120b"
     temp = 1
@@ -1139,6 +1329,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             reset()
             yield {"type": "token", "text": "Agent reset."}
             return
+
+        # A fresh turn — start its token tally from zero. Tool continuations
+        # (the tool_input branch) deliberately don't reset, so their requests
+        # add to the same turn's total.
+        _reset_turn_usage()
 
         intent, _ = Classy.classify(user_input, CLASSIFIER_PATH)
         tag = intent[0]
@@ -1162,6 +1357,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # Kept for direct/external callers only — note that appending a
         # second system-role message breaks the single-leading-system-message
         # invariant reset() relies on, and some providers reject that.
+        _reset_turn_usage()
         agent_messages.append({"role": "system", "content": system_input})
         agent_input = system_input
         eco_messages = agent_messages
@@ -1215,6 +1411,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # `yield from agent_stream(...)` below), so a fallback mid-conversation
     # (or even mid a single tool round-trip) surfaces here too, not just at
     # the very start of the turn.
+    _turn_usage["requests"] += 1
     yield {"type": "provider", "name": provider}
 
     # Consume the stream, forwarding text chunks to the caller in real
@@ -1222,8 +1419,16 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # incremental argument-string fragments when streamed).
     buffer = ""
     tool_calls_acc = {}
+    usage_seen = None
     try:
         for chunk in stream:
+            # The usage block arrives on its own final chunk (only when
+            # stream_options.include_usage was sent — see _create_completion),
+            # and that chunk has an empty choices list, so it has to be read
+            # before the choices guard below skips it.
+            chunk_usage = _usage_summary(getattr(chunk, "usage", None))
+            if chunk_usage:
+                usage_seen = chunk_usage
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -1262,6 +1467,29 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         if not buffer and not tool_calls_acc:
             buffer = f"(No response — the connection to {provider} was interrupted before anything came back. Please try again.)"
 
+    if usage_seen:
+        # The provider's own count of what this request cost — the only exact
+        # figure available, and the one place a prompt-cache hit is observable.
+        # Logged always (so a provider that isn't caching, or isn't reporting,
+        # is diagnosable from the log alone) and forwarded for display.
+        for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
+            _turn_usage[key] += usage_seen[key]
+        _turn_usage["reported"] += 1
+        logger.info(
+            "Usage for provider '%s': prompt=%d cached=%d completion=%d "
+            "(turn so far: %d requests, %d prompt, %d completion)",
+            provider, usage_seen["prompt_tokens"], usage_seen["cached_tokens"],
+            usage_seen["completion_tokens"], _turn_usage["requests"],
+            _turn_usage["prompt_tokens"], _turn_usage["completion_tokens"],
+        )
+        # `context_tokens` is this request's prompt size — what the model
+        # actually read this time, which is the number worth putting in front
+        # of the user. It is NOT the whole conversation: history windowing
+        # means only a slice of it is sent.
+        yield {"type": "usage", "provider": provider,
+               "context_tokens": usage_seen["prompt_tokens"],
+               **usage_seen, "turn": dict(_turn_usage)}
+
     tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
     if buffer:
         print('Agent: ' + buffer)
@@ -1294,6 +1522,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # it would desync the saved conversation from what the user saw.
         if buffer:
             assistant_msg["content"] = buffer
+        # Saved with the conversation so the real counts are still there after
+        # a reload instead of reverting to the client's estimate. Only set when
+        # the provider actually reported, and stripped before any request goes
+        # out (_INTERNAL_MESSAGE_KEYS).
+        if usage_seen:
+            assistant_msg["usage"] = usage_seen
         agent_messages.append(assistant_msg)
 
         # The assistant message above declares every requested call, and an
@@ -1324,11 +1558,40 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 )
             if args_dict is not None:
                 yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
-                try:
-                    result = _run_tool(command_name, args_dict)
-                except Exception as e:
-                    logger.exception("Tool '%s' raised with args=%.500r", command_name, args_dict)
-                    result = f"Error running tool '{command_name}': {e}"
+                bash_approved = False
+                if command_name == 'run_bash_command':
+                    # The approval gate. Deliberately here rather than inside
+                    # _run_tool: asking the user means emitting an event and
+                    # then blocking, and only the generator can do the first
+                    # half. The model has no say in any of this and isn't
+                    # consulted — see src/approvals.py.
+                    verdict = approvals.check(args_dict.get('command'))
+                    if verdict == approvals.ALLOWED:
+                        bash_approved = True
+                    elif verdict == approvals.NO_COMMAND:
+                        result = approvals.denial_message(approvals.NO_COMMAND)
+                    elif not approvals.is_interactive():
+                        result = approvals.denial_message("not_interactive")
+                    else:
+                        req = approvals.open_request(args_dict.get('command'))
+                        yield {"type": "approval_request", **req.as_event()}
+                        # Blocks this turn until the user answers, the request
+                        # times out, or it's abandoned. In the web UI the answer
+                        # arrives on another thread via POST /api/approval; in
+                        # the CLI the consumer answers before resuming us, so
+                        # the wait returns immediately.
+                        decision = approvals.wait(req)
+                        bash_approved = approvals.was_approved(decision)
+                        yield {"type": "approval_resolved", "id": req.id,
+                               "decision": decision, "approved": bash_approved}
+                        if not bash_approved:
+                            result = approvals.denial_message(decision)
+                if result is None:
+                    try:
+                        result = _run_tool(command_name, args_dict, bash_approved=bash_approved)
+                    except Exception as e:
+                        logger.exception("Tool '%s' raised with args=%.500r", command_name, args_dict)
+                        result = f"Error running tool '{command_name}': {e}"
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
             if i < last:
@@ -1343,11 +1606,14 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 yield from agent_stream(tool_input=result, tool_id=tc["id"], tool_name=command_name)
         return
 
-    agent_messages.append({
+    final_msg = {
         "role": "assistant",
         "provider": provider,
         "content": buffer,
-    })
+    }
+    if usage_seen:
+        final_msg["usage"] = usage_seen
+    agent_messages.append(final_msg)
 
 
 def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):

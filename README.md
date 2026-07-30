@@ -55,7 +55,7 @@ Once installed, open the URL printed by the installer — something like `http:/
 
 - Type a message and press **Enter** to send (Shift+Enter for a newline)
 - Agent responses are rendered with full markdown — code blocks, lists, bold, links, etc.
-- A live **token estimate** is shown in the top right so you can keep an eye on usage
+- A live **token count** is shown in the top right so you can keep an eye on usage — the provider's own exact figure where available, hover it for the breakdown (see [Token Counts](#token-counts))
 - Use the **attach button** to upload a file — FreeClaw can read it back, including describing images in detail
 - Hit **Reset** to clear the conversation and start fresh
 
@@ -79,9 +79,10 @@ You can type these directly into the chat box:
 - **Multi-provider fallback** — add any OpenAI-compatible endpoint from Settings → Providers (URL, API key, model); the agent tries them in the order you list them, falling through to the next if one fails or is rate-limited
 - **Persistent memory** — the agent keeps durable facts about you in `context.md`, stored alongside your other files and read/updated with the same file tools it uses for everything else, without that history bloating the active context window
 - **Web search & scraping** — queries DuckDuckGo for instant answers, news, and snippets, then scrapes and cleans the top non-JS-heavy result pages, all stitched into one capped, structured block of context for the model — no extra LLM call required
-- **Bash execution** — can run shell commands on the host machine and return the output
+- **Bash execution, gated on your approval** — can run shell commands on the host machine, but only ones you've okayed. The prompt is raised by FreeClaw itself, not by the model: see [Bash Approvals](#bash-approvals)
 - **File, page & image tools** — can create, read, edit (find/replace), delete, and list files in its sandboxed static folder; can publish a live HTML page at a public URL; can describe an uploaded image in detail using a vision model
-- **MCP servers** — connect external [Model Context Protocol](https://modelcontextprotocol.io) servers from **Settings → MCP Servers**; their tools are fetched over the Streamable HTTP transport and merged into the agent's toolset automatically, no restart required
+- **MCP servers, remote or local** — connect external [Model Context Protocol](https://modelcontextprotocol.io) servers from **Settings → MCP Servers**, over HTTP *or* as a local process on stdio (which is how most published MCP servers ship). Their tools are merged into the agent's toolset automatically, no restart required
+- **Prompt caching** — the system prompt is laid out stable-part-first so providers can cache it, cutting the cost of the repeated prefix every turn resends. See [Prompt Caching](#prompt-caching)
 - **Password-protected UI** — the web chat sits behind a login screen so it's safe to expose on your local network
 - **OpenAI-compatible API** — toggle `/v1/chat/completions` on the same port for use from other apps and scripts, authenticated with your FreeClaw password
 
@@ -102,9 +103,12 @@ Classy.classify()       ← local intent classifier using models/data.pth
 Configured provider API call ← trimmed message history + tools
     │  (falls back to the next provider in Settings → Providers on failure)
     │
-    ├── Tool call? ───► Execute tool (search, bash, file ops, MCP servers, vision…)
-    │                       │
-    │                       └──► Recursive agent turn with the tool result
+    ├── Tool call? ───► bash? ──► approval gate (src/approvals.py)
+    │                   │           │  saved rule → run · else ask the user and wait
+    │                   │           │  refused/timed out → never runs
+    │                   └──► Execute tool (search, file ops, MCP servers, vision…)
+    │                           │
+    │                           └──► Recursive agent turn with the tool result
     │
     └── Text response? ──► Streamed back to the browser as server-sent events
 ```
@@ -123,7 +127,8 @@ The search pipeline (`src/scraper.py`):
 FreeClaw/
 ├── Flask/
 │   ├── main.py               # Flask server — login, chat SSE endpoint, settings/provider/MCP APIs, /v1 API
-│   ├── static/               # Created at first run; each user gets static/<user>/files/ holding context.md, uploads, and agent-created files
+│   ├── static/               # Created at first run; each user gets static/<user>/files/ holding context.md, uploads, and agent-created files,
+│   │                         # plus static/<user>/.bash_approvals.json — their always-allow rules, kept out of files/ so the agent can't edit it
 │   └── templates/
 │       ├── index.html        # Home page — pick a user, toggle the API
 │       ├── chat.html         # Chat UI (dark theme, markdown rendering, token counter, file upload)
@@ -131,10 +136,11 @@ FreeClaw/
 │       └── login.html        # Password login screen
 ├── src/
 │   ├── agent.py              # Core agent loop — intent classification, provider fallback, tool dispatch
+│   ├── approvals.py          # Bash approval gate — per-user allow rules, blocking prompts (no LLM involvement)
 │   ├── cli.py                # Terminal chat client (the `freeclaw` command)
 │   ├── users.py              # User/conversation storage, shared by the web app and CLI
 │   ├── scraper.py            # DuckDuckGo search + page scraping + text cleaning
-│   ├── mcp_client.py         # MCP client — connects to external MCP servers over HTTP
+│   ├── mcp_client.py         # MCP client — external MCP servers over HTTP or local stdio processes
 │   └── logging_setup.py      # Central logger — full tracebacks go to logs/freeclaw.log
 ├── models/
 │   └── data.pth              # Classy intent classifier weights
@@ -159,11 +165,98 @@ Only one platform's scripts are checked out at install time, so you'll see eithe
 
 ## MCP Servers
 
-FreeClaw can connect to external [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to gain new tools — think GitHub, web search, databases, or your own custom server.
+FreeClaw can connect to external [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to gain new tools — think GitHub, web search, databases, or your own custom server. Add one from **Settings → MCP Servers**, in either of two flavours.
 
-Add one from **Settings → MCP Servers**: enter the server's URL and (optionally) an auth token. FreeClaw connects over the Streamable HTTP transport, fetches the server's tools, and makes them available to the agent immediately — no restart required. Servers can also be toggled off without losing their saved config.
+### Remote — HTTP
 
-Connections are stored in your `.env` file as the parallel `MCP_NAMES`, `MCP_URLS`, `MCP_TOKENS`, and `MCP_ENABLED` lists, so you can also review or edit them by hand.
+Enter the server's URL and (optionally) an auth token. FreeClaw connects over the Streamable HTTP transport, fetches the server's tools, and makes them available immediately — no restart required.
+
+### Local — stdio
+
+Enter a command instead. FreeClaw runs it as a child process and speaks JSON-RPC over its stdin/stdout. This is the transport most published MCP servers actually use, so it's what makes the wider ecosystem reachable:
+
+```
+npx -y @modelcontextprotocol/server-filesystem /srv/shared
+```
+
+Things worth knowing:
+
+- **The runtime has to exist where FreeClaw runs.** `npx` needs Node on that machine — the host on a Linux install, but **inside the container** on the macOS/Docker one, whose image ships Python only. So `npx`-based servers need `nodejs`/`npm` added to [`docker/Dockerfile`](docker/Dockerfile) and a rebuild. FreeClaw says exactly this rather than failing vaguely when the binary is missing.
+- **Secrets go in `.env`.** The child inherits FreeClaw's environment, so a server wanting `GITHUB_TOKEN` gets it by adding that key under **Settings → Environment**. There's no separate credential field for stdio servers.
+- **Paths with spaces need double quotes** (`… "/My Files/notes"`). Single quotes would break the `.env` encoding and are rejected.
+- **One process per server**, started on first use and kept alive, shut down when you disable or remove the server, and respawned automatically if it dies mid-session.
+
+Either kind can be toggled off without losing its saved config. Connections live in your `.env` as the parallel `MCP_NAMES`, `MCP_URLS`, `MCP_TOKENS`, `MCP_ENABLED`, `MCP_TRANSPORTS`, and `MCP_COMMANDS` lists, so you can review or edit them by hand. An entry with no transport recorded is treated as HTTP, so configs written by older versions keep working untouched.
+
+---
+
+## Bash Approvals
+
+The agent can run shell commands — but not on its own initiative. Every `run_bash_command` call goes through a gate outside the conversation entirely:
+
+- **The model is never asked and can't answer.** It can't request permission, can't grant itself any, and can't talk its way past the gate. Its tool description tells it not to ask you either; approval isn't its business.
+- **You see the exact command** in the chat (or terminal) with **allow once**, **always allow**, and **deny**. The agent's turn is genuinely paused until you answer.
+- **Nothing runs on a non-answer.** Ignoring the prompt, closing the tab, or Ctrl-C at the CLI all count as refusals, as does the five-minute timeout.
+
+### Always-allow rules
+
+"Always allow" saves a rule so the same thing isn't asked twice, **per FreeClaw user** — approving something as Elliot grants nothing to anyone else. An **exact** rule matches the command byte for byte; a **program** rule (*always allow all "ls" commands*) matches any simple command with that leading token.
+
+The program option is only offered for a *simple* command: anything containing `;`, `&&`, `|`, `` ` ``, `$(…)`, `>` or `<` can neither create such a rule nor be matched by one, since `ls; rm -rf ~` would otherwise satisfy a rule that says `ls`.
+
+Review and revoke under **Settings → Bash Approvals**. There's no field to type a rule in by hand, on purpose: a rule can only come from a command you were shown.
+
+### Background runs, and what this isn't
+
+A ping firing at 3am has nobody to ask. Those turns still honour saved rules — that's what always-allow is for — but anything needing a prompt is refused rather than left hanging.
+
+The gate stops commands running unasked. It is **not a sandbox**: an approved command has whatever access the FreeClaw process does, including rewriting the rule file, so approving one arbitrary command is in practice approving all of them. Running FreeClaw as a user that can't touch anything you care about is still the real containment story. Rules live at `Flask/static/<user>/.bash_approvals.json`, outside the `files/` folder the agent's own file tools can reach.
+
+---
+
+## Prompt Caching
+
+Every turn resends the system prompt, so it's the single biggest repeated cost in a conversation. Providers will serve a repeated *prefix* from cache at a large discount — but only if it's byte-identical each time.
+
+FreeClaw's used not to be. The system message opened with a live timestamp, which meant every turn differed from byte 0 and **nothing could ever be cached**. The layout is now stable-part-first:
+
+```
+<instructions>                          ← fixed for the whole conversation, cacheable
+--- live context (refreshed every turn) ---
+Current date/time: …                    ← rewritten every turn
+context.md: …
+```
+
+That alone is enough for providers that cache automatically (OpenAI, DeepSeek, Groq, Cerebras, xAI) — they need no request-side opt-in, just a stable prefix.
+
+Anthropic, Gemini and Qwen models instead need an explicit breakpoint, so FreeClaw marks the boundary above with `cache_control: ephemeral` when the model id looks like one of those. There's nothing to configure: the models that need it are the ones whose names say so, and an endpoint that objects is handled by the same retry that covers token counts (see below). A provider behind an opaque model id just misses out.
+
+Whether it's working is visible in the token counts below — cache reads are reported alongside them, for any provider that reports usage at all.
+
+---
+
+## Token Counts
+
+FreeClaw asks every provider for the exact token usage of each request and shows you what comes back. Where a provider reports nothing, it falls back to a length-based estimate — and says which you're looking at:
+
+| Display | Meaning |
+|---|---|
+| `2,041 tokens` (accent colour) | Exact, from the provider |
+| `~362 tokens` (grey, leading `~`) | Estimated from message length |
+
+Hover the counter for the breakdown: tokens sent, tokens received, how many came from cache, and how many requests the turn took. The CLI prints the same on its per-turn summary line:
+
+```
+2 requests · 1.4s · groq · 3,224 in / 118 out (1,024 cached)
+```
+
+**The headline number is the last request's prompt size** — what the model actually read, which is deliberately *not* the size of your whole conversation: history windowing sends only a slice. Counts are written to `logs/freeclaw.log` and ride along with the saved conversation, so they survive a reload.
+
+Expect the exact number to disagree with the estimate: the estimate walks the saved conversation, so it counts the **whole history** rather than the windowed slice, and it can't see the **tool definitions**, which aren't part of the conversation but are resent with every request.
+
+### How it gets the numbers
+
+A streamed response carries no usage block unless the request asks for it, via `stream_options: {"include_usage": true}` — and not every OpenAI-compatible endpoint accepts that field. Same story for the `cache_control` breakpoint above. Since this is a fallback chain where one rejected request would cost you a provider, both are sent optimistically and share one safety net: if a provider `400`s with them attached, FreeClaw retries the identical call without them and stops sending them to that provider. An endpoint that supports neither costs one wasted request, ever — nothing to configure, and no working call lost to a field you didn't know about. The verdict resets when you edit the provider list, so reusing a name for a different endpoint doesn't inherit the old one's quirk.
 
 ---
 
@@ -192,7 +285,7 @@ Settings live in a `.env` file in the project root, created for you during insta
 | `SECRET_KEY` | Yes | Flask session secret (auto-generated by the installer) |
 | `PROVIDER_NAMES` / `PROVIDER_URLS` / `PROVIDER_KEYS` / `PROVIDER_MODELS` / `PROVIDER_ENABLED` | Yes | Your LLM provider(s) — managed entirely from **Settings → Providers**; the agent has nothing to call until at least one exists here |
 | `VISION_PROVIDER` | No | Name of the configured provider (from **Settings → Providers**) used to describe uploaded images — pick it in **Settings → Vision Model** |
-| `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` | No | Connected MCP servers — managed from **Settings → MCP Servers** |
+| `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` / `MCP_TRANSPORTS` / `MCP_COMMANDS` | No | Connected MCP servers — managed from **Settings → MCP Servers**. `MCP_TRANSPORTS` is `http` or `stdio` per entry (missing = `http`); `MCP_COMMANDS` holds the command line for stdio ones |
 | `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns. Set to `http://localhost:6767` by the macOS installer, since a container can't see the host's LAN address |
 | `FC_DEBUG` | No | `0` turns off Werkzeug's reloader and interactive debugger. Defaults to on for native installs; the Docker image sets it to `0` |
 | `FC_TELEMETRY` | No | `1` sends the one-off anonymous install ping described under [Telemetry](#telemetry). Off unless you opted in during install |
@@ -268,6 +361,7 @@ FreeClaw is built around one principle: **use the cheapest model that can do the
 - Search, coding, logic, and everything else → tools included, context trimmed to a handful of recent messages
 - Long-term facts → saved once to `context.md` instead of being re-sent every turn
 - A free, no-LLM scraping pipeline does the heavy lifting for search instead of spending a model call on it
+- The part of the prompt that never changes sits where a provider can cache it, so the repeated prefix is discounted instead of paid for in full every turn ([Prompt Caching](#prompt-caching))
 
 This keeps API costs near zero for everyday use.
 

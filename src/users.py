@@ -9,6 +9,7 @@ import shutil
 import time
 
 import src.agent as agent
+import src.approvals as approvals
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "..", "Flask", "static")
@@ -184,12 +185,21 @@ def ensure_conversation(name):
         save_conversation(name, agent.get_messages(), title="New chat")
 
 
-def activate_session(name):
+def activate_session(name, interactive=False):
     """Point the agent module's globals at this user's file folder (which
     holds their context.md alongside created/uploaded files), and load
     their saved conversation messages so the next agent_stream() call
-    continues the right thread."""
+    continues the right thread.
+
+    `interactive` says whether there's someone able to answer a bash approval
+    prompt for the turn about to run — True from the web chat and the CLI,
+    False for a background delivery like a scheduled ping. It defaults to
+    False so a caller that doesn't think about it gets refusals rather than an
+    agent turn that blocks for five minutes waiting on nobody. Scoping the
+    approval rules to `name` here is also what keeps one user's always-allow
+    list from applying to another's."""
     ensure_conversation(name)
     agent.set_static_dir(conv_files_dir(name))
+    approvals.begin_turn(name, interactive)
     data = load_conversation(name)
     agent.set_messages(data.get("messages", []))
