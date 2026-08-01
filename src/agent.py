@@ -352,6 +352,13 @@ def _reset_turn_usage():
 _reset_turn_usage()
 
 
+def get_turn_usage():
+    """Token totals for the turn that just ran. Read by the /v1 endpoint to
+    fill in its `usage` block — the figures are the providers' own, so they're
+    exact wherever the provider reports them and zero where it doesn't."""
+    return dict(_turn_usage)
+
+
 def _num(obj, *names):
     """First of `names` present on `obj` as a number, else None. Tolerates both
     attributes and dict keys, since a provider's usage block may arrive as
@@ -1916,19 +1923,7 @@ def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, too
     return agent_messages
 
 
-def api_complete(messages, model=None, stream=False, temperature=1.0, max_tokens=None):
-    """Stateless LLM call for the OpenAI-compatible API endpoint. Does not
-    touch agent_messages. Tries the configured providers in order, via the
-    same cached, fast-fail clients as agent_stream."""
-    kwargs = dict(
-        model=model or "openai/gpt-oss-120b",
-        messages=messages,
-        temperature=temperature,
-        top_p=1,
-        stream=stream,
-    )
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-
-    result, _ = _create_completion(**kwargs)
-    return result
+# api_complete() used to live here: a stateless passthrough that forwarded the
+# caller's whole message array straight to the provider chain. The /v1 endpoint
+# now runs a real agent turn against a stored per-user conversation instead
+# (see v1_chat_completions in Flask/main.py), so nothing needed it any more.

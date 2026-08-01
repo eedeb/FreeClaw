@@ -554,42 +554,169 @@ def api_toggle_api():
 @app.route('/v1/models', methods=['GET'])
 @_require_api_auth
 def v1_models():
+    """Your FreeClaw users, in the shape an OpenAI client expects a model list.
+
+    Picking a "model" is picking whose conversation you're continuing — so the
+    model list is the user list, and an off-the-shelf client's model dropdown
+    becomes a user picker with no extra work."""
     return jsonify({
         "object": "list",
-        "data": [
-            {"id": "freeclaw", "object": "model", "created": 0, "owned_by": "freeclaw"},
-            {"id": "openai/gpt-oss-120b", "object": "model", "created": 0, "owned_by": "freeclaw"},
-            {"id": "openai/gpt-oss-20b", "object": "model", "created": 0, "owned_by": "freeclaw"},
-        ]
+        "data": [{"id": name, "object": "model", "created": 0, "owned_by": "freeclaw"}
+                 for name in list_users()],
     })
+
+
+def _api_error(message, status, err_type="invalid_request_error", code=None):
+    body = {"message": message, "type": err_type}
+    if code:
+        body["code"] = code
+    return jsonify({"error": body}), status
+
+
+def _last_user_message(messages):
+    """The prompt to act on: the last user-role message in the request.
+
+    History lives on the server, so everything before it is ignored. Clients
+    that resend the whole transcript every call (most do) therefore work
+    unchanged — their earlier turns are simply redundant, not duplicated into
+    the stored conversation."""
+    for m in reversed(messages):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, list):
+            # Multimodal shape: keep the text parts, drop the rest.
+            content = "\n".join(b.get("text", "") for b in content
+                                if isinstance(b, dict) and b.get("type") == "text")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return None
 
 
 @app.route('/v1/chat/completions', methods=['POST'])
 @_require_api_auth
 def v1_chat_completions():
+    """A stateful chat turn, wearing the OpenAI chat-completions shape.
+
+    Two departures from a plain completions endpoint, both deliberate:
+
+      * **`model` names a FreeClaw user**, not a model. The provider chain is
+        FreeClaw's own business (Settings → Providers); what the caller is
+        choosing is whose memory, whose conversation and whose approval rules
+        this turn runs against.
+      * **History is the server's.** Only the last user message in the request
+        is acted on; the stored conversation supplies everything before it, and
+        the turn is appended to it. So the same thread is shared with the web
+        UI and the CLI — send a message here and it's there when you open the
+        chat page.
+
+    It's a full agent turn, not a raw model call: tools run, memory is read and
+    written, and the reply comes back after all of that. Bash runs only if it
+    matches a saved always-allow rule for that user — there's nobody on an API
+    call to answer a prompt, so anything else is refused rather than hanging.
+    """
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}}), 400
+        return _api_error("Invalid JSON body", 400)
 
     messages = data.get('messages')
     if not messages or not isinstance(messages, list):
-        return jsonify({"error": {"message": "messages field is required", "type": "invalid_request_error"}}), 400
+        return _api_error("messages field is required", 400)
 
-    req_model = data.get('model', 'openai/gpt-oss-120b')
+    user_input = _last_user_message(messages)
+    if not user_input:
+        return _api_error("messages must contain a user message with text content", 400)
+
+    req_model = str(data.get('model') or '').strip()
+    if not req_model:
+        return _api_error(
+            "model is required — set it to the FreeClaw user you want to talk to. "
+            "GET /v1/models lists them.", 400, code="model_not_found")
+    name = safe_username(req_model)
+    if not name or not user_exists(name):
+        known = ", ".join(list_users()) or "none yet"
+        return _api_error(
+            f"No FreeClaw user named '{req_model}'. The model field selects the user "
+            f"to talk to; available: {known}.", 404, code="model_not_found")
+
     stream = bool(data.get('stream', False))
-    temperature = float(data.get('temperature', 1.0))
-    max_tokens = data.get('max_tokens')
     completion_id = 'chatcmpl-' + uuid.uuid4().hex[:12]
     created = int(time.time())
 
-    try:
-        result = agent.api_complete(
-            messages=messages,
-            model=req_model,
-            stream=stream,
-            temperature=temperature,
-            max_tokens=max_tokens,
+    def run_turn():
+        """One agent turn for `name`, yielding its events as they happen and
+        persisting the conversation at the end. Mirrors the /chat route: the
+        same lock held across the whole turn, the same title behaviour, and a
+        save even when the turn raises part-way so completed tool work isn't
+        lost."""
+        with agent_lock:
+            session_active = False
+            try:
+                # interactive=False: an API caller can't answer a bash approval
+                # prompt, so unapproved commands are refused, not queued.
+                activate_session(name, interactive=False)
+                session_active = True
+                try:
+                    had_title = load_conversation(name).get("title") not in (None, "", "New chat")
+                except (OSError, json.JSONDecodeError):
+                    had_title = False
+                yield from agent.agent_stream(user_input=user_input)
+                msgs = agent.get_messages()
+                save_conversation(name, msgs, title=None if had_title else derive_title(msgs))
+            except Exception:
+                if session_active:
+                    try:
+                        save_conversation(name, agent.get_messages())
+                    except Exception:
+                        logger.exception("Also failed to save partial conversation for user=%s", name)
+                raise
+
+    def usage_block():
+        u = agent.get_turn_usage()
+        return {"prompt_tokens": u["prompt_tokens"],
+                "completion_tokens": u["completion_tokens"],
+                "total_tokens": u["prompt_tokens"] + u["completion_tokens"]}
+
+    if stream:
+        def generate():
+            try:
+                for event in run_turn():
+                    # Tools run transparently — only assistant text goes out,
+                    # so a caller sees the same reply the chat UI renders.
+                    if event.get("type") != "token":
+                        continue
+                    yield "data: " + json.dumps({
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": name,
+                        "choices": [{"index": 0,
+                                     "delta": {"content": event.get("text", "")},
+                                     "finish_reason": None}],
+                    }) + "\n\n"
+                yield "data: " + json.dumps({
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": name,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": usage_block(),
+                }) + "\n\n"
+                yield "data: [DONE]\n\n"
+            except agent.AllProvidersFailedError as e:
+                logger.error("v1 stream: all providers failed: %s", e.failures)
+                yield f"data: {json.dumps({'error': {'message': agent._user_facing_error(e.failures), 'type': 'server_error'}})}\n\n"
+            except Exception as e:
+                logger.exception("v1_chat_completions stream failed for user=%s", name)
+                yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'server_error'}})}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
         )
+
+    parts = []
+    try:
+        for event in run_turn():
+            if event.get("type") == "token":
+                parts.append(event.get("text", ""))
     except agent.AllProvidersFailedError as e:
         # Each provider's full traceback is already logged inside
         # _create_completion; this just ties them to the /v1 request.
@@ -597,61 +724,23 @@ def v1_chat_completions():
         reasons = {r for _, r, _ in e.failures}
         status = 429 if reasons == {"rate_limited"} else 500
         err_type = "rate_limit_error" if reasons == {"rate_limited"} else "server_error"
-        return jsonify({"error": {"message": agent._user_facing_error(e.failures), "type": err_type}}), status
+        return _api_error(agent._user_facing_error(e.failures), status, err_type)
     except Exception as e:
-        logger.exception("v1_chat_completions failed")
-        return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
+        logger.exception("v1_chat_completions failed for user=%s", name)
+        return _api_error(str(e), 500, "server_error")
 
-    if stream:
-        def generate():
-            try:
-                for chunk in result:
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    finish = chunk.choices[0].finish_reason
-                    payload = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": req_model,
-                        "choices": [{
-                            "index": 0,
-                            "delta": {"content": delta.content or ""} if getattr(delta, "content", None) else {},
-                            "finish_reason": finish,
-                        }]
-                    }
-                    yield f"data: {json.dumps(payload)}\n\n"
-                yield "data: [DONE]\n\n"
-            except Exception as e:
-                logger.exception("v1_chat_completions stream failed")
-                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
-        return Response(
-            stream_with_context(generate()),
-            mimetype='text/event-stream',
-            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-        )
-    else:
-        choice = result.choices[0]
-        content = choice.message.content or ""
-        usage = result.usage
-        return jsonify({
-            "id": completion_id,
-            "object": "chat.completion",
-            "created": created,
-            "model": req_model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": choice.finish_reason or "stop",
-            }],
-            "usage": {
-                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-                "completion_tokens": getattr(usage, "completion_tokens", 0),
-                "total_tokens": getattr(usage, "total_tokens", 0),
-            } if usage else {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        })
+    return jsonify({
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": name,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "".join(parts)},
+            "finish_reason": "stop",
+        }],
+        "usage": usage_block(),
+    })
 
 
 # ── SETTINGS (env file) ──────────────────────────────────────

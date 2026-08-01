@@ -84,7 +84,7 @@ You can type these directly into the chat box:
 - **MCP servers, remote or local** — connect external [Model Context Protocol](https://modelcontextprotocol.io) servers from **Settings → MCP Servers**, over HTTP *or* as a local process on stdio (which is how most published MCP servers ship). Their tools are merged into the agent's toolset automatically, no restart required
 - **Prompt caching** — the system prompt is laid out stable-part-first so providers can cache it, cutting the cost of the repeated prefix every turn resends. See [Prompt Caching](#prompt-caching)
 - **Password-protected UI** — the web chat sits behind a login screen so it's safe to expose on your local network
-- **OpenAI-compatible API** — toggle `/v1/chat/completions` on the same port for use from other apps and scripts, authenticated with your FreeClaw password
+- **OpenAI-compatible API, stateful** — toggle `/v1/chat/completions` on the same port for use from other apps and scripts. Send one message and the server supplies the history; the `model` field picks which FreeClaw user you're talking to, so any OpenAI client drives the same conversation the web UI shows
 
 ---
 
@@ -262,16 +262,36 @@ A streamed response carries no usage block unless the request asks for it, via `
 
 ## OpenAI-Compatible API (Optional)
 
-FreeClaw can expose an OpenAI-compatible API on the same port as the web UI, so anything that speaks the OpenAI chat format can use your provider chain. Toggle it with the **API** chip on the homepage, or with `/startapi` / `/stopapi` in chat. Authenticate with your FreeClaw password as the Bearer token:
+FreeClaw speaks the OpenAI chat format on the same port as the web UI, so any OpenAI-compatible client can talk to your agent. Toggle it with the **API** chip on the homepage, or with `/startapi` / `/stopapi` in chat. Authenticate with your FreeClaw password as the Bearer token.
+
+Two things work differently from a plain completions endpoint, both on purpose:
+
+**`model` picks the FreeClaw user, not a model.** Which LLM answers is FreeClaw's business (Settings → Providers). What you're choosing is *whose* memory, conversation and approval rules the turn runs against. `GET /v1/models` returns your users, so an off-the-shelf client's model dropdown becomes a user picker for free.
+
+**History lives on the server.** Send one message; FreeClaw supplies everything before it from that user's stored conversation and appends the turn to it. Clients that resend the whole transcript every call still work — only the last user message is acted on, the rest is ignored rather than duplicated.
 
 ```bash
 curl http://localhost:6767/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_FC_PASSWORD" \
-  -d '{"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": "Hello!"}]}'
+  -d '{"model": "Elliot", "messages": [{"role": "user", "content": "what did I say my cat was called?"}]}'
 ```
 
-`GET /v1/models` and streaming (`"stream": true`) are supported. Requests are stateless — they go straight to your configured providers in the same fallback order as the chat UI, without touching any user's conversation.
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:6767/v1", api_key="YOUR_FC_PASSWORD")
+client.chat.completions.create(model="Elliot", messages=[{"role": "user", "content": "Hello!"}])
+```
+
+It's a full agent turn, not a raw model call: tools run, the web search fires, memory is read and written, and the reply comes back after all of it. **It's the same thread the chat page shows** — send a message here and it's there when you open the browser, and vice versa.
+
+Streaming (`"stream": true`) is supported and emits assistant text only; tool calls run transparently. The `usage` block carries the providers' own token counts for the whole turn, including any tool round-trips (see [Token Counts](#token-counts)).
+
+`temperature` and `max_tokens` from the request are ignored — the intent classifier sets those per turn, which is the point of the thing.
+
+> **Bash on an API turn:** there's nobody to answer an approval prompt, so a command runs only if it matches a saved always-allow rule for that user. Anything else is refused and the model is told, rather than the request hanging. See [Bash Approvals](#bash-approvals).
+
+> **Changed in this version.** The endpoint used to be stateless, forwarding your `messages` array straight to the provider chain with `model` naming an LLM. Callers passing a model id (`openai/gpt-oss-120b`) now get a `404` listing the valid users.
 
 ---
 
