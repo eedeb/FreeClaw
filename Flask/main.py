@@ -139,7 +139,8 @@ def create_user_with_context(name, context=None):
     if context and str(context).strip():
         # Filed under the template's About heading rather than replacing the
         # file. The headings are the whole interface to memory now — the new
-        # user's agent is shown About plus the list of header names, and reads
+        # user's agent is shown About and Preferences plus the list of header
+        # names, and reads
         # the rest with search_context — so overwriting them would hand them a
         # context.md with nothing to file anything into.
         marker = "## About\n"

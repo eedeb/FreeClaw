@@ -639,9 +639,10 @@ CONTEXT_TEMPLATE = """## About
 _VOLATILE_HEADER = "\n\n--- live context (refreshed every turn) ---\n"
 
 
-# The one section that is always sent in full — who the model is talking to is
-# needed on every turn, unlike the rest of memory.
-_CTX_ABOUT = "About"
+# The sections always sent in full. Who the model is talking to and how they
+# want to be talked to both apply to every turn, unlike the rest of memory —
+# and preferences the model has to go and fetch are preferences it ignores.
+_CTX_ALWAYS = ("About", "Preferences")
 
 
 def _context_path():
@@ -735,8 +736,8 @@ def _render_context(preamble, sections):
 
 
 def _context_block():
-    """The part of context.md that goes into the system message: the About
-    section in full, plus the *names* of every other section.
+    """The part of context.md that goes into the system message: the About and
+    Preferences sections in full, plus the *names* of every other section.
 
     Memory used to be injected whole, which made it the fastest-growing thing
     in the prompt — every fact ever saved was paid for on every turn, nearly
@@ -753,14 +754,20 @@ def _context_block():
         return _CTX_HEADER + "(empty — use add_context to start it)\n"
 
     preamble, sections = _split_context(content)
-    about = _find_header(sections, _CTX_ABOUT)
+    # Kept in _CTX_ALWAYS order, not file order, so the block reads the same
+    # way for every user however their context.md happens to be arranged.
+    inlined = []
+    for header in _CTX_ALWAYS:
+        idx = _find_header(sections, header)
+        if idx != -1 and idx not in inlined:
+            inlined.append(idx)
     parts = []
     if preamble.strip():
         parts.append(preamble.strip())
-    if about != -1:
-        name, body = sections[about]
+    for idx in inlined:
+        name, body = sections[idx]
         parts.append(f"## {name}\n{_section_text(body) or '(empty)'}")
-    others = [name for i, (name, _) in enumerate(sections) if i != about]
+    others = [name for i, (name, _) in enumerate(sections) if i not in inlined]
     if others:
         parts.append("Other sections (read with search_context): " + ", ".join(others))
     return _CTX_HEADER + "\n".join(parts) + "\n"
@@ -839,12 +846,14 @@ Answer directly: no preamble, no filler, no restating the question. Match depth 
 simple questions get simple answers. Use your tools to act rather than describing what could be
 done, and verify anything important before relying on it.
 
-context.md is your long-term memory, filed under headers. Below is its About section plus the
-names of the other sections — never read the file itself with a tool. Call search_context to
-open a section whenever one looks relevant.
-Ask every turn: what did I just learn about the user? Save it with add_context immediately and
-silently — names, places, preferences, projects, people, corrections. Writing too little is the
-failure mode; skip only one-offs and what is already saved.
+context.md is your long-term memory, filed under headers. Below are its About and Preferences
+sections plus the names of the other sections — never read the file itself with a tool. Call
+search_context to open a section whenever one looks relevant.
+Save only what would change how you help this user weeks from now: who they are, standing
+preferences, ongoing projects and work, the people in their life, decisions, corrections you
+were given. When something qualifies, add_context immediately and silently. Do not save chit-chat,
+one-off requests, the details or results of the task you are doing, anything you can look up
+again, or anything already in memory — a cluttered file buries the facts that matter.
 
 Scheduled events live in ping.md.
 """
@@ -910,8 +919,8 @@ def parse_ping_time(stamp):
 
 def build_context_tools():
     """Memory, one section at a time. Your system prompt carries only the About
-    section and the list of header names, so these are how the rest of
-    context.md is read and written."""
+    and Preferences sections and the list of header names, so these are how the
+    rest of context.md is read and written."""
     return [
         {
             "type": "function",
@@ -929,7 +938,7 @@ def build_context_tools():
             "type": "function",
             "function": {
                 "name": "add_context",
-                "description": "Saves information under a header in context.md — this is how you remember anything. Creates the header if it doesn't exist.",
+                "description": "Saves one durable fact under a header in context.md — this is how you remember anything. Only for what still matters weeks from now, never task details or one-offs. Creates the header if it doesn't exist.",
                 "parameters": {
                     "type": "object",
                     "properties": {
