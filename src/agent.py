@@ -685,20 +685,33 @@ def _clean_header(name):
     return cleaned.splitlines()[0].strip() if cleaned else ""
 
 
-def _find_header(sections, header):
-    """Index of the section `header` names, or -1. Exact (normalised) match
-    first, then containment either way — a model asking for "Projects" should
-    still find "Current Projects" instead of silently starting a duplicate."""
+def _find_header(sections, header, fuzzy=True):
+    """Index of the section `header` names, or -1.
+
+    An exact (normalised) match always wins. With `fuzzy`, containment either
+    way is then accepted, so a model asking for "Projects" finds "Current
+    Projects" instead of silently starting a duplicate — and the *longest*
+    such match is taken, so "mental health" prefers "Mental Health" over
+    "Health" rather than whichever happens to sit earlier in the file.
+
+    Pass fuzzy=False when the caller's whole purpose is to create something
+    new. Containment is right for looking a section up and wrong for deciding
+    one already exists: "Health" contains-matches "Mental Health", which would
+    otherwise make every header a permanent block on any longer name built
+    from it."""
     target = _norm_header(header)
     if not target:
         return -1
     normalised = [_norm_header(name) for name, _ in sections]
     if target in normalised:
         return normalised.index(target)
+    if not fuzzy:
+        return -1
+    best, best_len = -1, 0
     for i, name in enumerate(normalised):
-        if name and (target in name or name in target):
-            return i
-    return -1
+        if name and (target in name or name in target) and len(name) > best_len:
+            best, best_len = i, len(name)
+    return best
 
 
 def _section_text(body):
@@ -1337,7 +1350,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         if not name:
             return "Error: a header is required."
         preamble, sections = _split_context(_read_context())
-        idx = _find_header(sections, name)
+        # Exact match only: this tool exists to create a section, so a merely
+        # similar name ("Health" when asked for "Mental Health") must not count
+        # as one already existing.
+        idx = _find_header(sections, name, fuzzy=False)
         if idx != -1:
             return f"'{sections[idx][0]}' already exists in context.md — add to it with add_context."
         sections.append((name, []))
@@ -1630,9 +1646,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         if tool_mode == 'none':
             check_tools = None
         elif tool_mode == 'search':
-            # get_time rides along with every restricted set — see
+            # Memory tools are here as well as in 'file' mode: a search turn
+            # both needs to read memory (looking something up "near home" or
+            # "for my sister" depends on a section the prompt only names) and
+            # to write it, since the system prompt tells the model to save what
+            # it learns on every turn and this was the one mode with no tool to
+            # do it with. get_time rides along with every restricted set — see
             # build_time_tools() for why it can't be left out of one.
-            check_tools = build_search_tools() + build_time_tools()
+            check_tools = (build_search_tools() + build_context_tools()
+                           + build_time_tools())
         elif tool_mode == 'file':
             # Memory tools ride along here too: these are the tags (About-user,
             # Personal-question) most likely to turn up something worth
