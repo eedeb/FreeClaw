@@ -574,36 +574,66 @@ def set_messages(messages):
     agent_messages = _heal_history(messages)
 
 
-# reset() builds the system message once; a conversation can then run for
-# days (a ping delivered next week reuses the same one) without another
-# reset(), so a timestamp baked in at reset() would go stale fast. Instead the
-# current date/time is refreshed on every turn (see _refresh_volatile) — this
-# is what fixes add_ping resolving "today"/"tomorrow" against a guess instead
-# of the real clock. Kept to one short line, deliberately: it's resent on
-# every request.
-_NOW_LINE_PREFIX = "Current date/time: "
+# reset() builds the system message once; a conversation can then run for days
+# (a ping delivered next week reuses the same one) without another reset(), so a
+# date baked in at reset() would go stale. It's refreshed on every turn instead
+# (see _refresh_volatile), which is what stops add_ping resolving "today" /
+# "tomorrow" against a guess.
+#
+# The date only — no time of day. A clock down to the minute changed the prompt
+# every minute and could never be cached; the date is stable for a whole day, so
+# the entire system message now is too. Anything needing the actual time calls
+# the get_time tool, which is the rare case and shouldn't be billed for on every
+# request.
+_NOW_LINE_PREFIX = "Current date: "
+
+# What the line looked like when it carried a time as well. Only used to spot
+# and strip it when migrating a conversation saved by an older build — matching
+# on the current prefix alone would leave a stale clock frozen in the cached
+# part of the prompt forever.
+_LEGACY_NOW_PREFIXES = (_NOW_LINE_PREFIX, "Current date/time: ")
 
 
 def _now_line():
-    now = datetime.now()
-    return (f"{_NOW_LINE_PREFIX}{now.strftime('%Y-%m-%d %H:%M %A')} "
-            f"— resolve relative dates/times against this, never guess.")
+    return (f"{_NOW_LINE_PREFIX}{datetime.now().strftime('%Y-%m-%d %A')} "
+            f"— resolve relative dates against this, never guess. "
+            f"Call get_time for the time of day.")
 
 
-# Marks where the injected context.md copy starts, inside the volatile block.
+# Marks where the injected context.md copy starts.
 _CTX_HEADER = "\ncontext.md:\n"
 
-# Everything after this marker is rebuilt every turn (clock + context.md);
-# everything before it is fixed for the conversation's life. That split is what
-# makes prompt caching possible: providers cache a byte-identical *prefix*, and
-# this text used to open with the live timestamp, so every turn differed from
-# byte 0 and nothing could ever be reused. _cache_breakpoint_messages() marks
-# this exact boundary for the models that need an explicit one.
+# What a brand-new context.md is seeded with. Headings only, and deliberately
+# few: the whole file is injected into the system message, so every line here
+# is paid for on every conversation. They exist to give the model somewhere
+# obvious to file a new fact, which keeps memory grouped instead of becoming
+# one flat list. Used by users.create_user() and by reset() when the file has
+# gone missing, so both produce the same shape.
+CONTEXT_TEMPLATE = """## About
+## Preferences
+## People
+## Work
+## Projects
+"""
+
+# Everything after this marker is rebuilt every turn; everything before it —
+# the instructions *and* the context.md snapshot — stays byte-identical for the
+# whole conversation. That split is what makes prompt caching possible:
+# providers cache a byte-identical *prefix*, and this text used to open with
+# the live timestamp, so every turn differed from byte 0 and nothing could ever
+# be reused. _cache_breakpoint_messages() marks this exact boundary for the
+# models that need an explicit one.
+#
+# Only the clock lives down here now. context.md used to as well, re-read every
+# turn, which meant memory was both the fastest-growing part of the prompt and
+# the one part that could never be cached. It is now snapshotted once by
+# reset() and left alone until the next reset — see _refresh_volatile.
 _VOLATILE_HEADER = "\n\n--- live context (refreshed every turn) ---\n"
 
 
 def _context_block():
-    """The current context.md, formatted for the system message."""
+    """The current context.md on disk, formatted for the system message. Only
+    called when a conversation starts (reset), never per turn."""
     try:
         with open(static_dir + "context.md", "r", encoding="utf-8") as f:
             content = f.read()
@@ -612,43 +642,43 @@ def _context_block():
     return _CTX_HEADER + (content.strip() or "(empty — use create_file to start it)") + "\n"
 
 
-def _volatile_block():
-    return _VOLATILE_HEADER + _now_line() + "\n" + _context_block()
-
-
 def _stable_prefix(content):
-    """The cacheable part of a system message: everything before the volatile
-    block.
+    """The cacheable part of a system message: the instructions plus the
+    context.md snapshot, i.e. everything before the volatile marker.
 
-    Handles the older layout too — a conversation saved before the split has
-    the clock as its first line and the context.md block glued to the end,
-    with no marker. Those pieces are stripped out here so the migrated message
-    ends up in the new shape rather than accumulating two copies of each."""
+    Also migrates the two earlier layouts, both of which kept context.md in the
+    part that got rewritten every turn: the original had the clock as its first
+    line and context.md glued to the end with no marker at all, and the one
+    after it put clock + context.md together below the marker. Either way the
+    snapshot is lifted up here, where it now belongs, instead of being dropped
+    and leaving an in-flight conversation with no memory until its next
+    reset."""
     head, sep, _ = content.partition(_VOLATILE_HEADER)
-    if sep:
-        return head
-    # Legacy layout: drop the leading clock line...
-    first_line, _, rest = head.partition("\n")
-    if first_line.startswith(_NOW_LINE_PREFIX):
-        head = rest
-    # ...and the trailing context.md block.
-    head, _, _ = head.partition(_CTX_HEADER)
-    return head.rstrip()
+    if not sep:
+        # Oldest layout: drop the leading clock line.
+        first_line, _, rest = head.partition("\n")
+        if first_line.startswith(_LEGACY_NOW_PREFIXES):
+            head = rest
+    if _CTX_HEADER in head:
+        return head  # already in the current shape — returned verbatim so the
+                     # bytes a provider cached last turn are the bytes it sees
+    return head.partition(_CTX_HEADER)[0].rstrip() + _context_block()
 
 
 def _refresh_volatile():
-    """Rebuild the volatile tail of the system message at the top of every
-    turn: the live clock and a fresh copy of context.md.
+    """Rewrite the volatile tail at the top of every turn. That is now only the
+    clock, which has to stay live or add_ping resolves "tomorrow" against a
+    stale date.
 
-    context.md has to be re-read (not left as the snapshot reset() took)
-    because anything the model saved earlier in the same conversation would
-    otherwise stay invisible to it — and once history trimming drops the turn
-    where the fact was mentioned, it's gone from both places. Cheap: one small
-    local file read per turn."""
+    context.md is deliberately *not* re-read here. It's snapshotted by reset()
+    and stays fixed for the conversation, which is what lets it sit in the
+    cached prefix. The cost is that a fact the model saves mid-conversation
+    won't appear in its own prompt until the next reset — it can still get at
+    it with read_file in the meantime."""
     if not agent_messages or agent_messages[0].get("role") != "system":
         return
     stable = _stable_prefix(agent_messages[0].get("content", ""))
-    agent_messages[0]["content"] = stable + _volatile_block()
+    agent_messages[0]["content"] = stable + _VOLATILE_HEADER + _now_line() + "\n"
 
 
 def reset(tts=False):
@@ -665,11 +695,14 @@ def reset(tts=False):
     _VOLATILE_HEADER) so the bulk of it can be cached by the provider."""
     global agent_messages
     # Create the file if it's missing so the model's first edit_file/create_file
-    # lands somewhere; _context_block() reads it back below.
+    # lands somewhere; _context_block() reads it back below. Uses the same
+    # headed template new users get, so a context.md that was deleted (or
+    # predates the template) comes back with the same structure rather than
+    # blank.
     ctx_path = static_dir + "context.md"
     if not os.path.exists(ctx_path):
         with open(ctx_path, "w", encoding="utf-8") as f:
-            f.write("")
+            f.write(CONTEXT_TEMPLATE)
 
     prompt = """
 You are a capable AI assistant.
@@ -698,11 +731,15 @@ Scheduled events are stored in the ping.md file
     if tts:
         prompt += "\nYou will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.\n"
 
-    # Instructions above, live clock + context.md below — _refresh_volatile()
-    # rewrites everything from the marker down on every turn and leaves the
-    # text above it byte-identical, which is what a provider's prompt cache
-    # needs in order to hit.
-    agent_messages = [{"role": "system", "content": prompt.rstrip() + _volatile_block()}]
+    # Instructions + this one snapshot of context.md above the marker, live
+    # clock below it. _refresh_volatile() rewrites everything from the marker
+    # down on every turn and leaves the text above it byte-identical, which is
+    # what a provider's prompt cache needs in order to hit. This call is the
+    # only place context.md is read into the prompt, so a reset is what picks
+    # up edits made to it.
+    agent_messages = [{"role": "system", "content":
+                       prompt.rstrip() + _context_block()
+                       + _VOLATILE_HEADER + _now_line() + "\n"}]
     refresh_tools()
 
 
@@ -842,7 +879,7 @@ def build_file_tools():
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "date_time": { "type": "string", "description": "Absolute fire time, format 'YYYY-MM-DD HH:MM' (e.g. '2026-07-23 14:30'). Compute relative times ('today', 'tomorrow') from the live clock in the system prompt — never guess." },
+                        "date_time": { "type": "string", "description": "Absolute fire time, format 'YYYY-MM-DD HH:MM' (e.g. '2026-07-23 14:30'). Never guess it: today's date is in your system prompt, and anything involving a time of day ('in 20 minutes', 'at 6pm', 'tonight') needs a get_time call first." },
                         "action": { "type": "string", "description": "What to do when it fires, as an instruction to yourself, e.g. 'Remind the user to take their medication.'" },
                     },
                     "required": ["date_time", "action"]
@@ -877,6 +914,24 @@ def build_file_tools():
                     },
                     "required": ["filename"]
                 }
+            }
+        }
+    ]
+
+
+def build_time_tools():
+    """The clock, as a tool. Its own builder rather than part of the file or
+    utility sets because it's the one tool every intent needs to be able to
+    reach: the system prompt carries the date but not the time, so asking "what
+    time is it" in a mode that didn't offer this would send the model to a web
+    search for something the host machine already knows."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_time",
+                "description": "Returns the current local date and time on this machine. Use for the time of day, or before scheduling anything relative ('in 20 minutes'). The date alone is already in your system prompt — don't call this just for that.",
+                "parameters": { "type": "object", "properties": {} }
             }
         }
     ]
@@ -1014,7 +1069,8 @@ def refresh_tools():
     Safe to call anytime (e.g. after the MCP server list changes); does not
     touch the conversation or the LLM client."""
     global tools
-    tools = build_file_tools() + build_search_tools() + build_utility_tools() + load_mcp_tools()
+    tools = (build_file_tools() + build_search_tools() + build_utility_tools()
+             + build_time_tools() + load_mcp_tools())
     return tools
 
 
@@ -1128,6 +1184,14 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             logger.exception("Vision provider '%s' failed", vision_provider_name)
             return f"Image description failed — vision provider '{vision_provider_name}' returned an error: {e}"
         return completion.choices[0].message.content or "No description returned."
+
+    if command_name == 'get_time':
+        # Deliberately exactly PING_TIME_FORMAT, with no weekday appended: the
+        # model's whole reason for calling this is usually to hand the result
+        # to add_ping, and parse_ping_time() rejects a trailing weekday — which
+        # would leave the ping sitting in ping.md forever instead of firing.
+        # The weekday is in the system prompt already if it's wanted.
+        return datetime.now().strftime(PING_TIME_FORMAT)
 
     if command_name == 'list_files':
         return "Files in static directory: "+", ".join(os.listdir(static_dir))
@@ -1350,9 +1414,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         if tool_mode == 'none':
             check_tools = None
         elif tool_mode == 'search':
-            check_tools = build_search_tools()
+            # get_time rides along with every restricted set — see
+            # build_time_tools() for why it can't be left out of one.
+            check_tools = build_search_tools() + build_time_tools()
         elif tool_mode == 'file':
-            check_tools = build_file_tools()
+            check_tools = build_file_tools() + build_time_tools()
     elif system_input:
         # Kept for direct/external callers only — note that appending a
         # second system-role message breaks the single-leading-system-message

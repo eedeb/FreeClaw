@@ -123,8 +123,10 @@ def user_exists(name):
 def create_user(name):
     ctx_path = user_context_path(name)  # creates static/<user>/files/ too
     if not os.path.exists(ctx_path):
+        # Seeded with headings (agent.CONTEXT_TEMPLATE) rather than blank, so
+        # the model has somewhere to file each new fact from the first turn.
         with open(ctx_path, "w", encoding="utf-8") as f:
-            f.write("")
+            f.write(agent.CONTEXT_TEMPLATE)
     ping_path = user_ping_path(name)
     if not os.path.exists(ping_path):
         with open(ping_path, "w", encoding="utf-8") as f:
