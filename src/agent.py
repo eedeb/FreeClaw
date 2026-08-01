@@ -603,17 +603,18 @@ def _now_line():
 # Marks where the injected context.md copy starts.
 _CTX_HEADER = "\ncontext.md:\n"
 
-# What a brand-new context.md is seeded with. Headings only, and deliberately
-# few: the whole file is injected into the system message, so every line here
-# is paid for on every conversation. They exist to give the model somewhere
-# obvious to file a new fact, which keeps memory grouped instead of becoming
-# one flat list. Used by users.create_user() and by reset() when the file has
+# What a brand-new context.md is seeded with. Headings only: they give the
+# model somewhere obvious to file a new fact, which keeps memory grouped
+# instead of becoming one flat list — and grouped is what makes it possible to
+# send the model a table of contents instead of the whole file (see
+# _context_block). Used by users.create_user() and by reset() when the file has
 # gone missing, so both produce the same shape.
 CONTEXT_TEMPLATE = """## About
 ## Preferences
 ## People
 ## Work
 ## Projects
+## Commands
 """
 
 # Everything after this marker is rebuilt every turn; everything before it —
@@ -631,15 +632,118 @@ CONTEXT_TEMPLATE = """## About
 _VOLATILE_HEADER = "\n\n--- live context (refreshed every turn) ---\n"
 
 
-def _context_block():
-    """The current context.md on disk, formatted for the system message. Only
-    called when a conversation starts (reset), never per turn."""
+# The one section that is always sent in full — who the model is talking to is
+# needed on every turn, unlike the rest of memory.
+_CTX_ABOUT = "About"
+
+
+def _context_path():
+    return static_dir + "context.md"
+
+
+def _read_context():
     try:
-        with open(static_dir + "context.md", "r", encoding="utf-8") as f:
-            content = f.read()
+        with open(_context_path(), "r", encoding="utf-8") as f:
+            return f.read()
     except OSError:
-        content = ""
-    return _CTX_HEADER + (content.strip() or "(empty — use create_file to start it)") + "\n"
+        return ""
+
+
+def _write_context(content):
+    with open(_context_path(), "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _split_context(content):
+    """Split a context.md into (preamble, [(header, body_lines), ...]).
+
+    `preamble` is everything above the first "## " line. Normally empty — but
+    the Setup Wizard's context.md is a free-form script with no headings at
+    all, and that has to keep reaching the prompt whole rather than being
+    summarised down to nothing."""
+    preamble = []
+    sections = []
+    for line in content.splitlines():
+        if line.startswith("## "):
+            sections.append((line[3:].strip(), []))
+        elif sections:
+            sections[-1][1].append(line)
+        else:
+            preamble.append(line)
+    return "\n".join(preamble), sections
+
+
+def _norm_header(name):
+    """Fold a heading down to letters and digits, so the model's "## work" and
+    "Work:" both land on the section actually called Work."""
+    return re.sub(r'[^a-z0-9]', '', (name or "").lower())
+
+
+def _clean_header(name):
+    """A heading as it gets written to the file: no '#', one line, trimmed."""
+    cleaned = (name or "").replace("#", " ").strip()
+    return cleaned.splitlines()[0].strip() if cleaned else ""
+
+
+def _find_header(sections, header):
+    """Index of the section `header` names, or -1. Exact (normalised) match
+    first, then containment either way — a model asking for "Projects" should
+    still find "Current Projects" instead of silently starting a duplicate."""
+    target = _norm_header(header)
+    if not target:
+        return -1
+    normalised = [_norm_header(name) for name, _ in sections]
+    if target in normalised:
+        return normalised.index(target)
+    for i, name in enumerate(normalised):
+        if name and (target in name or name in target):
+            return i
+    return -1
+
+
+def _section_text(body):
+    return "\n".join(body).strip()
+
+
+def _render_context(preamble, sections):
+    """Rebuild the file from _split_context()'s pieces."""
+    parts = [preamble.rstrip()] if preamble.strip() else []
+    for name, body in sections:
+        text = _section_text(body)
+        parts.append(f"## {name}\n{text}" if text else f"## {name}")
+    return "\n".join(parts) + "\n"
+
+
+def _context_block():
+    """The part of context.md that goes into the system message: the About
+    section in full, plus the *names* of every other section.
+
+    Memory used to be injected whole, which made it the fastest-growing thing
+    in the prompt — every fact ever saved was paid for on every turn, nearly
+    all of it irrelevant to what was just asked. The model now gets who it's
+    talking to and a table of contents, and pulls a section in with
+    search_context when the conversation actually calls for one.
+
+    Anything above the first heading is kept verbatim: an unheaded context.md
+    has no table of contents to offer and would otherwise arrive empty.
+
+    Only called when a conversation starts (reset), never per turn."""
+    content = _read_context()
+    if not content.strip():
+        return _CTX_HEADER + "(empty — use add_context to start it)\n"
+
+    preamble, sections = _split_context(content)
+    about = _find_header(sections, _CTX_ABOUT)
+    parts = []
+    if preamble.strip():
+        parts.append(preamble.strip())
+    if about != -1:
+        name, body = sections[about]
+        parts.append(f"## {name}\n{_section_text(body) or '(empty)'}")
+    others = [name for i, (name, _) in enumerate(sections) if i != about]
+    if others:
+        parts.append("Other sections (read with search_context): " + ", ".join(others))
+    return _CTX_HEADER + "\n".join(parts) + "\n"
 
 
 def _stable_prefix(content):
@@ -699,7 +803,7 @@ def reset(tts=False):
     # headed template new users get, so a context.md that was deleted (or
     # predates the template) comes back with the same structure rather than
     # blank.
-    ctx_path = static_dir + "context.md"
+    ctx_path = _context_path()
     if not os.path.exists(ctx_path):
         with open(ctx_path, "w", encoding="utf-8") as f:
             f.write(CONTEXT_TEMPLATE)
@@ -721,10 +825,12 @@ Verify important information before responding.
 Do not add unnecessary explanations, introductions, or conclusions.
 Focus on solving the user's problem.
 
-context.md is your long-term memory — its contents are below, so never read it with a tool.
-Ask on every turn: what did I just learn about the user? Save it with edit_file immediately and
-silently — names, places, preferences, projects, people, corrections. Writing too little is the
-failure mode; skip only one-off details and what is already there.
+context.md is your long-term memory, filed under headers. Below is its About section and the
+names of the other sections — never read the file itself with a tool. Call search_context to
+open a section whenever one looks relevant to the request.
+Ask on every turn: what did I just learn about the user? Save it with add_context immediately
+and silently — names, places, preferences, projects, people, corrections. Writing too little is
+the failure mode; skip only one-off details and what is already there.
 
 Scheduled events are stored in the ping.md file
 """
@@ -788,6 +894,57 @@ def parse_ping_time(stamp):
     return parsed
 
 
+def build_context_tools():
+    """Memory, one section at a time. Your system prompt carries only the About
+    section and the list of header names, so these are how the rest of
+    context.md is read and written."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_context",
+                "description": "Pulls a header and its contents from context.md. Use it whenever a header listed in your prompt looks relevant — its contents are not there, only its name.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "header": { "type": "string", "description": "Name of the header" }
+                    },
+                    "required": ["header"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_context",
+                "description": "Adds information to a header in context.md. This is how you save anything worth remembering. Creates the header if it doesn't exist yet.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "header": { "type": "string", "description": "Name of the header" },
+                        "string": { "type": "string", "description": "New information to add" }
+                    },
+                    "required": ["header","string"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_header",
+                "description": "Adds a new empty header to context.md. Only for a topic no existing header covers — add_context alone is enough to save under one.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "header": { "type": "string", "description": "Name of the header" },
+                    },
+                    "required": ["header"]
+                }
+            }
+        },
+    ]
+
+
 def build_file_tools():
     return [
         {
@@ -809,7 +966,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Reads a file's contents from /static. Use for ping.md and created or uploaded files; context.md is already in your system prompt.",
+                "description": "Reads a file's contents from /static. Use for ping.md and created or uploaded files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -871,7 +1028,7 @@ def build_file_tools():
                 }
             }
         },
-    {
+        {
             "type": "function",
             "function": {
                 "name": "add_ping",
@@ -890,7 +1047,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content. Use this to edit the context.md and ping.md files.",
+                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content. Use this to edit ping.md, and to correct or remove a line in context.md — add_context is how you add to it.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1069,8 +1226,8 @@ def refresh_tools():
     Safe to call anytime (e.g. after the MCP server list changes); does not
     touch the conversation or the LLM client."""
     global tools
-    tools = (build_file_tools() + build_search_tools() + build_utility_tools()
-             + build_time_tools() + load_mcp_tools())
+    tools = (build_file_tools() + build_context_tools() + build_search_tools()
+             + build_utility_tools() + build_time_tools() + load_mcp_tools())
     return tools
 
 
@@ -1091,7 +1248,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     a decision having been made first."""
     parameter = (args_dict.get('query') or args_dict.get('site') or args_dict.get('url')
                  or args_dict.get('command') or args_dict.get('filename')
-                 or args_dict.get('contents') or None)
+                 or args_dict.get('header') or args_dict.get('contents') or None)
     print(f"Agent called tool: {command_name}" + (f" — {parameter}" if parameter else ""))
 
     if command_name == 'create_user':
@@ -1127,6 +1284,65 @@ def _run_tool(command_name, args_dict, bash_approved=False):
                 return f.read()
         except FileNotFoundError:
             return "File not found."
+
+    if command_name == 'search_context':
+        header = args_dict.get('header') or ''
+        _, sections = _split_context(_read_context())
+        idx = _find_header(sections, header)
+        if idx == -1:
+            # Name what does exist rather than a bare miss: the model picked
+            # this header off the list in its prompt, so a near-miss is far
+            # likelier than a section that genuinely isn't there.
+            names = ", ".join(name for name, _ in sections)
+            return (f"No '{header}' section in context.md. "
+                    + (f"Sections: {names}." if names else "It has no sections yet."))
+        name, body = sections[idx]
+        text = _section_text(body)
+        return f"## {name}\n{text}" if text else f"## {name}\n(this section is empty)"
+
+    if command_name == 'add_context':
+        entry = (args_dict.get('string') or '').strip()
+        if not entry:
+            return "Error: nothing to save — 'string' was empty."
+        preamble, sections = _split_context(_read_context())
+        idx = _find_header(sections, args_dict.get('header'))
+        created = False
+        if idx == -1:
+            # Better a header nobody asked for than a fact quietly dropped
+            # because the model guessed the name wrong.
+            name = _clean_header(args_dict.get('header'))
+            if not name:
+                return "Error: a header is required."
+            sections.append((name, []))
+            idx = len(sections) - 1
+            created = True
+        name, body = sections[idx]
+        lines = list(body)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if any(line.strip().lstrip('-*').strip() == entry.lstrip('-*').strip()
+               for line in lines if line.strip()):
+            return f"Already saved under '{name}' — nothing added."
+        # One-liners become list items so a section stays readable as it grows;
+        # anything multi-line is left exactly as the model wrote it.
+        if "\n" not in entry and not entry.startswith(("-", "*", "#")):
+            entry = "- " + entry
+        lines.append(entry)
+        sections[idx] = (name, lines)
+        _write_context(_render_context(preamble, sections))
+        return f"Saved under '{name}'." + (" (new section)" if created else "")
+
+    if command_name == 'add_header':
+        name = _clean_header(args_dict.get('header'))
+        if not name:
+            return "Error: a header is required."
+        preamble, sections = _split_context(_read_context())
+        idx = _find_header(sections, name)
+        if idx != -1:
+            return f"'{sections[idx][0]}' already exists in context.md — add to it with add_context."
+        sections.append((name, []))
+        _write_context(_render_context(preamble, sections))
+        return f"Added the '{name}' section to context.md."
 
     if command_name == 'get_image_description':
         vision_provider_name = read_vision_provider()
@@ -1418,7 +1634,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # build_time_tools() for why it can't be left out of one.
             check_tools = build_search_tools() + build_time_tools()
         elif tool_mode == 'file':
-            check_tools = build_file_tools() + build_time_tools()
+            # Memory tools ride along here too: these are the tags (About-user,
+            # Personal-question) most likely to turn up something worth
+            # remembering, and the system prompt tells the model to save it.
+            check_tools = build_file_tools() + build_context_tools() + build_time_tools()
     elif system_input:
         # Kept for direct/external callers only — note that appending a
         # second system-role message breaks the single-leading-system-message

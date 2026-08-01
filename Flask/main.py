@@ -137,8 +137,18 @@ def create_user_with_context(name, context=None):
         raise ValueError(f"A user named '{safe_name}' already exists.")
     create_user(safe_name)
     if context and str(context).strip():
+        # Filed under the template's About heading rather than replacing the
+        # file. The headings are the whole interface to memory now — the new
+        # user's agent is shown About plus the list of header names, and reads
+        # the rest with search_context — so overwriting them would hand them a
+        # context.md with nothing to file anything into.
+        marker = "## About\n"
+        seed = str(context).strip() + "\n"
+        template = agent.CONTEXT_TEMPLATE
+        seeded = (template.replace(marker, marker + seed, 1)
+                  if marker in template else template.rstrip("\n") + "\n" + seed)
         with open(user_context_path(safe_name), "w", encoding="utf-8") as f:
-            f.write(str(context).strip() + "\n")
+            f.write(seeded)
     return safe_name
 
 

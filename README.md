@@ -77,7 +77,7 @@ You can type these directly into the chat box:
 - **Adaptive turns** — the intent tag decides how much chat history is sent, the sampling temperature, and which tools are offered: small talk gets a tiny context window and no tools, precision work runs colder with the full toolset
 - **Minimal context windowing** — the number of past messages sent per turn scales with how complex the intent tag is, keeping token usage low for simple exchanges
 - **Multi-provider fallback** — add any OpenAI-compatible endpoint from Settings → Providers (URL, API key, model); the agent tries them in the order you list them, falling through to the next if one fails or is rate-limited
-- **Persistent memory** — the agent keeps durable facts about you in `context.md`, stored alongside your other files and read/updated with the same file tools it uses for everything else, without that history bloating the active context window
+- **Persistent memory, paged in** — the agent keeps durable facts about you in `context.md`, filed under `##` headers alongside your other files. Its prompt carries only the **About** section plus the *names* of the others, so memory can grow for years without the prompt growing with it; it pulls a section in with `search_context` when the conversation calls for one, and saves with `add_context`
 - **Web search & scraping** — queries DuckDuckGo for instant answers, news, and snippets, then scrapes and cleans the top non-JS-heavy result pages, all stitched into one capped, structured block of context for the model — no extra LLM call required
 - **Bash execution, gated on your approval** — can run shell commands on the host machine, but only ones you've okayed. The prompt is raised by FreeClaw itself, not by the model: see [Bash Approvals](#bash-approvals)
 - **File, page & image tools** — can create, read, edit (find/replace), delete, and list files in its sandboxed static folder; can publish a live HTML page at a public URL; can describe an uploaded image in detail using a vision model
@@ -222,9 +222,9 @@ FreeClaw's used not to be. The system message opened with a live timestamp, whic
 
 ```
 <instructions>                          ← fixed for the whole conversation, cacheable
+context.md: About section + header names ← snapshotted once, at reset
 --- live context (refreshed every turn) ---
-Current date/time: …                    ← rewritten every turn
-context.md: …
+Current date: …                         ← rewritten every turn
 ```
 
 That alone is enough for providers that cache automatically (OpenAI, DeepSeek, Groq, Cerebras, xAI) — they need no request-side opt-in, just a stable prefix.
@@ -359,7 +359,7 @@ FreeClaw is built around one principle: **use the cheapest model that can do the
 
 - Greetings, small talk, and personal questions → no tools, minimal context
 - Search, coding, logic, and everything else → tools included, context trimmed to a handful of recent messages
-- Long-term facts → saved once to `context.md` instead of being re-sent every turn
+- Long-term facts → saved once to `context.md` under a header, and only that header's *name* is re-sent each turn until the agent actually needs what's under it
 - A free, no-LLM scraping pipeline does the heavy lifting for search instead of spending a model call on it
 - The part of the prompt that never changes sits where a provider can cache it, so the repeated prefix is discounted instead of paid for in full every turn ([Prompt Caching](#prompt-caching))
 
