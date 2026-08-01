@@ -821,34 +821,28 @@ def reset(tts=False):
         with open(ctx_path, "w", encoding="utf-8") as f:
             f.write(CONTEXT_TEMPLATE)
 
+    # Every line here is resent on every request, so it stays terse — but each
+    # one is load-bearing. Three separate instructions used to say "be direct"
+    # and three more said "match depth to the question"; those are merged, not
+    # dropped.
     prompt = """
 You are a capable AI assistant.
 
-Answer the user's request directly.
+Answer directly: no preamble, no filler, no restating the question. Match depth to the request —
+simple questions get simple answers. Use your tools to act rather than describing what could be
+done, and verify anything important before relying on it.
 
-If the request requires actions, perform them using available tools instead of describing how they could be done.
-
-Adapt the depth of your response to the user's request.
-Simple questions deserve simple answers.
-Complex questions deserve thorough answers.
-
-Use tools only when they are necessary — saving to context.md always is.
-Verify important information before responding.
-
-Do not add unnecessary explanations, introductions, or conclusions.
-Focus on solving the user's problem.
-
-context.md is your long-term memory, filed under headers. Below is its About section and the
+context.md is your long-term memory, filed under headers. Below is its About section plus the
 names of the other sections — never read the file itself with a tool. Call search_context to
-open a section whenever one looks relevant to the request.
-Ask on every turn: what did I just learn about the user? Save it with add_context immediately
-and silently — names, places, preferences, projects, people, corrections. Writing too little is
-the failure mode; skip only one-off details and what is already there.
+open a section whenever one looks relevant.
+Ask every turn: what did I just learn about the user? Save it with add_context immediately and
+silently — names, places, preferences, projects, people, corrections. Writing too little is the
+failure mode; skip only one-offs and what is already saved.
 
-Scheduled events are stored in the ping.md file
+Scheduled events live in ping.md.
 """
     if tts:
-        prompt += "\nYou will be connected to a text-to-speech system, so your responses should be optimized for clear and natural speech.\n"
+        prompt += "\nYou are speaking through text-to-speech — write for clear, natural speech.\n"
 
     # Instructions + this one snapshot of context.md above the marker, live
     # clock below it. _refresh_volatile() rewrites everything from the marker
@@ -916,12 +910,10 @@ def build_context_tools():
             "type": "function",
             "function": {
                 "name": "search_context",
-                "description": "Pulls a header and its contents from context.md. Use it whenever a header listed in your prompt looks relevant — its contents are not there, only its name.",
+                "description": "Opens a header in context.md. Your prompt lists header names only, not their contents — call this whenever one looks relevant.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "header": { "type": "string", "description": "Name of the header" }
-                    },
+                    "properties": { "header": { "type": "string" } },
                     "required": ["header"]
                 }
             }
@@ -930,12 +922,12 @@ def build_context_tools():
             "type": "function",
             "function": {
                 "name": "add_context",
-                "description": "Adds information to a header in context.md. This is how you save anything worth remembering. Creates the header if it doesn't exist yet.",
+                "description": "Saves information under a header in context.md — this is how you remember anything. Creates the header if it doesn't exist.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "header": { "type": "string", "description": "Name of the header" },
-                        "string": { "type": "string", "description": "New information to add" }
+                        "header": { "type": "string" },
+                        "string": { "type": "string", "description": "What to remember" }
                     },
                     "required": ["header","string"]
                 }
@@ -945,12 +937,10 @@ def build_context_tools():
             "type": "function",
             "function": {
                 "name": "add_header",
-                "description": "Adds a new empty header to context.md. Only for a topic no existing header covers — add_context alone is enough to save under one.",
+                "description": "Adds an empty header to context.md. Only for a topic no existing header covers — add_context alone can save under one.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "header": { "type": "string", "description": "Name of the header" },
-                    },
+                    "properties": { "header": { "type": "string" } },
                     "required": ["header"]
                 }
             }
@@ -964,12 +954,12 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "create_user",
-                "description": "Creates a new FreeClaw user with their own chats and memory. Only when explicitly asked to add a user — never to switch context in this conversation.",
+                "description": "Creates a new FreeClaw user with their own chats and memory. Only when explicitly asked to add a user — never to switch context here.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "name": { "type": "string", "description": "New user's name — used as a folder name, so keep it short (letters, numbers, spaces, - or _)." },
-                        "context": { "type": "string", "description": "Optional starting content for the new user's context.md. Omit for blank." }
+                        "name": { "type": "string", "description": "Used as a folder name: letters, numbers, spaces, - or _" },
+                        "context": { "type": "string", "description": "Optional starting content for their context.md" }
                     },
                     "required": ["name"]
                 }
@@ -979,12 +969,10 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Reads a file's contents from /static. Use for ping.md and created or uploaded files.",
+                "description": "Reads a file from /static — ping.md, and created or uploaded files.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "filename": { "type": "string", "description": "Name of the file" }
-                    },
+                    "properties": { "filename": { "type": "string" } },
                     "required": ["filename"]
                 }
             }
@@ -1005,8 +993,8 @@ def build_file_tools():
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "filename": { "type": "string", "description": "name_of_your_webpage.html" },
-                        "contents": { "type": "string", "description": "HTML code" }
+                        "filename": { "type": "string", "description": "e.g. page.html" },
+                        "contents": { "type": "string", "description": "HTML" }
                     },
                     "required": ["filename","contents"]
                 }
@@ -1016,12 +1004,12 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "create_file",
-                "description": "Creates an output file (document, data export, script, config, etc.) for the user or other tools to use.",
+                "description": "Creates an output file — document, data export, script, config — for the user or other tools.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "filename": { "type": "string", "description": "name_of_your_file.something" },
-                        "contents": { "type": "string", "description": "File contents, can leave blank" }
+                        "filename": { "type": "string", "description": "e.g. notes.md" },
+                        "contents": { "type": "string", "description": "May be blank" }
                     },
                     "required": ["filename","contents"]
                 }
@@ -1034,9 +1022,7 @@ def build_file_tools():
                 "description": "Deletes a file from /static. Never delete context.md or ping.md.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "filename": { "type": "string", "description": "name_of_your_file.something" },
-                    },
+                    "properties": { "filename": { "type": "string" } },
                     "required": ["filename"]
                 }
             }
@@ -1045,12 +1031,12 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "add_ping",
-                "description": "Schedules a reminder or future action. The action text is delivered to the user as a prompt when its time arrives.",
+                "description": "Schedules a reminder or future action; the action text reaches the user as a prompt when it fires.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "date_time": { "type": "string", "description": "Absolute fire time, format 'YYYY-MM-DD HH:MM' (e.g. '2026-07-23 14:30'). Never guess it: today's date is in your system prompt, and anything involving a time of day ('in 20 minutes', 'at 6pm', 'tonight') needs a get_time call first." },
-                        "action": { "type": "string", "description": "What to do when it fires, as an instruction to yourself, e.g. 'Remind the user to take their medication.'" },
+                        "date_time": { "type": "string", "description": "Absolute, as 'YYYY-MM-DD HH:MM'. Never guess: today's date is in your prompt, but any time of day ('in 20 minutes', '6pm', 'tonight') needs get_time first." },
+                        "action": { "type": "string", "description": "An instruction to yourself, e.g. 'Remind them to take their medication.'" },
                     },
                     "required": ["date_time", "action"]
                 }
@@ -1060,13 +1046,13 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Edits an existing /static file by replacing one exact string with another. Use instead of create_file for modifying existing content. Use this to edit ping.md, and to correct or remove a line in context.md — add_context is how you add to it.",
+                "description": "Replaces one exact string in an existing /static file. Use instead of create_file to change existing content — ping.md, or correcting or removing a context.md line (add_context adds one).",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "filename": { "type": "string", "description": "Name of the file to edit" },
-                        "old_str": { "type": "string", "description": "Exact string to find and replace" },
-                        "new_str": { "type": "string", "description": "String to replace it with" }
+                        "filename": { "type": "string" },
+                        "old_str": { "type": "string", "description": "Exact string to replace" },
+                        "new_str": { "type": "string", "description": "Replacement" }
                     },
                     "required": ["filename", "old_str", "new_str"]
                 }
@@ -1079,9 +1065,7 @@ def build_file_tools():
                 "description": "Returns a detailed description of an image in /static.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "filename": { "type": "string", "description": "name_of_your_image.something" }
-                    },
+                    "properties": { "filename": { "type": "string" } },
                     "required": ["filename"]
                 }
             }
@@ -1100,7 +1084,7 @@ def build_time_tools():
             "type": "function",
             "function": {
                 "name": "get_time",
-                "description": "Returns the current local date and time on this machine. Use for the time of day, or before scheduling anything relative ('in 20 minutes'). The date alone is already in your system prompt — don't call this just for that.",
+                "description": "Current local date and time. For the time of day, or before scheduling anything relative ('in 20 minutes'). Today's date is already in your prompt — don't call this just for that.",
                 "parameters": { "type": "object", "properties": {} }
             }
         }
@@ -1108,22 +1092,25 @@ def build_time_tools():
 
 
 def build_search_tools():
-    # Sites worth steering the model toward for common query types.
+    # Sites worth steering the model toward for common query types. Rendered
+    # as "weather → a, b; news → c" rather than str(dict), which spent tokens
+    # on Python's quotes and brackets to say the same thing.
     best_sites = {
         "weather": ["localconditions.com"],
         "news": ["bbc.com", "atoztimes.com"],
     }
+    site_guide = "; ".join(f"{k} → {', '.join(v)}" for k, v in best_sites.items())
     return [
         {
             "type": "function",
             "function": {
                 "name": "search",
-                "description": "Fetches up-to-date info for real-time queries. Max 2 calls per task — proceed once you have enough, or report back to the user if you still don't after 2 searches. Here is a website guide: "+str(best_sites),
+                "description": "Fetches current info for real-time queries. Max 2 calls per task — then answer with what you have, or tell the user you couldn't find it. Best sites: " + site_guide,
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Natural language query to answer" },
-                        "site": { "type": "string", "description": "Site to search. Omit to search generally." }
+                        "query": { "type": "string", "description": "Natural-language query" },
+                        "site": { "type": "string", "description": "Restrict to one site; omit for a general search" }
                     },
                     "required": ["query"]
                 }
@@ -1133,12 +1120,10 @@ def build_search_tools():
             "type": "function",
             "function": {
                 "name": "read_web",
-                "description": "Returns the first 3000 characters of a webpage. Use only when the user asks to look at a specific URL.",
+                "description": "First 3000 characters of a webpage. Only when the user names a specific URL.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "url": { "type": "string", "description": "URL of the webpage to read" }
-                    },
+                    "properties": { "url": { "type": "string" } },
                     "required": ["url"]
                 }
             }
@@ -1152,12 +1137,10 @@ def build_utility_tools():
             "type": "function",
             "function": {
                 "name": "open_url",
-                "description": "Opens a URL or URI on the user's device — webpages, apps via custom URI (e.g. texting, calling).",
+                "description": "Opens a URL or URI on the user's device — webpages, or apps via custom URI (texting, calling).",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "url": { "type": "string", "description": "url to open" }
-                    },
+                    "properties": { "url": { "type": "string" } },
                     "required": ["url"]
                 }
             }
@@ -1165,13 +1148,14 @@ def build_utility_tools():
         {
             "type": "function",
             "function": {
+                # The longest description here, and deliberately so: every
+                # clause is a rule the model breaks without it. Kept whole,
+                # only tightened.
                 "name": "run_bash_command",
-                "description": "Runs a shell command on this machine. Execute immediately when asked — don't chain multiple commands without reporting back first. Permission is handled by FreeClaw itself, outside this conversation: never ask the user whether you may run something, never describe a command instead of running it, and never treat your own judgement as approval. Just call this tool; the user is prompted automatically and you'll be told if they refused.",
+                "description": "Runs a shell command on this machine. Run it when asked; don't chain several without reporting back. FreeClaw handles permission outside this conversation — never ask whether you may, never describe a command instead of running it, never treat your own judgement as approval. Just call this: the user is prompted automatically and you'll be told if they refuse.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "command": { "type": "string", "description": "BASH command" }
-                    },
+                    "properties": { "command": { "type": "string" } },
                     "required": ["command"]
                 }
             }
