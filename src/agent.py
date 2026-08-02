@@ -414,7 +414,12 @@ def _cache_breakpoint_messages(messages):
 
 # Keys we hang on our own message dicts for the UI's benefit and that no
 # provider should ever see. Stripped in _create_completion.
-_INTERNAL_MESSAGE_KEYS = ("provider", "usage")
+#
+# "reasoning" belongs here rather than on the wire: no provider asks for its
+# own thinking back, and the history is replayed to whichever provider answers
+# next — which for most of the chain means an unrecognized message field and a
+# 400. It's kept on the message only so the block still renders after a reload.
+_INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -1814,6 +1819,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     model produces output, so callers (e.g. the Flask route) can stream
     them to the browser in real time:
       {"type": "token", "text": "..."}            - a chunk of assistant text
+      {"type": "reasoning", "text": "..."}        - a chunk of the model's thinking
       {"type": "tool_call", "name": "...", "arguments": {...}} - tool invocation started
       {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
     The full, final conversation is available afterwards via agent_messages.
@@ -1930,6 +1936,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # time and reassembling any tool calls (which always arrive as
     # incremental argument-string fragments when streamed).
     buffer = ""
+    reasoning_buffer = ""
     tool_calls_acc = {}
     usage_seen = None
     try:
@@ -1949,6 +1956,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             if getattr(delta, "content", None):
                 buffer += delta.content
                 yield {"type": "token", "text": delta.content}
+            # Reasoning models stream their thinking on a field of its own,
+            # never inside `content` — `reasoning` on Groq's and Cerebras'
+            # gpt-oss, `reasoning_content` on DeepSeek and its shims. A
+            # provider that doesn't reason simply never sets either.
+            reasoning_delta = (getattr(delta, "reasoning", None)
+                               or getattr(delta, "reasoning_content", None))
+            if reasoning_delta:
+                reasoning_buffer += reasoning_delta
+                yield {"type": "reasoning", "text": reasoning_delta}
             if getattr(delta, "tool_calls", None):
                 for tc_delta in delta.tool_calls:
                     idx = tc_delta.index
@@ -2034,6 +2050,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # it would desync the saved conversation from what the user saw.
         if buffer:
             assistant_msg["content"] = buffer
+        # Likewise the thinking: it was on screen while this streamed, so it
+        # has to survive a reload too (stripped before any request goes out —
+        # see _INTERNAL_MESSAGE_KEYS).
+        if reasoning_buffer:
+            assistant_msg["reasoning"] = reasoning_buffer
         # Saved with the conversation so the real counts are still there after
         # a reload instead of reverting to the client's estimate. Only set when
         # the provider actually reported, and stripped before any request goes
@@ -2123,6 +2144,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         "provider": provider,
         "content": buffer,
     }
+    if reasoning_buffer:
+        final_msg["reasoning"] = reasoning_buffer
     if usage_seen:
         final_msg["usage"] = usage_seen
     agent_messages.append(final_msg)

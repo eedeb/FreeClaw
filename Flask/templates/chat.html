@@ -618,6 +618,34 @@
     .tool-result-ok   { color: #c8e6a0; }
     .tool-result-err  { color: #e07070; }
 
+    /* ── Reasoning block ──
+       Reasoning models stream their thinking on a field of its own, ahead of
+       the reply. Collapsed by default: it's usually several times longer than
+       the answer and is there to be checked, not read. Reuses the tool pill
+       wholesale (.tool-group / .tool-toggle / .tool-details / .tool-section) —
+       only the body differs, since this is prose rather than code. */
+    .reasoning-body {
+      font-family: var(--sans);
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: #9a9aa8;
+      background: transparent;
+      white-space: pre-wrap;
+      word-break: normal;
+      overflow-wrap: anywhere;
+      padding: 0;
+      margin: 0;
+    }
+    /* Still streaming. Its own keyframe rather than the dots' `blink`, which
+       scales as well as fades and reads as a wobble on text. The arrow stays
+       live throughout, so the panel can be opened to watch the thinking
+       arrive rather than only read it back afterwards. */
+    .reasoning-live .reasoning-label { animation: reasoningPulse 1.4s ease-in-out infinite; }
+    @keyframes reasoningPulse {
+      0%, 100% { opacity: 0.45; }
+      50%      { opacity: 1; }
+    }
+
     /* ── Bash approval prompt ──
        Shown when the agent wants to run a shell command not already covered by
        a saved always-allow rule. The agent's turn is blocked on the other side
@@ -919,6 +947,63 @@
     return group;
   }
 
+  // ── Reasoning block ──────────────────────────────────────
+  // Reasoning models stream their thinking on a field of its own, ahead of the
+  // reply (the "reasoning" event out of agent_stream). Returns a handle so the
+  // one builder serves both jobs: the live stream appends to it as chunks
+  // land, and renderConversation() hands it the finished text on reload.
+  //
+  // Not counted in the token estimate below on purpose — it's stripped from
+  // the history before any request goes out, so it never costs context.
+  function addReasoningBlock(text, live) {
+    removeEmpty();
+
+    const group = document.createElement('div');
+    group.className = 'tool-group' + (live ? ' reasoning-live' : '');
+
+    const toggle = document.createElement('div');
+    toggle.className = 'tool-toggle';
+    toggle.innerHTML = `<i class="tool-toggle-arrow">▶</i><span class="reasoning-label">${live ? 'reasoning…' : 'see reasoning'}</span>`;
+
+    const details = document.createElement('div');
+    details.className = 'tool-details';
+
+    const sec = document.createElement('div');
+    sec.className = 'tool-section';
+    const body = document.createElement('pre');
+    body.className = 'reasoning-body';
+    body.textContent = text || '';
+    sec.appendChild(body);
+    details.appendChild(sec);
+
+    toggle.addEventListener('click', () => {
+      const open = details.classList.toggle('open');
+      toggle.classList.toggle('open', open);
+    });
+
+    group.appendChild(toggle);
+    group.appendChild(details);
+    messagesEl.appendChild(group);
+
+    return {
+      wrap: group,
+      append(chunk) {
+        body.textContent += chunk;
+        // Only chase the bottom while the panel is open. A collapsed block
+        // isn't growing on screen, and scrolling for it would yank the view
+        // away from someone reading back through the thread.
+        if (details.classList.contains('open')) {
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+      },
+      finish() {
+        group.classList.remove('reasoning-live');
+        const label = group.querySelector('.reasoning-label');
+        if (label) label.textContent = 'see reasoning';
+      }
+    };
+  }
+
   // ── Estimate total tokens for the FULL payload sent to/from the LLM ──
   // Walks the raw conversation array (system prompt, user/assistant text,
   // tool call arguments, and tool result content) rather than just what
@@ -1034,7 +1119,10 @@
         const { text, imageUrl } = extractFileTag(rawText);
         addMessage('user', text, imageUrl, { countTokens: false });
       } else if (msg.role === 'assistant') {
-        // Tool calls first (if any)
+        // Thinking first — it streamed ahead of everything else this message
+        // produced, so it renders in the same order it was seen live.
+        if (msg.reasoning) addReasoningBlock(msg.reasoning, false);
+        // Tool calls next (if any)
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const tc of msg.tool_calls) {
             const fn = tc.function || {};
@@ -1266,6 +1354,14 @@
     let activeToolIndicator = null;
     let currentProvider = null;
     let activeApproval = null;
+    let activeReasoning = null;
+
+    // The thinking is over the moment anything else shows up — text, a tool
+    // call, or the end of the turn. A turn with tool calls makes several LLM
+    // requests, so it can open one of these per request, same as tool blocks.
+    const finishReasoning = () => {
+      if (activeReasoning) { activeReasoning.finish(); activeReasoning = null; }
+    };
 
     const dropLiveBubble = () => {
       if (liveWrap) liveWrap.remove();
@@ -1328,7 +1424,15 @@
             // stale number attached to a different call.
             if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null);
 
+          } else if (evt.type === 'reasoning') {
+            // Arrives ahead of any text, so it stands in for the thinking
+            // dots — the same "working on it" signal, with the work shown.
+            if (thinking.parentNode) thinking.remove();
+            if (!activeReasoning) activeReasoning = addReasoningBlock('', true);
+            activeReasoning.append(evt.text);
+
           } else if (evt.type === 'token') {
+            finishReasoning();
             if (thinking.parentNode) thinking.remove();
             if (!liveWrap) {
               liveWrap = document.createElement('div');
@@ -1351,6 +1455,7 @@
             // streamed text bubble (it'll be re-rendered properly, with the
             // full tool block, once the conversation comes back) and show
             // a live indicator so the user can see what's happening.
+            finishReasoning();
             dropLiveBubble();
             if (thinking.parentNode) thinking.remove();
             activeToolIndicator = addToolLive(evt.name);
@@ -1428,6 +1533,10 @@
 
           } else if (evt.type === 'error') {
             if (thinking.parentNode) thinking.remove();
+            // Stop the pulse but leave the block: partial thinking is real
+            // output the user watched arrive, and nothing re-renders after
+            // an error to bring it back.
+            finishReasoning();
             dropLiveBubble();
             if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
             // An unanswered prompt can't be answered any more once the turn
@@ -1441,6 +1550,9 @@
 
           } else if (evt.type === 'done') {
             if (thinking.parentNode) thinking.remove();
+            // renderConversation() below rebuilds the thread from the saved
+            // messages, reasoning blocks included — just drop the handle.
+            activeReasoning = null;
             dropLiveBubble();
             if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
             // renderConversation() below clears the whole thread, so the
@@ -1461,6 +1573,7 @@
       if (thinking.parentNode) thinking.remove();
     } catch {
       if (thinking.parentNode) thinking.remove();
+      finishReasoning();
       dropLiveBubble();
       if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
       if (activeApproval) {
