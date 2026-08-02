@@ -512,6 +512,54 @@ def _reset_turn_usage():
 _reset_turn_usage()
 
 
+# ── consecutive tool-call throttle ───────────────────────────
+#
+# The agent loop ends only when the model stops asking for tools, so a model
+# that keeps asking runs forever. It isn't unaware it's repeating — a real run
+# enumerated its own previous sends each round and sent again anyway — so what
+# breaks the pattern isn't a reminder, it's a round where the tool does not run.
+#
+# Two calls go through, the third is refused and the count resets:
+#     call, call, REFUSED, call, call, REFUSED, …
+# The refusal is a normal tool result, so the model reads it and chooses what to
+# do next: a different approach, or the same call again now that the count is
+# clear. Nothing is blocked permanently — the point is to interrupt a runaway
+# often enough that it has to re-decide, not to cap how much work a turn can do.
+#
+# Module-level and reset per turn, for the same reason _turn_usage is: the
+# recursion means a local wouldn't carry across tool hops.
+
+TOOL_CALL_RUN_LIMIT = 2
+
+THROTTLE_NOTICE = (
+    "This tool was NOT run. You have called tools {limit} times in a row without answering the "
+    "user, so this call was held back automatically. Stop and reconsider: has the request already "
+    "been satisfied by what you have done? If so, answer the user now and call nothing. If a step "
+    "genuinely remains, try a different approach rather than repeating this one — and if repeating "
+    "it really is the only option, you may call it again on the next step."
+)
+
+_consecutive_tool_calls = 0
+
+
+def _reset_tool_run():
+    global _consecutive_tool_calls
+    _consecutive_tool_calls = 0
+
+
+def _throttle_tool_call():
+    """True when this call should be held back instead of run.
+
+    Counts calls that actually execute; a held-back call resets the run so the
+    next two go through."""
+    global _consecutive_tool_calls
+    if _consecutive_tool_calls >= TOOL_CALL_RUN_LIMIT:
+        _consecutive_tool_calls = 0
+        return True
+    _consecutive_tool_calls += 1
+    return False
+
+
 def get_turn_usage():
     """Token totals for the turn that just ran. Read by the /v1 endpoint to
     fill in its `usage` block — the figures are the providers' own, so they're
@@ -1101,6 +1149,9 @@ one-off requests, the details or results of the task you are doing, anything you
 again, or anything already in memory — a cluttered file buries the facts that matter.
 
 Scheduled events live in ping.md.
+
+Read freely. Actions with outside effects are different: do one, report it, stop. Repeating one is
+almost never the fix, even when the request is open-ended.
 """
     if tts:
         prompt += "\nYou are speaking through text-to-speech — write for clear, natural speech.\n"
@@ -1885,6 +1936,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # (the tool_input branch) deliberately don't reset, so their requests
         # add to the same turn's total.
         _reset_turn_usage()
+        # Likewise the tool-call run: "twice in a row" is counted within a turn,
+        # so a new request always gets its full allowance regardless of how the
+        # last one ended.
+        _reset_tool_run()
 
         intent, _ = Classy.classify(user_input, CLASSIFIER_PATH)
         tag = intent[0]
@@ -2182,7 +2237,16 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             if args_dict is not None:
                 yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
                 bash_approved = False
-                if command_name == 'run_bash_command':
+                # Checked before the approval gate on purpose: a call that isn't
+                # going to run shouldn't put a prompt in front of the user, and
+                # shouldn't burn one of their answers either.
+                if _throttle_tool_call():
+                    result = THROTTLE_NOTICE.format(limit=TOOL_CALL_RUN_LIMIT)
+                    logger.info("Tool '%s' held back — %d calls in a row without answering",
+                                command_name, TOOL_CALL_RUN_LIMIT)
+                    yield {"type": "tool_throttled", "name": command_name,
+                           "limit": TOOL_CALL_RUN_LIMIT}
+                elif command_name == 'run_bash_command':
                     # The approval gate. Deliberately here rather than inside
                     # _run_tool: asking the user means emitting an event and
                     # then blocking, and only the generator can do the first
