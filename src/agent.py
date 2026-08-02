@@ -612,8 +612,14 @@ _reset_turn_usage()
 # enumerated its own previous sends each round and sent again anyway — so what
 # breaks the pattern isn't a reminder, it's a round where the tool does not run.
 #
-# Two calls go through, the third is refused and the count resets:
-#     call, call, REFUSED, call, call, REFUSED, …
+# The run counted is per *tool*, not tools in general. Working through a task
+# with several different tools is ordinary agent behaviour and is left alone;
+# reaching for the same one over and over is the runaway. So the same tool twice
+# in a row goes through and the third is refused:
+#     search, search, REFUSED, search, search, REFUSED, …
+# while a different tool resets the run and runs immediately:
+#     search, search, send, search, search  — nothing refused
+#
 # The refusal is a normal tool result, so the model reads it and chooses what to
 # do next: a different approach, or the same call again now that the count is
 # clear. Nothing is blocked permanently — the point is to interrupt a runaway
@@ -625,27 +631,35 @@ _reset_turn_usage()
 TOOL_CALL_RUN_LIMIT = 2
 
 THROTTLE_NOTICE = (
-    "This tool was NOT run. You have called tools {limit} times in a row without answering the "
-    "user, so this call was held back automatically. Stop and reconsider: has the request already "
-    "been satisfied by what you have done? If so, answer the user now and call nothing. If a step "
+    "'{name}' was NOT run. You have called it {limit} times in a row without answering the user, "
+    "so this call was held back automatically. Stop and reconsider: has the request already been "
+    "satisfied by what you have done? If so, answer the user now and call nothing. If a step "
     "genuinely remains, try a different approach rather than repeating this one — and if repeating "
     "it really is the only option, you may call it again on the next step."
 )
 
 _consecutive_tool_calls = 0
+_last_tool_name = None
 
 
 def _reset_tool_run():
-    global _consecutive_tool_calls
+    global _consecutive_tool_calls, _last_tool_name
     _consecutive_tool_calls = 0
+    _last_tool_name = None
 
 
-def _throttle_tool_call():
+def _throttle_tool_call(name):
     """True when this call should be held back instead of run.
 
-    Counts calls that actually execute; a held-back call resets the run so the
-    next two go through."""
-    global _consecutive_tool_calls
+    A different tool from the last one always runs and starts a fresh run, so
+    varied work is never throttled. A held-back call resets the run, so the same
+    tool is free to go again on the next step if there really is no
+    alternative."""
+    global _consecutive_tool_calls, _last_tool_name
+    if name != _last_tool_name:
+        _last_tool_name = name
+        _consecutive_tool_calls = 1
+        return False
     if _consecutive_tool_calls >= TOOL_CALL_RUN_LIMIT:
         _consecutive_tool_calls = 0
         return True
@@ -2367,9 +2381,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 # Checked before the approval gate on purpose: a call that isn't
                 # going to run shouldn't put a prompt in front of the user, and
                 # shouldn't burn one of their answers either.
-                if _throttle_tool_call():
-                    result = THROTTLE_NOTICE.format(limit=TOOL_CALL_RUN_LIMIT)
-                    logger.info("Tool '%s' held back — %d calls in a row without answering",
+                if _throttle_tool_call(command_name):
+                    result = THROTTLE_NOTICE.format(name=command_name,
+                                                    limit=TOOL_CALL_RUN_LIMIT)
+                    logger.info("Tool '%s' held back — called %d times in a row without answering",
                                 command_name, TOOL_CALL_RUN_LIMIT)
                     yield {"type": "tool_throttled", "name": command_name,
                            "limit": TOOL_CALL_RUN_LIMIT}
