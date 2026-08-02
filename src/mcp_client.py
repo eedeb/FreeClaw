@@ -28,6 +28,7 @@ import atexit
 import json
 import os
 import queue
+import re
 import shlex
 import subprocess
 import threading
@@ -287,6 +288,68 @@ _stdio_registry_lock = threading.Lock()  # guards the dict, not the per-process 
 STDIO_STARTUP_TIMEOUT = 60
 STDIO_CALL_TIMEOUT = 60
 
+# ── how long one tool call may hold the line ─────────────────
+#
+# A short read timeout is what stops a hung server from stalling a whole turn,
+# and for almost every tool 60s is already generous. But a few exist precisely
+# to block: Composio's COMPOSIO_WAIT_FOR_CONNECTIONS sits on the socket until
+# the user finishes an OAuth flow in a browser, which routinely outlasts a
+# minute. Against those a flat timeout fires while the tool is doing exactly
+# what it was asked to, and the model is handed a transport error for a call
+# that never actually failed — so the wait is derived from the call instead.
+CALL_READ_TIMEOUT = 60
+# For a tool that is evidently a long poll but didn't say how long to wait.
+LONG_POLL_READ_TIMEOUT = 180
+# Nothing waits past this, whatever the arguments ask for. The read blocks
+# inside requests and can't be interrupted, so this is also the longest the
+# Stop button can sit there looking dead.
+MAX_READ_TIMEOUT = 600
+# Headroom over a wait the tool was itself told to perform, so the server gets
+# to return its own "timed out" result — which the model can read and act on —
+# instead of us severing the socket a moment before it answers.
+TIMEOUT_HEADROOM = 15
+
+# Tool names whose job is to wait. Matched on the name because at call time
+# that and the arguments are all we have; deliberately narrow, since a wrong
+# guess here buys a genuinely stuck server three extra minutes to hang a turn.
+_LONG_POLL_NAME_RE = re.compile(r"(^|_)(wait|poll)(_|$)", re.I)
+
+# What servers call the "how long may this block" argument.
+_WAIT_ARG_KEYS = ("timeout", "timeout_seconds", "timeout_s", "timeout_ms",
+                  "wait_timeout", "wait_seconds", "wait_for", "max_wait",
+                  "max_wait_seconds", "poll_timeout")
+
+
+def _read_timeout_for(tool_name, arguments):
+    """Seconds to let this particular tool call hold the socket.
+
+    A tool that was handed its own wait length is taken at its word: blocking
+    for that long is the call working, not hanging, and cutting it short turns
+    a functioning tool into one that can never succeed. Anything with no such
+    argument and no wait-ish name keeps the short default, so an unresponsive
+    server still fails fast and the chain moves on."""
+    stated = 0.0
+    for key in _WAIT_ARG_KEYS:
+        value = (arguments or {}).get(key)
+        # bools are ints in Python, and mean "should I wait", never "how long".
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            continue
+        # A key that names its unit is believed outright. One that doesn't is
+        # read as milliseconds only when seconds would be absurd: a timeout of
+        # 120000 is two minutes, not a day and a half.
+        if key.endswith("_ms") or seconds > MAX_READ_TIMEOUT * 10:
+            seconds /= 1000
+        stated = max(stated, seconds)
+    if stated > 0:
+        return min(stated + TIMEOUT_HEADROOM, MAX_READ_TIMEOUT)
+    if _LONG_POLL_NAME_RE.search(tool_name or ""):
+        return LONG_POLL_READ_TIMEOUT
+    return CALL_READ_TIMEOUT
+
 
 class StdioUnavailable(RuntimeError):
     """The child died or stopped answering — worth retrying with a fresh one."""
@@ -529,10 +592,25 @@ def list_tools(server, use_cache=True):
 
 
 def call_tool(server, tool_name, arguments):
-    """Invoke `tool_name` on `server` and return its result as plain text."""
-    msg = _rpc_for(server, "tools/call",
-                   {"name": tool_name, "arguments": arguments or {}},
-                   http_timeout=(6, 60))
+    """Invoke `tool_name` on `server` and return its result as plain text.
+
+    How long the call may block is decided per call — see _read_timeout_for."""
+    read_timeout = _read_timeout_for(tool_name, arguments)
+    try:
+        msg = _rpc_for(server, "tools/call",
+                       {"name": tool_name, "arguments": arguments or {}},
+                       http_timeout=(6, read_timeout),
+                       stdio_timeout=read_timeout)
+    except requests.Timeout:
+        # Answered rather than raised, so the model gets a usable sentence
+        # instead of a stack of urllib3 wrapping. The last line is the point:
+        # a timed-out wait is the one failure a model is most tempted to retry
+        # immediately, which is how a single slow tool becomes a runaway turn.
+        logger.warning("MCP tool '%s' on '%s' held the connection past %ss",
+                       tool_name, server.get("name"), read_timeout)
+        return (f"No result: '{tool_name}' was still running after {read_timeout:.0f}s, "
+                "so the connection was closed. It may have finished anyway — check "
+                "before doing anything else, and do not simply call it again.")
     if msg is None:
         return "MCP server returned no response."
     if "error" in msg:
