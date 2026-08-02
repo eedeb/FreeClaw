@@ -391,6 +391,31 @@
     #send-btn:disabled { background: #2a2a30; cursor: not-allowed; }
     #send-btn svg { width: 18px; height: 18px; }
 
+    /* ── Stop button ──
+       Takes the send button's place for the length of a turn rather than
+       sitting beside it: same 44px footprint so the composer doesn't reflow,
+       and the one control in that corner is always the one that makes sense
+       right now. Only shown while something is actually running, so it can't
+       be pressed when there's nothing to stop. */
+    #stop-btn {
+      display: none;
+      background: var(--err);
+      border: none;
+      border-radius: var(--radius);
+      width: 44px; height: 44px;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #stop-btn.visible { display: flex; }
+    #stop-btn:active { transform: scale(0.92); }
+    #stop-btn:disabled { opacity: 0.5; cursor: default; }
+    #stop-btn svg { width: 16px; height: 16px; }
+
     /* ── Upload button ── */
     #upload-btn {
       background: none;
@@ -739,6 +764,11 @@
           <polyline points="5 12 12 5 19 12"/>
         </svg>
       </button>
+      <button id="stop-btn" title="Stop generating">
+        <svg viewBox="0 0 24 24" fill="#0d0d0f">
+          <rect x="6" y="6" width="12" height="12" rx="2"/>
+        </svg>
+      </button>
     </div>
   </div>
 </div>
@@ -747,6 +777,7 @@
   const messagesEl  = document.getElementById('messages');
   const inputEl     = document.getElementById('user-input');
   const sendBtn     = document.getElementById('send-btn');
+  const stopBtn     = document.getElementById('stop-btn');
   const countEl     = document.getElementById('token-count');
   const resetBtn    = document.getElementById('reset-btn');
   const homeBtn     = document.getElementById('home-btn');
@@ -1324,6 +1355,29 @@
 
   // ── Send ────────────────────────────────────────────────
 
+  // Swaps the composer between "ready to send" and "a turn is running".
+  // sendBtn.disabled stays the single source of truth for whether a turn is in
+  // flight — the file-drop handler and the ping poller both already read it.
+  function setBusy(busy) {
+    sendBtn.disabled = busy;
+    stopBtn.classList.toggle('visible', busy);
+    sendBtn.style.display = busy ? 'none' : 'flex';
+    // Re-armed per turn: it's disabled after a press to stop a second click
+    // racing the first, and has to come back for the next turn.
+    if (busy) stopBtn.disabled = false;
+  }
+
+  stopBtn.addEventListener('click', async () => {
+    stopBtn.disabled = true;
+    try {
+      // Fire-and-forget by design. The turn winds down on its own schedule —
+      // it has to reach a checkpoint where stopping leaves a valid
+      // conversation — and the SSE stream reports the outcome. A 409 just
+      // means it finished as the click landed, which needs no handling.
+      await fetch('/api/stop', { method: 'POST' });
+    } catch (_) {}
+  });
+
   async function sendMessage() {
     const text = inputEl.value.trim();
     if (!text && !pendingFile) return;
@@ -1339,7 +1393,7 @@
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
-    sendBtn.disabled = true;
+    setBusy(true);
     inputEl.blur();
     clearFile();
 
@@ -1390,7 +1444,7 @@
         // Slash-commands can rewrite the conversation too (/reset clears it),
         // so re-baseline the poller here as well.
         syncUpdatedAt();
-        sendBtn.disabled = false;
+        setBusy(false);
         if (!isStandalone) inputEl.focus();
         return;
       }
@@ -1548,6 +1602,20 @@
             }
             addMessage('agent', `**Error:** ${evt.error}`);
 
+          } else if (evt.type === 'stopped') {
+            // A 'done' always follows this (the server still saves the turn
+            // and sends the final conversation), so there's nothing to render
+            // here — just retire anything still animating, so the gap between
+            // the two doesn't show a spinner for work that has already ended.
+            finishReasoning();
+            if (thinking.parentNode) thinking.remove();
+            if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+            if (activeApproval) {
+              if (!activeApproval.wrap.classList.contains('settled')) activeApproval.settle('stopped');
+              activeApproval = null;
+            }
+            stopBtn.disabled = true;
+
           } else if (evt.type === 'done') {
             if (thinking.parentNode) thinking.remove();
             // renderConversation() below rebuilds the thread from the saved
@@ -1583,7 +1651,7 @@
       addMessage('agent', '**Connection error.** Is the server running?');
     }
 
-    sendBtn.disabled = false;
+    setBusy(false);
     if (!isStandalone) inputEl.focus();
   }
 

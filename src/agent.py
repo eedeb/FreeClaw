@@ -14,6 +14,7 @@ from json_repair import repair_json
 from openai import OpenAI, APIConnectionError
 
 import src.approvals as approvals
+import src.cancellation as cancellation
 import src.mcp_client as mcp_client
 import src.responses_api as responses_api
 import src.scraper as scraper
@@ -1985,6 +1986,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     usage_seen = None
     try:
         for chunk in stream:
+            # Stop pressed: abandon the rest of the provider's response. What
+            # already streamed is kept — it's on screen, and dropping it would
+            # desync the saved conversation from what the user saw.
+            if cancellation.is_stopped():
+                logger.info("Stop requested — abandoning the stream from '%s'", provider)
+                break
             # The usage block arrives on its own final chunk (only when
             # stream_options.include_usage was sent — see _create_completion),
             # and that chunk has an empty choices list, so it has to be read
@@ -2069,6 +2076,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                "context_tokens": usage_seen["prompt_tokens"],
                **usage_seen, "turn": dict(_turn_usage)}
 
+    # Breaking out of the stream above leaves any tool call the model was still
+    # emitting with truncated JSON arguments, so it can't be run — and a call
+    # that isn't run would need a matching tool response invented for it.
+    # Dropping them instead ends the turn on a plain assistant message, which
+    # needs no responses at all.
+    if cancellation.is_stopped() and tool_calls_acc:
+        logger.info("Stop requested mid-stream — discarding %d partial tool call(s)", len(tool_calls_acc))
+        tool_calls_acc = {}
+
     tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())] if tool_calls_acc else None
     if buffer:
         print('Agent: ' + buffer)
@@ -2129,6 +2145,24 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # continue.
         last = len(tool_calls_list) - 1
         for i, tc in enumerate(tool_calls_list):
+            # Stop pressed between calls — the common case, since a runaway
+            # turn spends most of its time in tools rather than in the model.
+            # The remaining calls still need responses (see above), so answer
+            # them with the notice instead of running them.
+            if cancellation.is_stopped():
+                for skipped in tool_calls_list[i:]:
+                    skipped_name = skipped["function"]["name"]
+                    yield {"type": "tool_result", "name": skipped_name,
+                           "result": cancellation.STOP_NOTICE}
+                    agent_messages.append({
+                        "role": "tool",
+                        "tool_call_id": skipped["id"],
+                        "name": skipped_name,
+                        "content": cancellation.STOP_NOTICE
+                    })
+                agent_messages.append({"role": "assistant", "content": cancellation.STOPPED_TEXT})
+                yield {"type": "stopped"}
+                return
             command_name = tc["function"]["name"]
             args_dict = None
             result = None
@@ -2191,6 +2225,21 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     "name": command_name,
                     "content": result
                 })
+            elif cancellation.is_stopped():
+                # Stopped while this last tool was running. Its result still has
+                # to be recorded — the call was made, and the id needs its
+                # response — but the model isn't asked to continue from it,
+                # which is what would start the next request.
+                yield {"type": "tool_result", "name": command_name, "result": result}
+                agent_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": command_name,
+                    "content": result
+                })
+                agent_messages.append({"role": "assistant", "content": cancellation.STOPPED_TEXT})
+                yield {"type": "stopped"}
+                return
             else:
                 yield from agent_stream(tool_input=result, tool_id=tc["id"], tool_name=command_name)
         return
@@ -2208,6 +2257,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     if usage_seen:
         final_msg["usage"] = usage_seen
     agent_messages.append(final_msg)
+
+    # Reached with the flag set when the stop landed mid-stream: the turn ends
+    # here on its own, but the page still needs telling that this was a stop
+    # rather than an ordinary finish.
+    if cancellation.is_stopped():
+        yield {"type": "stopped"}
 
 
 def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):

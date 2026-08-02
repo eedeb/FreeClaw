@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.approvals as approvals
+import src.cancellation as cancellation
 import src.mcp_client as mcp_client
 import src.telemetry as telemetry
 from src.users import (
@@ -355,6 +356,10 @@ def chat():
                 # /api/approval below).
                 activate_session(name, interactive=True)
                 session_active = True
+                # Arm the Stop button for this turn. Clears any stop left over
+                # from the previous one, so a press that raced the end of its
+                # own turn can't kill this one.
+                cancellation.begin_turn()
                 try:
                     had_title = load_conversation(name).get("title") not in (None, "", "New chat")
                 except (OSError, json.JSONDecodeError):
@@ -388,12 +393,40 @@ def chat():
                     except Exception:
                         logger.exception("Also failed to save partial conversation for user=%s", name)
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            finally:
+                # Finished, failed, stopped, or the client hung up mid-stream
+                # (which closes the generator and runs this too) — either way
+                # the flag must not outlive the turn that owns it.
+                cancellation.end_turn()
 
     return Response(
         stream_with_context(generate()),
         mimetype='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     )
+
+
+@app.route('/api/stop', methods=['POST'])
+def api_stop():
+    """Ask the in-flight turn to wind down.
+
+    Like /api/approval below, this deliberately does NOT take agent_lock: the
+    turn being stopped is holding it, so waiting for it here would deadlock the
+    two against each other. Setting a flag the generator polls is the whole
+    mechanism.
+
+    Any pending bash approval is abandoned too — a turn blocked on a prompt is
+    exactly the case where Stop is most wanted, and it can't reach a
+    cancellation checkpoint while it sits in approvals.wait()."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    stopped = cancellation.request_stop()
+    if not stopped:
+        # 409 rather than 400, matching /api/approval: the request was fine,
+        # there just isn't a turn to stop (it finished as the click landed).
+        return jsonify({'error': 'No turn is currently running.'}), 409
+    approvals.abandon_all()
+    return jsonify({'ok': True})
 
 
 # ── BASH APPROVALS ───────────────────────────────────────────
