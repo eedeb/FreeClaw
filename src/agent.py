@@ -295,20 +295,50 @@ _OVERSIZE_MARKERS = ("too large", "context length", "context_length_exceeded",
 _DURATION_RE = re.compile(r"^\s*([0-9.]+)\s*(ms|s|m)?\s*$", re.I)
 _RETRY_AFTER_RE = re.compile(r"try again in\s+([0-9.]+\s*(?:ms|s|m)?)", re.I)
 
-# Never sideline a provider for longer than this, however long it asked for —
-# a misparsed or absurd delay must not cost us a provider for the session.
+# Never sideline a provider for longer than this, however long it asked for or
+# however many times running it has failed — a misparsed delay, or a bad patch
+# of a few minutes, must not cost us a provider for the session.
 _MAX_COOLDOWN = 300.0
-# Applied when a provider says it's rate-limited but doesn't say for how long
-# (Cerebras, among others). TPM windows are a minute, so this backs off enough
-# to stop the hammering without sitting out a whole window.
-_DEFAULT_COOLDOWN = 20.0
+
+# First cooldown for each kind of failure; consecutive failures double it (see
+# _note_provider_failure). A provider that says it's rate-limited but not for
+# how long (Cerebras, among others) gets the rate-limit figure: TPM windows are
+# a minute, so this backs off enough to stop the hammering without sitting out
+# a whole window on the first refusal. An unreachable or 5xx-ing endpoint is
+# more likely briefly broken than busy, so it gets a shorter first pause and
+# escalates from there. A rejected API key won't fix itself between calls.
+_BASE_COOLDOWN = {
+    "rate_limited": 20.0,
+    "network_error": 10.0,
+    "provider_error": 10.0,
+    "bad_request": 30.0,
+    "auth_error": 120.0,
+}
+_FALLBACK_COOLDOWN = 15.0
+
+# How the log describes each cooldown, so a skip line says what the provider
+# actually did rather than always claiming a rate limit.
+_REASON_WORDING = {
+    "rate_limited": "rate-limited",
+    "network_error": "unreachable",
+    "provider_error": "erroring",
+    "bad_request": "rejecting our requests",
+    "auth_error": "rejecting our API key",
+}
+
+# Longest we'll block waiting for a cooldown to lapse when every provider is
+# sidelined at once. Long enough to cover the tail of a per-minute window,
+# short enough that a turn never looks hung.
+_MAX_COOLDOWN_WAIT = 45.0
 
 # What the providers' own errors have told us about their limits.
-#   _provider_cooldown[name]      — monotonic clock deadline to wait until
+#   _provider_cooldown[name]      — {"until": monotonic deadline, "streak":
+#                                   failures in a row, "reason": classification}
 #   _provider_size_ceiling[name]  — payload size (see _payload_size) this
 #                                   provider already refused outright
-# Both are cleared the moment the provider answers successfully, and by
-# forget_provider_capabilities() when the provider list is edited.
+# A success drops the ceiling outright and lifts the deadline, but only decays
+# the streak — see _note_provider_success for why that difference matters.
+# forget_provider_capabilities() clears both when the provider list is edited.
 _provider_cooldown = {}
 _provider_size_ceiling = {}
 
@@ -368,37 +398,100 @@ def _payload_size(call_kwargs):
         return 0
 
 
-def _cooldown_reason(name, call_kwargs):
-    """Why this provider shouldn't be tried right now, or None to go ahead.
-    Expired cooldowns and ceilings a shrunken conversation has dropped back
-    under are forgotten here, so a provider is always given another chance
-    rather than being written off for the session."""
-    until = _provider_cooldown.get(name)
-    if until is not None:
-        remaining = until - time.monotonic()
-        if remaining > 0:
-            return f"rate-limited, {remaining:.0f}s left of the delay it asked for"
+def _cooldown_state(name):
+    """This provider's live backoff record, or None if it hasn't got one.
+
+    A record whose deadline lapsed more than _MAX_COOLDOWN ago is dropped here:
+    the streak in it was a statement about how the provider was behaving at the
+    time, and once it has been sitting idle that long it no longer says
+    anything useful about how it will behave on the next call."""
+    entry = _provider_cooldown.get(name)
+    if entry is not None and time.monotonic() - entry["until"] > _MAX_COOLDOWN:
         del _provider_cooldown[name]
+        return None
+    return entry
+
+
+def _cooldown_remaining(name):
+    """Seconds left of this provider's cooldown, or None if it isn't in one."""
+    entry = _cooldown_state(name)
+    if entry is None:
+        return None
+    remaining = entry["until"] - time.monotonic()
+    return remaining if remaining > 0 else None
+
+
+def _cooldown_reason(name, call_kwargs):
+    """Why this provider shouldn't be tried right now, as (classification,
+    explanation), or None to go ahead. Expired cooldowns and ceilings a
+    shrunken conversation has dropped back under are forgotten here, so a
+    provider is always given another chance rather than being written off for
+    the session."""
+    entry = _cooldown_state(name)
+    if entry is not None and (remaining := entry["until"] - time.monotonic()) > 0:
+        wording = _REASON_WORDING.get(entry["reason"], "failing")
+        run = f" after {entry['streak']} failures in a row" if entry["streak"] > 1 else ""
+        return entry["reason"], f"{wording}, {remaining:.0f}s left of its backoff{run}"
     ceiling = _provider_size_ceiling.get(name)
     if ceiling is not None:
         if _payload_size(call_kwargs) >= ceiling:
-            return "already refused a request this size as too large"
+            # Classified as a rate limit because that's what these arrive as —
+            # and because _user_facing_error keys the "conversation is too big"
+            # message off that plus the ceiling being set.
+            return "rate_limited", "already refused a request this size as too large"
         del _provider_size_ceiling[name]
     return None
 
 
-def _note_provider_limit(name, e, call_kwargs):
-    """Record what a provider just told us about its own limits, so the next
-    call can skip it instead of re-sending something it has already refused."""
+def _note_provider_failure(name, e, call_kwargs):
+    """Record what a provider just told us about itself, so the next call can
+    skip it instead of re-sending something it has already refused.
+
+    Every kind of failure earns a cooldown, not just rate limits: an endpoint
+    that is unreachable or throwing 500s costs a full timeout every time it's
+    re-dialled, and re-dialling it on each call is what makes a chain of
+    providers feel like it's spinning rather than falling through. Consecutive
+    failures double the wait, so a provider that stays broken drops out of the
+    way quickly while one having a single bad minute barely pauses."""
     if _is_oversized_error(e):
         _provider_size_ceiling[name] = _payload_size(call_kwargs)
         logger.info("Provider '%s' refused a request of this size — skipping it "
                     "until the conversation shrinks", name)
         return
-    if _classify_error(e) == "rate_limited":
-        delay = min(_retry_after_seconds(e) or _DEFAULT_COOLDOWN, _MAX_COOLDOWN)
-        _provider_cooldown[name] = time.monotonic() + delay
-        logger.info("Provider '%s' rate-limited — not retrying it for %.0fs", name, delay)
+    reason = _classify_error(e)
+    entry = _cooldown_state(name)
+    streak = (entry["streak"] if entry else 0) + 1
+    delay = _BASE_COOLDOWN.get(reason, _FALLBACK_COOLDOWN) * 2 ** (streak - 1)
+    # Never come back sooner than the provider itself asked us to, and never
+    # sit one out longer than _MAX_COOLDOWN however far the streak has run.
+    delay = min(max(delay, _retry_after_seconds(e) or 0), _MAX_COOLDOWN)
+    _provider_cooldown[name] = {
+        "until": time.monotonic() + delay, "streak": streak, "reason": reason,
+    }
+    logger.info("Provider '%s' %s — not retrying it for %.0fs%s", name,
+                _REASON_WORDING.get(reason, "failing"), delay,
+                f" ({streak} failures in a row)" if streak > 1 else "")
+
+
+def _note_provider_success(name):
+    """Relax what a provider's last failure taught us, now that it has answered.
+
+    The size ceiling goes outright — it just accepted a request that big, so
+    the figure was wrong. The backoff streak only decays by one, and that
+    difference is the point: a provider on a per-minute token budget will
+    answer one request and refuse the next, and zeroing the streak on every
+    success would leave it oscillating at the shortest cooldown forever instead
+    of settling on a spacing it can actually sustain."""
+    _provider_size_ceiling.pop(name, None)
+    entry = _cooldown_state(name)
+    if entry is None:
+        return
+    # "Lapsed as of now", not 0.0 — the deadline doubles as the clock
+    # _cooldown_state ages a record by, and a zero there reads as long-idle.
+    entry["until"] = time.monotonic()
+    entry["streak"] -= 1
+    if entry["streak"] <= 0:
+        del _provider_cooldown[name]
 
 
 class AllProvidersFailedError(RuntimeError):
@@ -631,9 +724,12 @@ def _create_completion(**kwargs):
     provider_name) from the first that works. Raises AllProvidersFailedError
     if none do.
 
-    Providers that told us on a previous call to back off (a retry-after, or a
-    refusal to accept a request this size) are skipped without a round-trip
-    until that has expired."""
+    A provider that failed on a previous call is skipped without a round-trip
+    until its cooldown lapses, and each failure in a row doubles that cooldown,
+    so the chain falls through to a provider that works and stays there instead
+    of re-dialling the broken ones on every call. A provider that refused a
+    request this size is skipped until the conversation is smaller, which no
+    amount of waiting achieves."""
     global _last_provider
     failures = []
     prepared = [
@@ -642,19 +738,52 @@ def _create_completion(**kwargs):
         if key and key != "None"
     ]
 
-    # Honour what the providers asked for — unless that would sit out every
-    # one of them, in which case try anyway rather than fail a turn on the
-    # strength of a limit we're only predicting.
-    waiting = {name: reason for name, _, _, ck, _ in prepared
-               if (reason := _cooldown_reason(name, ck))}
+    def sidelined():
+        return {name: reason for name, _, _, ck, _ in prepared
+                if (reason := _cooldown_reason(name, ck))}
+
+    # Honour what the providers asked for — unless that would sit out every one
+    # of them, since a turn must never fail on the strength of a limit we're
+    # only predicting. The way out of that is to wait for the shortest cooldown
+    # to lapse, not to fire the whole chain at endpoints that have each just
+    # told us they aren't ready: a few seconds of quiet beats a burst of calls
+    # that are all going to be refused. Only if there's nothing worth waiting
+    # for do we give up on the cooldowns and try regardless.
+    waiting = sidelined()
     if prepared and len(waiting) == len(prepared):
-        logger.info("Every provider is in cooldown — trying them anyway")
-        waiting = {}
+        soonest = min(
+            ((name, remaining) for name, _, _, _, _ in prepared
+             if (remaining := _cooldown_remaining(name)) is not None),
+            key=lambda pair: pair[1], default=None)
+        if soonest is None:
+            # Nothing to wait for and no cooldown to give up on: every provider
+            # is out on a size ceiling, which only a shorter conversation fixes.
+            # Fall through and let them all be skipped — _user_facing_error says
+            # so in as many words.
+            pass
+        elif soonest[1] <= _MAX_COOLDOWN_WAIT:
+            logger.info("Every provider is sidelined — waiting %.0fs for '%s'",
+                        soonest[1], soonest[0])
+            cancellation.sleep_unless_stopped(soonest[1] + 0.05)
+        else:
+            logger.info("Every provider is sidelined for longer than %.0fs — "
+                        "trying them anyway", _MAX_COOLDOWN_WAIT)
+            # Drop the deadlines (keeping the streaks, so the next failure
+            # still backs off further) but leave the size ceilings standing:
+            # waiting doesn't shrink a conversation, so re-sending a request a
+            # provider has already refused is a guaranteed wasted round-trip.
+            now = time.monotonic()
+            for entry in _provider_cooldown.values():
+                entry["until"] = now
+        # Recomputed rather than edited, so anything else whose cooldown lapsed
+        # in the meantime comes back into play too.
+        waiting = sidelined()
 
     for name, base_url, key, plain_kwargs, api in prepared:
         if name in waiting:
-            logger.info("Skipping provider '%s': %s", name, waiting[name])
-            failures.append((name, "rate_limited", waiting[name]))
+            reason, explanation = waiting[name]
+            logger.info("Skipping provider '%s': %s", name, explanation)
+            failures.append((name, reason, explanation))
             continue
 
         call_kwargs = plain_kwargs
@@ -693,14 +822,12 @@ def _create_completion(**kwargs):
             if name != _last_provider:
                 print(f"LLM provider switched: {_last_provider} -> {name}")
             _last_provider = name
-            # It answered, so anything we'd recorded about its limits is stale.
-            _provider_cooldown.pop(name, None)
-            _provider_size_ceiling.pop(name, None)
+            _note_provider_success(name)
             return result, name
         except Exception as e:
             reason = _classify_error(e)
             failures.append((name, reason, str(e)))
-            _note_provider_limit(name, e, plain_kwargs)
+            _note_provider_failure(name, e, plain_kwargs)
             # Full traceback + request shape (never message content, which
             # may hold user data) — the short strings above are all that
             # ever reach the frontend or the model, so this is the only

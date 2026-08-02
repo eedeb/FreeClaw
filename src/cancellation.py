@@ -87,5 +87,13 @@ def is_stopped():
     return _stop.is_set()
 
 
+def sleep_unless_stopped(seconds):
+    """Pause for `seconds`, returning early (True) if the turn is stopped while
+    we're waiting. For the one place the agent deliberately idles — waiting out
+    a provider cooldown in _create_completion — where a plain time.sleep() would
+    leave the Stop button looking dead for the length of the wait."""
+    return _stop.wait(seconds)
+
+
 def turn_active():
     return _turn_active
