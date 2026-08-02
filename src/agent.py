@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import subprocess
+import time
 from datetime import datetime
 
 import Classy
@@ -236,7 +237,12 @@ def _classify_error(e):
     accurate message if every provider in the chain fails."""
     status = getattr(e, "status_code", None)
     text = str(e).lower()
-    if status == 429 or "rate limit" in text or "quota" in text:
+    # Both spellings: providers write this as prose ("Rate limit reached") and
+    # as an error code ("rate_limit_exceeded"), and Groq answers a request
+    # bigger than the whole per-minute budget with 413 + rate_limit_exceeded —
+    # a rate limit wearing a 4xx that would otherwise read as "bad request".
+    if (status == 429 or "rate limit" in text or "rate_limit" in text
+            or "quota" in text):
         return "rate_limited"
     if status in (401, 403) or "invalid api key" in text or "unauthorized" in text:
         return "auth_error"
@@ -251,6 +257,121 @@ def _classify_error(e):
     if status and status >= 500:
         return "provider_error"
     return "unknown"
+
+
+# Wording that marks a failure as "this one request is too big", as opposed to
+# "you've used up this minute's budget". The distinction matters: the first is
+# not fixed by waiting, only by a smaller conversation.
+_OVERSIZE_MARKERS = ("too large", "context length", "context_length_exceeded",
+                     "maximum context", "reduce your message size")
+
+_DURATION_RE = re.compile(r"^\s*([0-9.]+)\s*(ms|s|m)?\s*$", re.I)
+_RETRY_AFTER_RE = re.compile(r"try again in\s+([0-9.]+\s*(?:ms|s|m)?)", re.I)
+
+# Never sideline a provider for longer than this, however long it asked for —
+# a misparsed or absurd delay must not cost us a provider for the session.
+_MAX_COOLDOWN = 300.0
+# Applied when a provider says it's rate-limited but doesn't say for how long
+# (Cerebras, among others). TPM windows are a minute, so this backs off enough
+# to stop the hammering without sitting out a whole window.
+_DEFAULT_COOLDOWN = 20.0
+
+# What the providers' own errors have told us about their limits.
+#   _provider_cooldown[name]      — monotonic clock deadline to wait until
+#   _provider_size_ceiling[name]  — payload size (see _payload_size) this
+#                                   provider already refused outright
+# Both are cleared the moment the provider answers successfully, and by
+# forget_provider_capabilities() when the provider list is edited.
+_provider_cooldown = {}
+_provider_size_ceiling = {}
+
+
+def _parse_duration(raw):
+    """Seconds from a duration as providers write them — "41", "40.8525s",
+    "1500ms", "2m" — or None if it isn't one."""
+    if raw is None:
+        return None
+    m = _DURATION_RE.match(str(raw))
+    if not m:
+        return None
+    try:
+        value = float(m.group(1))
+    except ValueError:
+        return None
+    unit = (m.group(2) or "s").lower()
+    if unit == "ms":
+        return value / 1000
+    return value * 60 if unit == "m" else value
+
+
+def _retry_after_seconds(e):
+    """How long the provider asked us to wait, or None if it didn't say.
+    Prefers the Retry-After header and falls back to the wording of the error,
+    since several OpenAI-compatible endpoints state the delay only in prose
+    ("Please try again in 40.8525s")."""
+    headers = getattr(getattr(e, "response", None), "headers", None)
+    if headers:
+        for header in ("retry-after", "x-ratelimit-reset-tokens",
+                       "x-ratelimit-reset-requests"):
+            seconds = _parse_duration(headers.get(header))
+            if seconds is not None:
+                return seconds
+    m = _RETRY_AFTER_RE.search(str(e))
+    return _parse_duration(m.group(1)) if m else None
+
+
+def _is_oversized_error(e):
+    """True when the provider is saying this single request can't fit, whatever
+    we do about timing — 413, or any of the usual phrasings."""
+    if getattr(e, "status_code", None) == 413:
+        return True
+    text = str(e).lower()
+    return any(marker in text for marker in _OVERSIZE_MARKERS)
+
+
+def _payload_size(call_kwargs):
+    """Cheap proxy for how big a request is. Characters, not tokens: the
+    absolute figure is never needed, only whether a request is smaller than one
+    a provider has already refused, and character count answers that without
+    guessing at somebody else's tokenizer."""
+    try:
+        return (len(json.dumps(call_kwargs.get("messages") or [], default=str))
+                + len(json.dumps(call_kwargs.get("tools") or [], default=str)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cooldown_reason(name, call_kwargs):
+    """Why this provider shouldn't be tried right now, or None to go ahead.
+    Expired cooldowns and ceilings a shrunken conversation has dropped back
+    under are forgotten here, so a provider is always given another chance
+    rather than being written off for the session."""
+    until = _provider_cooldown.get(name)
+    if until is not None:
+        remaining = until - time.monotonic()
+        if remaining > 0:
+            return f"rate-limited, {remaining:.0f}s left of the delay it asked for"
+        del _provider_cooldown[name]
+    ceiling = _provider_size_ceiling.get(name)
+    if ceiling is not None:
+        if _payload_size(call_kwargs) >= ceiling:
+            return "already refused a request this size as too large"
+        del _provider_size_ceiling[name]
+    return None
+
+
+def _note_provider_limit(name, e, call_kwargs):
+    """Record what a provider just told us about its own limits, so the next
+    call can skip it instead of re-sending something it has already refused."""
+    if _is_oversized_error(e):
+        _provider_size_ceiling[name] = _payload_size(call_kwargs)
+        logger.info("Provider '%s' refused a request of this size — skipping it "
+                    "until the conversation shrinks", name)
+        return
+    if _classify_error(e) == "rate_limited":
+        delay = min(_retry_after_seconds(e) or _DEFAULT_COOLDOWN, _MAX_COOLDOWN)
+        _provider_cooldown[name] = time.monotonic() + delay
+        logger.info("Provider '%s' rate-limited — not retrying it for %.0fs", name, delay)
 
 
 class AllProvidersFailedError(RuntimeError):
@@ -309,10 +430,12 @@ _unsupported_extras = set()   # {provider_name, ...} — see forget_provider_cap
 
 
 def forget_provider_capabilities():
-    """Forget what we've learned about providers' quirks. Called when the
-    provider list is edited, so re-adding a name doesn't carry over a verdict
-    reached against whatever endpoint used to hold it."""
+    """Forget what we've learned about providers' quirks and limits. Called
+    when the provider list is edited, so re-adding a name doesn't carry over a
+    verdict reached against whatever endpoint used to hold it."""
     _unsupported_extras.clear()
+    _provider_cooldown.clear()
+    _provider_size_ceiling.clear()
 
 
 def _apply_optional_extras(call_kwargs, model):
@@ -391,34 +514,61 @@ def _usage_summary(usage):
             "completion_tokens": completion or 0}
 
 
+def _prepare_kwargs(kwargs, model_override, extra_body):
+    """The request as this provider needs to receive it, before any of the
+    optional extras are layered on."""
+    call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
+    if extra_body:
+        call_kwargs = {**call_kwargs, "extra_body": extra_body}
+    # Strip params passed as None (stop, tools, ...). Per OpenAI
+    # semantics null means the same as omitting the key, but Google's
+    # Gemini shim 400s on any optional field sent as JSON null.
+    call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
+    if "messages" in call_kwargs:
+        # Our assistant messages carry non-standard bookkeeping keys (which
+        # provider answered, what it reported for token usage) — strip them
+        # before they go over the wire; some providers 400 on unrecognized
+        # message fields.
+        call_kwargs = {**call_kwargs, "messages": [
+            {k: v for k, v in m.items() if k not in _INTERNAL_MESSAGE_KEYS}
+            for m in call_kwargs["messages"]
+        ]}
+    return call_kwargs
+
+
 def _create_completion(**kwargs):
     """Try each configured provider in the order _active_providers() returns
     them — first entry first, every call — and return (response_or_stream,
     provider_name) from the first that works. Raises AllProvidersFailedError
-    if none do."""
+    if none do.
+
+    Providers that told us on a previous call to back off (a retry-after, or a
+    refusal to accept a request this size) are skipped without a round-trip
+    until that has expired."""
     global _last_provider
     failures = []
-    for name, base_url, key, model_override, extra_body in _active_providers():
-        if not key or key == "None":
-            continue
-        call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
-        if extra_body:
-            call_kwargs = {**call_kwargs, "extra_body": extra_body}
-        # Strip params passed as None (stop, tools, ...). Per OpenAI
-        # semantics null means the same as omitting the key, but Google's
-        # Gemini shim 400s on any optional field sent as JSON null.
-        call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
-        if "messages" in call_kwargs:
-            # Our assistant messages carry non-standard bookkeeping keys (which
-            # provider answered, what it reported for token usage) — strip them
-            # before they go over the wire; some providers 400 on unrecognized
-            # message fields.
-            call_kwargs = {**call_kwargs, "messages": [
-                {k: v for k, v in m.items() if k not in _INTERNAL_MESSAGE_KEYS}
-                for m in call_kwargs["messages"]
-            ]}
+    prepared = [
+        (name, base_url, key, _prepare_kwargs(kwargs, model_override, extra_body))
+        for name, base_url, key, model_override, extra_body in _active_providers()
+        if key and key != "None"
+    ]
 
-        plain_kwargs = call_kwargs
+    # Honour what the providers asked for — unless that would sit out every
+    # one of them, in which case try anyway rather than fail a turn on the
+    # strength of a limit we're only predicting.
+    waiting = {name: reason for name, _, _, ck in prepared
+               if (reason := _cooldown_reason(name, ck))}
+    if prepared and len(waiting) == len(prepared):
+        logger.info("Every provider is in cooldown — trying them anyway")
+        waiting = {}
+
+    for name, base_url, key, plain_kwargs in prepared:
+        if name in waiting:
+            logger.info("Skipping provider '%s': %s", name, waiting[name])
+            failures.append((name, "rate_limited", waiting[name]))
+            continue
+
+        call_kwargs = plain_kwargs
         applied = []
         if name not in _unsupported_extras:
             call_kwargs, applied = _apply_optional_extras(call_kwargs, call_kwargs.get("model"))
@@ -431,19 +581,33 @@ def _create_completion(**kwargs):
                 # Retry without the optional extras if that's plausibly what it
                 # objected to. A provider must never lose a working call over a
                 # field we added for our own benefit.
-                if not applied or _classify_error(e) != "bad_request":
+                #
+                # "Plausibly" has to exclude size and rate complaints: an
+                # oversized request fails identically without the extras, so
+                # retrying only doubles the round-trips, and a success there
+                # would wrongly convict the provider of not supporting a field
+                # it never mentioned.
+                if (not applied or _classify_error(e) != "bad_request"
+                        or _is_oversized_error(e)):
                     raise
-                logger.info("Provider '%s' rejected %s — retrying without, and not "
-                            "sending them again", name, "/".join(applied))
+                logger.info("Provider '%s' rejected a request with %s applied — "
+                            "retrying without", name, "/".join(applied))
                 result = c.chat.completions.create(**plain_kwargs)
+                # Only now is it established that the extras were the problem.
                 _unsupported_extras.add(name)
+                logger.info("Provider '%s' accepted it without %s — not sending "
+                            "them again", name, "/".join(applied))
             if name != _last_provider:
                 print(f"LLM provider switched: {_last_provider} -> {name}")
             _last_provider = name
+            # It answered, so anything we'd recorded about its limits is stale.
+            _provider_cooldown.pop(name, None)
+            _provider_size_ceiling.pop(name, None)
             return result, name
         except Exception as e:
             reason = _classify_error(e)
             failures.append((name, reason, str(e)))
+            _note_provider_limit(name, e, plain_kwargs)
             # Full traceback + request shape (never message content, which
             # may hold user data) — the short strings above are all that
             # ever reach the frontend or the model, so this is the only
@@ -463,6 +627,13 @@ def _user_facing_error(failures):
         return "No LLM provider is configured. Add one in Settings → Providers."
     reasons = {r for _, r, _ in failures}
     if reasons == {"rate_limited"}:
+        # "Try again shortly" is wrong — and endlessly frustrating — when the
+        # problem is that the conversation no longer fits in anyone's limit.
+        if all(n in _provider_size_ceiling for n, _, _ in failures):
+            names = ", ".join(n for n, _, _ in failures)
+            return (f"This conversation has grown too large for {names} to accept in "
+                    "one request. Start a new conversation, or add a provider with a "
+                    "higher token limit.")
         return "All configured providers are rate-limited or out of usage right now. Try again shortly."
     if reasons == {"auth_error"}:
         return "All configured providers rejected the request — check your API keys in Settings."
