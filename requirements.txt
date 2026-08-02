@@ -3,7 +3,10 @@
 # install.sh (they need a CPU wheel index / --no-deps flags).
 flask
 itsdangerous
-openai
+# >=1.66 for client.responses, which a provider set to the Responses API needs
+# (src/responses_api.py). The floor is also what makes an existing install
+# actually upgrade — pip leaves an unconstrained requirement alone.
+openai>=1.66
 httpx
 requests
 ddgs

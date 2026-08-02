@@ -103,6 +103,18 @@
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
 
+    /* A labelled switch inside a form. The card .toggle above needs its sizing
+       restated here: `.form input` is the more specific selector of the two and
+       would otherwise stretch it to the full row width. */
+    .form-check { display: flex; align-items: center; gap: 10px; }
+    .form-check .toggle {
+      width: 30px; height: 17px; padding: 0; border: none;
+      border-radius: 9px; background: var(--border); flex-shrink: 0;
+    }
+    .form-check .toggle:checked { background: var(--accent-dim); }
+    .form-check .form-label { text-transform: none; letter-spacing: 0; line-height: 1.5; }
+    .form-check .form-label b { color: var(--text); font-weight: 600; }
+
     button.primary {
       background: var(--accent); color: #0d0d0f; border: none; border-radius: var(--radius);
       padding: 10px 14px; font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; transition: transform 0.1s, opacity 0.15s;
@@ -190,6 +202,15 @@
       <div class="grid2">
         <input id="prov-model" placeholder="Model, e.g. gpt-oss-120b" autocomplete="off" spellcheck="false"/>
         <input id="prov-key" placeholder="API key" type="password" autocomplete="off" spellcheck="false"/>
+      </div>
+      <div class="form-check">
+        <input id="prov-responses" class="toggle" type="checkbox" title="Use the Responses API"/>
+        <div class="form-label">
+          <b>Responses API</b> — for OpenAI's own endpoint, which refuses function tools and
+          reasoning together on chat completions. FreeClaw translates it back to chat completions
+          on this server, so tools, approvals, and your conversation history all stay here.
+          Leave off for everyone else.
+        </div>
       </div>
       <button id="prov-add" class="primary">Add provider</button>
       <div id="prov-msg" class="msg"></div>
@@ -353,7 +374,7 @@
         <div class="card-rank">${i + 1}</div>
         <div class="card-info">
           <div class="card-name">${escapeHtml(p.name)}</div>
-          <div class="card-sub">${escapeHtml(p.url)}${p.model ? ' · <span class="k">' + escapeHtml(p.model) + '</span>' : ''}${p.has_key ? ' · 🔑' : ' · ⚠ no key'}</div>
+          <div class="card-sub">${escapeHtml(p.url)}${p.model ? ' · <span class="k">' + escapeHtml(p.model) + '</span>' : ''}${p.has_key ? ' · 🔑' : ' · ⚠ no key'}${p.api === 'responses' ? ' · <span class="k">responses</span>' : ''}</div>
         </div>
         <input class="toggle" type="checkbox" ${enabled ? 'checked' : ''} title="${enabled ? 'Disable' : 'Enable'}"/>
         <button class="del" type="button">remove</button>`;
@@ -423,15 +444,17 @@
   async function addProvider() {
     const name = $('prov-name').value.trim(), url = $('prov-url').value.trim();
     const model = $('prov-model').value.trim(), key = $('prov-key').value.trim();
+    const api = $('prov-responses').checked ? 'responses' : 'chat';
     provMsg.style.display = 'none';
     if (!name || !url || !key) { showMsg(provMsg, 'Name, URL, and API key are required.', false); return; }
     const btn = $('prov-add'); btn.disabled = true; btn.textContent = 'Adding…';
     try {
-      const res = await fetch('/api/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url, model, key }) });
+      const res = await fetch('/api/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, url, model, key, api }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       renderProviders(data.providers);
       $('prov-name').value = ''; $('prov-url').value = ''; $('prov-model').value = ''; $('prov-key').value = '';
+      $('prov-responses').checked = false;
       showMsg(provMsg, 'Provider added.', true);
     } catch (e) { showMsg(provMsg, e.message, false); }
     finally { btn.disabled = false; btn.textContent = 'Add provider'; }

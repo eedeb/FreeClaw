@@ -15,6 +15,7 @@ from openai import OpenAI, APIConnectionError
 
 import src.approvals as approvals
 import src.mcp_client as mcp_client
+import src.responses_api as responses_api
 import src.scraper as scraper
 from src.logging_setup import get_logger
 
@@ -112,6 +113,11 @@ _PROVIDER_URLS_KEY = "PROVIDER_URLS"
 _PROVIDER_KEYS_KEY = "PROVIDER_KEYS"
 _PROVIDER_MODELS_KEY = "PROVIDER_MODELS"
 _PROVIDER_ENABLED_KEY = "PROVIDER_ENABLED"
+# Which wire protocol each provider speaks: "chat" (the default, and the only
+# thing every OpenAI-compatible endpoint accepts) or "responses". See
+# src/responses_api.py for why the second one has to exist at all.
+_PROVIDER_APIS_KEY = "PROVIDER_APIS"
+PROVIDER_APIS = ("chat", "responses")
 
 # Which configured provider (by name) get_image_description uses — chosen in
 # Settings → Vision Model, stored as a single scalar env var (unlike the
@@ -141,7 +147,7 @@ _WANTS_CACHE_BREAKPOINT = re.compile(r"claude|anthropic|gemini|qwen", re.I)
 
 def read_providers():
     """Return the user-defined providers as a list of
-    {"name","url","key","model","enabled"} dicts, read fresh from .env on
+    {"name","url","key","model","enabled","api"} dicts, read fresh from .env on
     every call so runtime edits are picked up without a restart. Empty when
     the user hasn't configured any — see _active_providers, which has no
     fallback for that case."""
@@ -153,6 +159,10 @@ def read_providers():
     keys = _parse_env_list(env.get(_PROVIDER_KEYS_KEY))
     models = _parse_env_list(env.get(_PROVIDER_MODELS_KEY))
     enabled = _parse_env_list(env.get(_PROVIDER_ENABLED_KEY))
+    # Absent for every provider saved before this setting existed, and for any
+    # entry hand-added to .env — "chat" is both the old behaviour and the safe
+    # one, so a missing or unrecognised value falls back to it.
+    apis = _parse_env_list(env.get(_PROVIDER_APIS_KEY))
     out = []
     for i, url in enumerate(urls):
         if not url:
@@ -163,6 +173,8 @@ def read_providers():
             "key": keys[i] if i < len(keys) else "",
             "model": models[i] if i < len(models) else "",
             "enabled": bool(enabled[i]) if i < len(enabled) else True,
+            "api": (apis[i] if i < len(apis) and apis[i] in PROVIDER_APIS
+                    else "chat"),
         })
     return out
 
@@ -178,6 +190,8 @@ def providers_to_env(providers):
         _PROVIDER_KEYS_KEY: "'" + json.dumps([p.get("key", "") for p in providers]) + "'",
         _PROVIDER_MODELS_KEY: "'" + json.dumps([p.get("model", "") for p in providers]) + "'",
         _PROVIDER_ENABLED_KEY: "'" + json.dumps([bool(p.get("enabled", True)) for p in providers]) + "'",
+        _PROVIDER_APIS_KEY: "'" + json.dumps(
+            [p.get("api") if p.get("api") in PROVIDER_APIS else "chat" for p in providers]) + "'",
     }
 
 
@@ -191,15 +205,15 @@ def read_vision_provider():
 
 def _active_providers():
     """The provider chain _create_completion actually tries, in order.
-    Each item is (name, base_url, api_key, model_override, extra_body,
-    cache_mode).
+    Each item is (name, base_url, api_key, model_override, extra_body, api).
 
     Purely the enabled entries from Settings → Providers, in the order the
     user listed them — no built-in fallback. Empty if the user hasn't
     configured any yet. A provider with a blank model sends no override
     (the endpoint's own default model is used)."""
     user = [p for p in read_providers() if p.get("enabled", True) and p.get("url")]
-    return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None), None)
+    return [(p["name"], p["url"], p.get("key", ""), (p.get("model") or None),
+             None, p.get("api", "chat"))
             for p in user]
 
 # Short timeouts + no SDK-level retries so a dead provider fails in seconds
@@ -230,6 +244,18 @@ def _client_for(name, key, base_url):
             timeout=_PROVIDER_TIMEOUT, max_retries=0,
         ))
     return _provider_clients[name][1]
+
+
+def _send(client, api, call_kwargs):
+    """Issue one request over whichever wire protocol this provider speaks.
+
+    Both branches take and return the same shapes — chat-completions kwargs in,
+    a stream of chat-completions chunks out — so everything around this call
+    stays identical for the two. See src/responses_api.py for the translation
+    and why a provider would need it."""
+    if api == "responses":
+        return responses_api.create(client, call_kwargs)
+    return client.chat.completions.create(**call_kwargs)
 
 
 def _classify_error(e):
@@ -419,7 +445,12 @@ def _cache_breakpoint_messages(messages):
 # own thinking back, and the history is replayed to whichever provider answers
 # next — which for most of the chain means an unrecognized message field and a
 # 400. It's kept on the message only so the block still renders after a reload.
-_INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning")
+#
+# "reasoning_items" is the one exception to that, and the reason _prepare_kwargs
+# takes an `api`: a Responses provider *does* want its encrypted reasoning back,
+# so the stripping is skipped for those and applied for everyone else. Falling
+# back mid-turn therefore drops the blobs on its own, with no special case.
+_INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -519,7 +550,7 @@ def _usage_summary(usage):
             "completion_tokens": completion or 0}
 
 
-def _prepare_kwargs(kwargs, model_override, extra_body):
+def _prepare_kwargs(kwargs, model_override, extra_body, api="chat"):
     """The request as this provider needs to receive it, before any of the
     optional extras are layered on."""
     call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
@@ -529,7 +560,11 @@ def _prepare_kwargs(kwargs, model_override, extra_body):
     # semantics null means the same as omitting the key, but Google's
     # Gemini shim 400s on any optional field sent as JSON null.
     call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
-    if "messages" in call_kwargs:
+    # A "responses" provider keeps its internal message keys: the translation
+    # rebuilds the payload item by item from the fields it recognises, so
+    # nothing can leak through it anyway — and it needs `reasoning_items`,
+    # which stripping here would throw away before it ever got there.
+    if "messages" in call_kwargs and api != "responses":
         # Our assistant messages carry non-standard bookkeeping keys (which
         # provider answered, what it reported for token usage) — strip them
         # before they go over the wire; some providers 400 on unrecognized
@@ -553,21 +588,21 @@ def _create_completion(**kwargs):
     global _last_provider
     failures = []
     prepared = [
-        (name, base_url, key, _prepare_kwargs(kwargs, model_override, extra_body))
-        for name, base_url, key, model_override, extra_body in _active_providers()
+        (name, base_url, key, _prepare_kwargs(kwargs, model_override, extra_body, api), api)
+        for name, base_url, key, model_override, extra_body, api in _active_providers()
         if key and key != "None"
     ]
 
     # Honour what the providers asked for — unless that would sit out every
     # one of them, in which case try anyway rather than fail a turn on the
     # strength of a limit we're only predicting.
-    waiting = {name: reason for name, _, _, ck in prepared
+    waiting = {name: reason for name, _, _, ck, _ in prepared
                if (reason := _cooldown_reason(name, ck))}
     if prepared and len(waiting) == len(prepared):
         logger.info("Every provider is in cooldown — trying them anyway")
         waiting = {}
 
-    for name, base_url, key, plain_kwargs in prepared:
+    for name, base_url, key, plain_kwargs, api in prepared:
         if name in waiting:
             logger.info("Skipping provider '%s': %s", name, waiting[name])
             failures.append((name, "rate_limited", waiting[name]))
@@ -575,13 +610,17 @@ def _create_completion(**kwargs):
 
         call_kwargs = plain_kwargs
         applied = []
-        if name not in _unsupported_extras:
+        # The optional extras are chat-completions fields: stream_options, and
+        # a cache_control breakpoint on the system message. The Responses
+        # translation has its own shape for both, so for those providers
+        # there's nothing to add here and nothing to retry without.
+        if api != "responses" and name not in _unsupported_extras:
             call_kwargs, applied = _apply_optional_extras(call_kwargs, call_kwargs.get("model"))
 
         try:
             c = _client_for(name, key, base_url)
             try:
-                result = c.chat.completions.create(**call_kwargs)
+                result = _send(c, api, call_kwargs)
             except Exception as e:
                 # Retry without the optional extras if that's plausibly what it
                 # objected to. A provider must never lose a working call over a
@@ -597,7 +636,7 @@ def _create_completion(**kwargs):
                     raise
                 logger.info("Provider '%s' rejected a request with %s applied — "
                             "retrying without", name, "/".join(applied))
-                result = c.chat.completions.create(**plain_kwargs)
+                result = _send(c, api, plain_kwargs)
                 # Only now is it established that the extras were the problem.
                 _unsupported_extras.add(name)
                 logger.info("Provider '%s' accepted it without %s — not sending "
@@ -1596,6 +1635,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 
         vision_client = _client_for(provider["name"], provider["key"], provider["url"])
         try:
+            # Always chat completions, even for a provider marked "responses".
+            # This is a one-shot description with no tools, and it's the tools
+            # that force the Responses detour — without them there's nothing
+            # the translation would buy here.
             completion = vision_client.chat.completions.create(
                 model=provider["model"],
                 messages=[
@@ -1937,6 +1980,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # incremental argument-string fragments when streamed).
     buffer = ""
     reasoning_buffer = ""
+    reasoning_items = []
     tool_calls_acc = {}
     usage_seen = None
     try:
@@ -1948,6 +1992,13 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             chunk_usage = _usage_summary(getattr(chunk, "usage", None))
             if chunk_usage:
                 usage_seen = chunk_usage
+            # Encrypted reasoning from a Responses provider, riding on that
+            # same final chunk. Opaque to us — kept only to hand straight back
+            # on the next request of this turn, so the model isn't made to
+            # re-derive its plan at every tool hop.
+            chunk_items = getattr(chunk, "reasoning_items", None)
+            if chunk_items:
+                reasoning_items = chunk_items
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -2055,6 +2106,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # see _INTERNAL_MESSAGE_KEYS).
         if reasoning_buffer:
             assistant_msg["reasoning"] = reasoning_buffer
+        # This is the message the encrypted reasoning has to hang off: the tool
+        # results are appended after it, and the continuation request replays
+        # the lot in order.
+        if reasoning_items:
+            assistant_msg["reasoning_items"] = reasoning_items
         # Saved with the conversation so the real counts are still there after
         # a reload instead of reverting to the client's estimate. Only set when
         # the provider actually reported, and stripped before any request goes
@@ -2146,6 +2202,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     }
     if reasoning_buffer:
         final_msg["reasoning"] = reasoning_buffer
+    # No reasoning_items here, unlike the tool-call branch above: this message
+    # ends the turn, so there's no continuation left to replay them into. They'd
+    # only pile up on the front of every later request for nothing.
     if usage_seen:
         final_msg["usage"] = usage_seen
     agent_messages.append(final_msg)

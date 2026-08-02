@@ -1013,6 +1013,7 @@ def _provider_public(p):
         'model': p.get('model', ''),
         'has_key': bool((p.get('key') or '').strip()),
         'enabled': p.get('enabled', True),
+        'api': p.get('api', 'chat'),
     }
 
 
@@ -1036,6 +1037,11 @@ def api_add_provider():
     url = str(data.get('url', '')).strip()
     key = str(data.get('key', '')).strip()
     model = str(data.get('model', '')).strip()
+    # Which wire protocol to speak to this endpoint. Anything unrecognised
+    # falls back to "chat", the dialect every OpenAI-compatible endpoint takes.
+    api = str(data.get('api', 'chat')).strip()
+    if api not in agent.PROVIDER_APIS:
+        return jsonify({'error': f"Unknown api '{api}'."}), 400
 
     if not name or not url or not key:
         return jsonify({'error': 'Name, URL, and API key are all required.'}), 400
@@ -1049,7 +1055,8 @@ def api_add_provider():
         providers = agent.read_providers()
         if any(p.get('name') == name for p in providers):
             return jsonify({'error': f"A provider named '{name}' already exists."}), 409
-        providers.append({'name': name, 'url': url, 'key': key, 'model': model, 'enabled': True})
+        providers.append({'name': name, 'url': url, 'key': key, 'model': model,
+                          'enabled': True, 'api': api})
         try:
             _write_env(agent.providers_to_env(providers))
         except Exception as e:
@@ -1060,18 +1067,24 @@ def api_add_provider():
 
 @app.route('/api/providers/<name>', methods=['PATCH'])
 def api_toggle_provider(name):
-    """Enable/disable a provider without dropping its saved url/key/model."""
+    """Flip a provider's 'enabled' or 'api' without dropping its saved
+    url/key/model. Either field alone is a valid body."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json(silent=True) or {}
-    if 'enabled' not in data:
-        return jsonify({'error': "Body must include 'enabled'."}), 400
+    if 'enabled' not in data and 'api' not in data:
+        return jsonify({'error': "Body must include 'enabled' or 'api'."}), 400
+    if 'api' in data and data.get('api') not in agent.PROVIDER_APIS:
+        return jsonify({'error': f"Unknown api '{data.get('api')}'."}), 400
     with agent_lock:
         providers = agent.read_providers()
         match = next((p for p in providers if p.get('name') == name), None)
         if match is None:
             return jsonify({'error': 'No such provider'}), 404
-        match['enabled'] = bool(data.get('enabled'))
+        if 'enabled' in data:
+            match['enabled'] = bool(data.get('enabled'))
+        if 'api' in data:
+            match['api'] = data['api']
         try:
             _write_env(agent.providers_to_env(providers))
         except Exception as e:
