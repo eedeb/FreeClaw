@@ -816,6 +816,30 @@ _VOLATILE_HEADER = "\n\n--- live context (refreshed every turn) ---\n"
 _CTX_ALWAYS = ("About", "Preferences")
 
 
+# Sections created since this conversation started. The table of contents in
+# the system prompt is snapshotted by reset() and deliberately never re-read
+# (it lives in the cached prefix), so without this a section the model files
+# something under mid-conversation stays invisible to it: it can't call
+# search_context for a name it was never told about, and a question that
+# section answers goes to web_search instead. Rendered into the volatile tail,
+# which is rewritten every turn anyway, so the cached prefix is untouched.
+_new_sections = []
+
+
+def _note_new_section(name):
+    """Remember a section created mid-conversation so the next turn's prompt
+    mentions it. No-op for one already listed."""
+    if name and name not in _new_sections:
+        _new_sections.append(name)
+
+
+def _new_sections_line():
+    if not _new_sections:
+        return ""
+    return ("\nSections added this conversation (read with search_context): "
+            + ", ".join(_new_sections))
+
+
 def _context_path():
     return static_dir + "context.md"
 
@@ -975,12 +999,14 @@ def _refresh_volatile():
     context.md is deliberately *not* re-read here. It's snapshotted by reset()
     and stays fixed for the conversation, which is what lets it sit in the
     cached prefix. The cost is that a fact the model saves mid-conversation
-    won't appear in its own prompt until the next reset — it can still get at
-    it with read_file in the meantime."""
+    won't appear in its own prompt until the next reset — but the *names* of
+    any sections it created do (see _new_sections), because a section the model
+    doesn't know exists is one it can never call search_context for."""
     if not agent_messages or agent_messages[0].get("role") != "system":
         return
     stable = _stable_prefix(agent_messages[0].get("content", ""))
-    agent_messages[0]["content"] = stable + _VOLATILE_HEADER + _now_line() + "\n"
+    agent_messages[0]["content"] = (stable + _VOLATILE_HEADER + _now_line()
+                                    + _new_sections_line() + "\n")
 
 
 def reset(tts=False):
@@ -996,6 +1022,9 @@ def reset(tts=False):
     Its content is ordered stable-instructions-first, volatile-tail-last (see
     _VOLATILE_HEADER) so the bulk of it can be cached by the provider."""
     global agent_messages
+    # The fresh snapshot below lists every section, so the running tally of
+    # ones added mid-conversation starts over with it.
+    _new_sections.clear()
     # Create the file if it's missing so the model's first edit_file/create_file
     # lands somewhere; _context_block() reads it back below. Uses the same
     # headed template new users get, so a context.md that was deleted (or
@@ -1097,7 +1126,7 @@ def build_context_tools():
             "type": "function",
             "function": {
                 "name": "search_context",
-                "description": "Opens a header in context.md. Your prompt lists header names only, not their contents — call this whenever one looks relevant.",
+                "description": "Reads one section of your memory of this user — their details, preferences, projects, people, and anything they've told you before. Your prompt lists section names only, never their contents, so call this whenever a name looks relevant. This, not web_search, is where anything about this user comes from.",
                 "parameters": {
                     "type": "object",
                     "properties": { "header": { "type": "string" } },
@@ -1291,8 +1320,8 @@ def build_search_tools():
         {
             "type": "function",
             "function": {
-                "name": "search",
-                "description": "Fetches current info for real-time queries. Max 2 calls per task — then answer with what you have, or tell the user you couldn't find it. Best sites: " + site_guide,
+                "name": "web_search",
+                "description": "Searches the public internet for facts you don't have. Max 2 calls per task, then answer with what you have or say you couldn't find it. Best sites: " + site_guide,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1452,7 +1481,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             result += " Their context.md was set with the provided content."
         return result
 
-    if command_name == 'search':
+    # 'search' was this tool's name until it was renamed for being the bare
+    # verb the model reached for when it meant search_context; still accepted
+    # so a conversation saved before the rename can be resumed.
+    if command_name in ('web_search', 'search'):
         site = args_dict.get('site')
         if site:
             return scraper.get_result(parameter + ' - ' + site)
@@ -1500,6 +1532,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             sections.append((name, []))
             idx = len(sections) - 1
             created = True
+            _note_new_section(name)
         name, body = sections[idx]
         lines = list(body)
         while lines and not lines[-1].strip():
@@ -1529,6 +1562,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             return f"'{sections[idx][0]}' already exists in context.md — add to it with add_context."
         sections.append((name, []))
         _write_context(_render_context(preamble, sections))
+        _note_new_section(name)
         return f"Added the '{name}' section to context.md."
 
     if command_name == 'get_image_description':
