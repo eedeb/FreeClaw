@@ -858,6 +858,24 @@
     if (el) el.remove();
   }
 
+  // Clear the thread back to the eagle placeholder, zeroing the token counts
+  // with it. renderConversation() always wipes messagesEl and doesn't know how
+  // to rebuild the placeholder, so every caller that can land on an empty
+  // conversation (/reset, a background reload) comes through here instead.
+  function showEmptyState() {
+    messagesEl.innerHTML = '';
+    totalTokens = 0;
+    realUsage = null;
+    updateCount();
+    const empty = document.createElement('div');
+    empty.id = 'empty-state';
+    empty.innerHTML = `
+      <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+      <div class="empty-name">FreeClaw</div>
+      <div class="empty-sub">search the web · run bash<br>connect MCP tools · write files</div>`;
+    messagesEl.appendChild(empty);
+  }
+
   // ── Agent message label: "agent · via groq · 412 out · 3.1k cached" ──
   // The token parts only appear when the provider reported them.
   function tokenLabel(usage) {
@@ -1671,18 +1689,8 @@
   resetBtn.addEventListener('click', async () => {
     try { await fetch('/reset', { method: 'POST' }); } catch (_) {}
     syncUpdatedAt();  // the reset itself bumped updated_at — don't re-render on it
-    messagesEl.innerHTML = '';
-    totalTokens = 0;
-    realUsage = null;   // a cleared conversation has no reported usage yet
-    updateCount();
     clearFile();
-    const empty = document.createElement('div');
-    empty.id = 'empty-state';
-    empty.innerHTML = `
-      <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
-      <div class="empty-name">FreeClaw</div>
-      <div class="empty-sub">search the web · run bash<br>connect MCP tools · write files</div>`;
-    messagesEl.appendChild(empty);
+    showEmptyState();
   });
 
   homeBtn.addEventListener('click', () => { window.location.href = '/'; });
@@ -1698,21 +1706,7 @@
     if (hasVisible) {
       renderConversation(msgs);
     } else {
-      // renderConversation() always clears messagesEl and doesn't know how
-      // to rebuild the eagle placeholder, so an empty conversation (e.g.
-      // right after /reset) has to put it back itself — and zero the counts,
-      // which renderConversation() would otherwise have recomputed.
-      messagesEl.innerHTML = '';
-      totalTokens = 0;
-      realUsage = null;
-      updateCount();
-      const empty = document.createElement('div');
-      empty.id = 'empty-state';
-      empty.innerHTML = `
-        <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
-        <div class="empty-name">FreeClaw</div>
-        <div class="empty-sub">search the web · run bash<br>connect MCP tools · write files</div>`;
-      messagesEl.appendChild(empty);
+      showEmptyState();
     }
   }
 

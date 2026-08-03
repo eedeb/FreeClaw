@@ -45,12 +45,18 @@ def _server_base_url():
     custom_domain = os.getenv("CUSTOM_DOMAIN")
     if custom_domain:
         return custom_domain
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))  # doesn't actually send data
-        ip = s.getsockname()[0]
-    finally:
-        s.close()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))  # doesn't actually send data
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        # No route to anywhere (machine offline). This runs at import time,
+        # so it must never take the app down — file links just point at
+        # localhost until a restart with a network or a CUSTOM_DOMAIN.
+        ip = "127.0.0.1"
     return 'http://' + ip + ':6767'
 
 
@@ -108,7 +114,7 @@ tools = []
 # or misbehave on tool calls unless they have an explicit thinking
 # off-switch, and Gemini 3.x 400s multi-turn tool calls through its
 # OpenAI-compatible endpoint ("Function call is missing a thought_signature").
-_ENV_PATH = os.path.join(os.path.dirname(BASE_DIR), ".env")
+_ENV_PATH = mcp_client.ENV_PATH  # same file, same repo root
 _PROVIDER_NAMES_KEY = "PROVIDER_NAMES"
 _PROVIDER_URLS_KEY = "PROVIDER_URLS"
 _PROVIDER_KEYS_KEY = "PROVIDER_KEYS"
@@ -124,16 +130,6 @@ PROVIDER_APIS = ("chat", "responses")
 # Settings → Vision Model, stored as a single scalar env var (unlike the
 # parallel-list providers above, since there's only ever one selection).
 _VISION_PROVIDER_KEY = "VISION_PROVIDER"
-
-
-def _parse_env_list(raw):
-    if not raw:
-        return []
-    try:
-        val = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return []
-    return val if isinstance(val, list) else []
 
 
 # Models that need an explicit cache_control breakpoint to cache anything.
@@ -155,15 +151,15 @@ def read_providers():
     if not os.path.exists(_ENV_PATH):
         return []
     env = dotenv_values(_ENV_PATH)
-    names = _parse_env_list(env.get(_PROVIDER_NAMES_KEY))
-    urls = _parse_env_list(env.get(_PROVIDER_URLS_KEY))
-    keys = _parse_env_list(env.get(_PROVIDER_KEYS_KEY))
-    models = _parse_env_list(env.get(_PROVIDER_MODELS_KEY))
-    enabled = _parse_env_list(env.get(_PROVIDER_ENABLED_KEY))
+    names = mcp_client.parse_env_list(env.get(_PROVIDER_NAMES_KEY))
+    urls = mcp_client.parse_env_list(env.get(_PROVIDER_URLS_KEY))
+    keys = mcp_client.parse_env_list(env.get(_PROVIDER_KEYS_KEY))
+    models = mcp_client.parse_env_list(env.get(_PROVIDER_MODELS_KEY))
+    enabled = mcp_client.parse_env_list(env.get(_PROVIDER_ENABLED_KEY))
     # Absent for every provider saved before this setting existed, and for any
     # entry hand-added to .env — "chat" is both the old behaviour and the safe
     # one, so a missing or unrecognised value falls back to it.
-    apis = _parse_env_list(env.get(_PROVIDER_APIS_KEY))
+    apis = mcp_client.parse_env_list(env.get(_PROVIDER_APIS_KEY))
     out = []
     for i, url in enumerate(urls):
         if not url:
@@ -235,12 +231,12 @@ _last_provider = None
 
 
 def _client_for(name, key, base_url):
-    # Cache keyed on (name, key) so a key rotated at runtime (e.g. via
-    # /api/settings) gets a fresh client instead of reusing one built with
-    # the old (or missing) key.
+    # Cache checked against both the key and the URL, so a key rotated or an
+    # endpoint edited at runtime (e.g. via /api/providers) gets a fresh client
+    # instead of reusing one built against the old value.
     cached = _provider_clients.get(name)
-    if cached is None or cached[0] != key:
-        _provider_clients[name] = (key, OpenAI(
+    if cached is None or cached[0] != (key, base_url):
+        _provider_clients[name] = ((key, base_url), OpenAI(
             api_key=key, base_url=base_url,
             timeout=_PROVIDER_TIMEOUT, max_retries=0,
         ))
@@ -1681,6 +1677,26 @@ def refresh_tools():
     return tools
 
 
+def _filename_arg(args_dict, take_basename=False):
+    """The tool call's `filename` argument as (filename, error) — exactly one
+    of the two is set. Centralises the missing-name and path-separator checks
+    that every file tool needs, so a call without a filename gets a clear
+    error the model can act on instead of a Python traceback.
+
+    take_basename: for read-style tools, where uploaded files are referenced
+    by their full "static/..." path in the chat tag rather than a bare
+    filename — take just the basename so both forms resolve against this
+    session's static_dir."""
+    name = str(args_dict.get('filename') or '').strip()
+    if take_basename:
+        name = os.path.basename(name)
+    if not name:
+        return None, "Error: a filename is required."
+    if "/" in name or "\\" in name:
+        return None, "Invalid filename — use a bare filename, no directories."
+    return name, None
+
+
 def _run_tool(command_name, args_dict, bash_approved=False):
     """Execute a single tool call and return its result as a string.
 
@@ -1728,10 +1744,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return scraper.get_result(parameter)
 
     if command_name == 'read_file':
-        # Uploaded files are referenced by their full "static/..." path
-        # in the chat tag, not a bare filename; take just the basename
-        # so both forms resolve against this session's static_dir.
-        filename = os.path.basename(args_dict.get('filename'))
+        filename, error = _filename_arg(args_dict, take_basename=True)
+        if error:
+            return error
         try:
             with open(static_dir+filename, "r", encoding="utf-8") as f:
                 return f.read()
@@ -1814,7 +1829,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         if not provider.get("model"):
             return f"Provider '{vision_provider_name}' has no model set — add one in Settings → Providers to use it for vision."
 
-        filename = os.path.basename(args_dict.get('filename'))
+        filename, error = _filename_arg(args_dict, take_basename=True)
+        if error:
+            return error
         file_location = static_dir+filename
         try:
             with open(file_location, "rb") as image_file:
@@ -1878,9 +1895,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return scraper.scrape(parameter)
 
     if command_name == 'create_file':
-        filename = args_dict.get('filename')
-        if "/" in filename or "\\" in filename:
-            return "Invalid filename."
+        filename, error = _filename_arg(args_dict)
+        if error:
+            return error
         contents = args_dict.get('contents') or ''
         path = static_dir + filename
         # "w" truncates, which on context.md would silently destroy every fact
@@ -1896,9 +1913,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return "Your file is accessible at "+_static_url(static_dir, filename)
 
     if command_name == 'delete_file':
-        filename = args_dict.get('filename')
-        if "/" in filename or "\\" in filename:
-            return "Invalid filename."
+        filename, error = _filename_arg(args_dict)
+        if error:
+            return error
         file_path = static_dir + filename
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -1906,9 +1923,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return "File not found."
 
     if command_name == 'edit_file':
-        filename = args_dict.get('filename')
-        if "/" in filename or "\\" in filename:
-            return "Invalid filename."
+        filename, error = _filename_arg(args_dict)
+        if error:
+            return error
         old_str = args_dict.get('old_str')
         new_str = args_dict.get('new_str')
         try:
@@ -1928,8 +1945,18 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return "File edited successfully."
     if command_name == 'add_ping':
         filename = "ping.md"
-        date_time = args_dict.get('date_time')
-        action = args_dict.get('action')
+        date_time = (args_dict.get('date_time') or '').strip()
+        action = (args_dict.get('action') or '').strip()
+        if not action:
+            return "Error: an action is required — nothing was scheduled."
+        # Refuse a timestamp the scheduler can't parse, rather than writing a
+        # line that would sit in ping.md forever and never fire. parse_ping_time
+        # is the same parser the scheduler uses, so what's accepted here is
+        # exactly what will run.
+        if parse_ping_time(date_time) is None:
+            return (f"Error: couldn't parse '{date_time}' as a time — nothing was "
+                    f"scheduled. Use 'YYYY-MM-DD HH:MM' (call get_time first for "
+                    f"anything relative like 'in 20 minutes').")
         with open(static_dir+filename, "a", encoding="utf-8") as f:
             f.write(f"{date_time} - {action}\n")
 
@@ -1950,9 +1977,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             f.write("\n".join(entries) + "\n" if entries else "")
         return "Ping added successfully."
     if command_name == 'create_page':
-        filename = args_dict.get('filename')
-        if "/" in filename or "\\" in filename:
-            return "Invalid filename."
+        filename, error = _filename_arg(args_dict)
+        if error:
+            return error
         with open(static_dir+filename, "w", encoding="utf-8") as f:
             f.write(args_dict.get('contents') or '')
         return "Your site is live at "+_static_url(static_dir, filename)
@@ -2050,6 +2077,19 @@ def _window_start(messages, recent):
     return start
 
 
+def _append_tool_response(call_id, name, content):
+    """Record one tool call's response in the conversation. Every tool_call id
+    an assistant message declares must end up answered by exactly one of these
+    (see _heal_history), which is why the same shape is appended from four
+    different places in agent_stream."""
+    agent_messages.append({
+        "role": "tool",
+        "tool_call_id": call_id,
+        "name": name,
+        "content": content,
+    })
+
+
 def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
@@ -2116,6 +2156,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # second system-role message breaks the single-leading-system-message
         # invariant reset() relies on, and some providers reject that.
         _reset_turn_usage()
+        _reset_tool_run()
         agent_messages.append({"role": "system", "content": system_input})
         agent_input = system_input
         eco_messages = agent_messages
@@ -2126,12 +2167,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     elif tool_input is not None:
         temp = 0.2
         yield {"type": "tool_result", "name": tool_name, "result": tool_input}
-        agent_messages.append({
-            "role": "tool",
-            "tool_call_id": tool_id,
-            "name": tool_name,
-            "content": tool_input,
-        })
+        _append_tool_response(tool_id, tool_name, tool_input)
         agent_input = tool_input
         # Resume from 2 user messages ago, or the first user message if
         # there aren't 2. A system-initiated conversation may have no user
@@ -2350,12 +2386,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     skipped_name = skipped["function"]["name"]
                     yield {"type": "tool_result", "name": skipped_name,
                            "result": cancellation.STOP_NOTICE}
-                    agent_messages.append({
-                        "role": "tool",
-                        "tool_call_id": skipped["id"],
-                        "name": skipped_name,
-                        "content": cancellation.STOP_NOTICE
-                    })
+                    _append_tool_response(skipped["id"], skipped_name,
+                                          cancellation.STOP_NOTICE)
                 agent_messages.append({"role": "assistant", "content": cancellation.STOPPED_TEXT})
                 yield {"type": "stopped"}
                 return
@@ -2425,24 +2457,14 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 result = "" if result is None else str(result)
             if i < last:
                 yield {"type": "tool_result", "name": command_name, "result": result}
-                agent_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "name": command_name,
-                    "content": result
-                })
+                _append_tool_response(tc["id"], command_name, result)
             elif cancellation.is_stopped():
                 # Stopped while this last tool was running. Its result still has
                 # to be recorded — the call was made, and the id needs its
                 # response — but the model isn't asked to continue from it,
                 # which is what would start the next request.
                 yield {"type": "tool_result", "name": command_name, "result": result}
-                agent_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "name": command_name,
-                    "content": result
-                })
+                _append_tool_response(tc["id"], command_name, result)
                 agent_messages.append({"role": "assistant", "content": cancellation.STOPPED_TEXT})
                 yield {"type": "stopped"}
                 return

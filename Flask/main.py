@@ -174,15 +174,33 @@ def current_user():
     return None
 
 
+def _reset_conversation(name):
+    """Start `name`'s conversation over. Shared by the /reset route and the
+    /reset slash-command so the two can't drift."""
+    with agent_lock:
+        activate_session(name)
+        agent.reset()
+        save_conversation(name, agent.get_messages(), title="New chat")
+
+
+def _has_title(name):
+    """Whether this conversation already has a real (non-default) title —
+    checked before a turn so only the first exchange derives one."""
+    try:
+        return load_conversation(name).get("title") not in (None, "", "New chat")
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 # ── AUTH ROUTES ──────────────────────────────────────────────
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = False
     if request.method == 'POST':
-        # Read fresh (not the module-load `password` global) so a password
-        # changed in Settings — which _write_env pushes into os.environ —
-        # takes effect on the very next login without a restart.
+        # Read at request time (not cached at import) so a password changed in
+        # Settings — which _write_env pushes into os.environ — takes effect on
+        # the very next login without a restart.
         if request.form.get('password') == os.getenv("FC_PASSWORD"):
             session.permanent = True
             session['authenticated'] = True
@@ -329,17 +347,13 @@ def chat():
 
     # Slash-commands stay as quick, plain JSON responses — no need to stream these.
     if user_input.lower() == '/reset':
-        with agent_lock:
-            activate_session(name)
-            agent.reset()
-            save_conversation(name, agent.get_messages(), title="New chat")
+        _reset_conversation(name)
         return jsonify({'response': 'Agent reset successfully'})
     elif user_input.lower() == '/startapi':
-        open(_API_FLAG, 'w').close()
+        _set_api_enabled(True)
         return jsonify({'response': 'API enabled. Use your FreeClaw password as the Bearer token at /v1/chat/completions'})
     elif user_input.lower() == '/stopapi':
-        if os.path.exists(_API_FLAG):
-            os.remove(_API_FLAG)
+        _set_api_enabled(False)
         return jsonify({'response': 'API disabled'})
 
     def generate():
@@ -360,10 +374,7 @@ def chat():
                 # from the previous one, so a press that raced the end of its
                 # own turn can't kill this one.
                 cancellation.begin_turn()
-                try:
-                    had_title = load_conversation(name).get("title") not in (None, "", "New chat")
-                except (OSError, json.JSONDecodeError):
-                    had_title = False
+                had_title = _has_title(name)
                 for event in agent.agent_stream(user_input=user_input):
                     yield f"data: {json.dumps(event)}\n\n"
                 messages = agent.get_messages()
@@ -496,10 +507,7 @@ def reset():
         return redirect(url_for('login'))
     name = current_user()
     if name:
-        with agent_lock:
-            activate_session(name)
-            agent.reset()
-            save_conversation(name, agent.get_messages(), title="New chat")
+        _reset_conversation(name)
     if request.method == 'POST':
         return jsonify({'response': 'Agent reset successfully'})
     return redirect(url_for('index'))
@@ -549,6 +557,15 @@ def api_is_enabled():
     return os.path.exists(_API_FLAG)
 
 
+def _set_api_enabled(enable):
+    """Flip the flag file that enables /v1. Shared by the /startapi and
+    /stopapi slash-commands and the /api/api-status toggle."""
+    if enable:
+        open(_API_FLAG, 'w').close()
+    elif os.path.exists(_API_FLAG):
+        os.remove(_API_FLAG)
+
+
 def _require_api_auth(f):
     """Decorator: checks Bearer token == FC_PASSWORD and that the API is enabled."""
     @functools.wraps(f)
@@ -577,11 +594,7 @@ def api_toggle_api():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json(silent=True) or {}
-    enable = data.get('enabled', not api_is_enabled())
-    if enable:
-        open(_API_FLAG, 'w').close()
-    elif os.path.exists(_API_FLAG):
-        os.remove(_API_FLAG)
+    _set_api_enabled(data.get('enabled', not api_is_enabled()))
     return jsonify({'enabled': api_is_enabled()})
 
 
@@ -690,10 +703,7 @@ def v1_chat_completions():
                 # prompt, so unapproved commands are refused, not queued.
                 activate_session(name, interactive=False)
                 session_active = True
-                try:
-                    had_title = load_conversation(name).get("title") not in (None, "", "New chat")
-                except (OSError, json.JSONDecodeError):
-                    had_title = False
+                had_title = _has_title(name)
                 yield from agent.agent_stream(user_input=user_input)
                 msgs = agent.get_messages()
                 save_conversation(name, msgs, title=None if had_title else derive_title(msgs))
@@ -866,6 +876,12 @@ def api_update_settings():
     updates = {k: str(v) for k, v in data.items() if k in KNOWN_KEYS}
     if not updates:
         return jsonify({'error': 'No valid keys provided'}), 400
+    # _write_env writes values verbatim, one KEY=value per line — a newline in
+    # a value would spill onto its own line and be read back as a different
+    # (or brand-new) key.
+    for key, value in updates.items():
+        if '\n' in value or '\r' in value:
+            return jsonify({'error': f'{key} cannot contain newlines.'}), 400
     try:
         _write_env(updates)
     except Exception as e:

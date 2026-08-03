@@ -82,7 +82,11 @@ _http = requests.Session()
 
 # ── .env storage (read + serialize) ──────────────────────────
 
-def _parse_list(raw):
+def parse_env_list(raw):
+    """One of the single-quote-wrapped JSON lists we persist in .env, parsed
+    back into a Python list — or [] for anything missing or malformed. Public
+    because agent.py stores its provider lists the exact same way and shares
+    this parser rather than keeping a copy."""
     if not raw:
         return []
     try:
@@ -103,12 +107,12 @@ def read_servers():
     if not os.path.exists(ENV_PATH):
         return []
     env = dotenv_values(ENV_PATH)
-    names = _parse_list(env.get(NAMES_KEY))
-    urls = _parse_list(env.get(URLS_KEY))
-    tokens = _parse_list(env.get(TOKENS_KEY))
-    enabled = _parse_list(env.get(ENABLED_KEY))
-    transports = _parse_list(env.get(TRANSPORTS_KEY))
-    commands = _parse_list(env.get(COMMANDS_KEY))
+    names = parse_env_list(env.get(NAMES_KEY))
+    urls = parse_env_list(env.get(URLS_KEY))
+    tokens = parse_env_list(env.get(TOKENS_KEY))
+    enabled = parse_env_list(env.get(ENABLED_KEY))
+    transports = parse_env_list(env.get(TRANSPORTS_KEY))
+    commands = parse_env_list(env.get(COMMANDS_KEY))
     count = max(len(names), len(urls), len(commands))
     servers = []
     for i in range(count):
