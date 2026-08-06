@@ -23,6 +23,11 @@ Flask/static/*
 # user folder tracked: chatting with the wizard shows up as local changes.
 !Flask/static/Setup Wizard/
 
+# The sidecar save_conversation() locks against the CLI process (src/users.py).
+# Runtime state, and it lives next to the conversation it guards — which for the
+# Setup Wizard is inside a tracked folder.
+*.json.lock
+
 # Python
 __pycache__/
 *.pyc

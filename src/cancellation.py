@@ -16,15 +16,17 @@ that lands mid-stream (where tool call arguments are still half-arrived, and so
 can't be run at all) discards them and ends the turn on whatever text made it
 out.
 
-The flag is module-level, like `approvals.py` and for the same reason: main.py's
-`agent_lock` serialises whole turns, so exactly one is ever in flight. It
-defaults to "not stopped" and is cleared at the start of every turn, so a stop
-that arrives after its turn already finished can't carry over and kill the next
-one.
+The flag lives on the Session (src/session.py), like `approvals.py`'s per-turn
+context and for the same reason: turns can run concurrently, so "stop" has to
+mean *this* conversation's turn rather than whichever one happens to be in
+flight. It defaults to "not stopped" and is cleared at the start of every turn,
+so a stop that arrives after its turn already finished can't carry over and kill
+the next one.
 """
 
 import threading
 
+import src.session as sessions
 from src.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -45,55 +47,60 @@ STOP_NOTICE = (
 STOPPED_TEXT = "_Stopped._"
 
 
-_stop = threading.Event()
+# Guards the flip of `turn_active` against a stop landing at the same instant.
+# One process-wide lock is plenty: it's held for two attribute writes, never
+# across any work.
 _state_lock = threading.Lock()
-_turn_active = False
 
 
-def begin_turn():
+def begin_turn(sess=None):
     """Arm a fresh turn. Clears any stop left over from a previous one — a
     button press that raced the end of its own turn must not kill the next."""
-    global _turn_active
+    sess = sess or sessions.current()
     with _state_lock:
-        _stop.clear()
-        _turn_active = True
+        sess.stop_event.clear()
+        sess.turn_active = True
 
 
-def end_turn():
+def end_turn(sess=None):
     """The turn is over; a stop arriving now has nothing to act on."""
-    global _turn_active
+    sess = sess or sessions.current()
     with _state_lock:
-        _turn_active = False
-        _stop.clear()
+        sess.turn_active = False
+        sess.stop_event.clear()
 
 
-def request_stop():
-    """Ask the running turn to wind down. Returns True if there was one.
+def request_stop(sess=None):
+    """Ask `sess`'s running turn to wind down. Returns True if there was one.
 
     Called from a different thread than the turn — the Flask route, which
-    deliberately doesn't take `agent_lock` (the turn being stopped is holding
-    it). Setting an Event is all that crosses the boundary."""
+    deliberately doesn't take the conversation's lock (the turn being stopped is
+    holding it). Setting an Event is all that crosses the boundary, which is
+    also why the caller has to name the Session: the stopping thread never has
+    the target conversation bound to its own context."""
+    if sess is None:
+        sess = sessions.current()
     with _state_lock:
-        if not _turn_active:
+        if not sess.turn_active:
             return False
-        _stop.set()
-    logger.info("Stop requested for the in-flight agent turn")
+        sess.stop_event.set()
+    logger.info("Stop requested for the in-flight turn of %s", sess)
     return True
 
 
-def is_stopped():
-    """Whether the current turn has been asked to stop. Checked at the points
-    in agent_stream() where winding down leaves a valid conversation."""
-    return _stop.is_set()
+def is_stopped(sess=None):
+    """Whether this conversation's turn has been asked to stop. Checked at the
+    points in agent_stream() where winding down leaves a valid conversation."""
+    return (sess or sessions.current()).stop_event.is_set()
 
 
-def sleep_unless_stopped(seconds):
+def sleep_unless_stopped(seconds, sess=None):
     """Pause for `seconds`, returning early (True) if the turn is stopped while
     we're waiting. For the one place the agent deliberately idles — waiting out
     a provider cooldown in _create_completion — where a plain time.sleep() would
     leave the Stop button looking dead for the length of the wait."""
-    return _stop.wait(seconds)
+    return (sess or sessions.current()).stop_event.wait(seconds)
 
 
-def turn_active():
-    return _turn_active
+def turn_active(sess=None):
+    return (sess or sessions.current()).turn_active

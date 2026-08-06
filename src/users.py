@@ -2,14 +2,22 @@
 the CLI (src/cli.py) so both entry points read and write the exact same
 on-disk layout under Flask/static/<user>/."""
 
+import contextlib
 import os
 import re
 import json
 import shutil
+import tempfile
 import time
 
 import src.agent as agent
 import src.approvals as approvals
+import src.session as sessions
+
+try:
+    import fcntl
+except ImportError:  # non-POSIX; the lock degrades to the atomic rename alone
+    fcntl = None
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "..", "Flask", "static")
@@ -140,26 +148,80 @@ def load_conversation(name):
         return json.load(f)
 
 
+@contextlib.contextmanager
+def _file_lock(path):
+    """Hold an exclusive lock on `path` for the duration of the block.
+
+    A Session's own lock only covers threads inside one process, and the CLI is
+    a *different* process from the Flask app (on the macOS install, a whole
+    separate `docker compose exec`). Both write the same conversation.json, so
+    without this the read-modify-write below is last-writer-wins across the two
+    and a turn taken in one can silently erase a turn taken in the other.
+
+    The lock is taken on a sidecar rather than the file itself: the write
+    replaces conversation.json by rename, so a lock held on the old inode would
+    stop guarding anything the moment the first writer finished.
+    """
+    if fcntl is None:
+        yield
+        return
+    lock_path = path + ".lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _write_json_atomic(path, data):
+    """Replace `path` with `data` in one step.
+
+    Writing in place leaves a window where the file on disk is truncated or
+    half-written, and anything reading it then (the other process, the ping
+    scheduler, a page refresh) sees a corrupt conversation. Writing a temp file
+    in the same directory and renaming it over the target is atomic on POSIX,
+    so a reader sees either the whole old file or the whole new one.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".conv-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def save_conversation(name, messages, title=None):
     """Writes the conversation and returns the updated_at stamp it wrote, so
     callers can hand that value straight to the browser (the chat page keys
-    its "has this conversation changed?" poll off it)."""
+    its "has this conversation changed?" poll off it).
+
+    The read-modify-write runs under a cross-process file lock and lands via an
+    atomic rename, so the web app and the CLI can hold the same conversation
+    open without either one losing the other's turn or reading a half-written
+    file."""
     path = conversation_path(name)
-    data = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            data = {}
-    if title is not None:
-        data["title"] = title
-    elif "title" not in data:
-        data["title"] = "New chat"
-    data["messages"] = messages
-    data["updated_at"] = time.time()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f)
+    with _file_lock(path):
+        data = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        if title is not None:
+            data["title"] = title
+        elif "title" not in data:
+            data["title"] = "New chat"
+        data["messages"] = messages
+        data["updated_at"] = time.time()
+        _write_json_atomic(path, data)
     return data["updated_at"]
 
 
@@ -179,19 +241,35 @@ def ensure_conversation(name):
     """Make sure `name` has a conversation.json, migrating an older
     multi-chat layout if one is found, or creating a fresh conversation
     (via agent.reset(), scoped to this user's own files folder, which also
-    holds their long-term context.md) if there's nothing to migrate."""
+    holds their long-term context.md) if there's nothing to migrate.
+
+    Scoped to `name`'s own Session, because several read-only routes call this
+    without activating a session first — un-scoped, the reset() below would
+    build the fresh conversation on whatever Session that thread last touched."""
     _migrate_legacy_conversations(name)
     if not os.path.exists(conversation_path(name)):
-        agent.set_static_dir(conv_files_dir(name))
-        agent.reset()
-        save_conversation(name, agent.get_messages(), title="New chat")
+        with sessions.use(sessions.for_user(name)):
+            agent.set_static_dir(conv_files_dir(name))
+            agent.reset()
+            save_conversation(name, agent.get_messages(), title="New chat")
 
 
 def activate_session(name, interactive=False):
-    """Point the agent module's globals at this user's file folder (which
-    holds their context.md alongside created/uploaded files), and load
-    their saved conversation messages so the next agent_stream() call
-    continues the right thread.
+    """Bind this thread to `name`'s Session, point it at their file folder
+    (which holds their context.md alongside created/uploaded files), and load
+    their saved conversation messages so the next agent_stream() call continues
+    the right thread. Returns the Session.
+
+    One Session per user, from `sessions.for_user()`, so every way into that
+    user's conversation — web chat, the /v1 API, a scheduled ping — works on the
+    same object and the same lock rather than racing two message lists onto one
+    conversation.json.
+
+    The binding is this thread's, not the process's: another request thread can
+    activate a different user at the same moment without disturbing this one.
+    Callers that need the binding to be *scoped* — a background delivery on a
+    pooled worker, or a nested run — should use `sessions.use()` around the
+    turn instead of relying on the next activate_session() to overwrite it.
 
     `interactive` says whether there's someone able to answer a bash approval
     prompt for the turn about to run — True from the web chat and the CLI,
@@ -200,8 +278,11 @@ def activate_session(name, interactive=False):
     agent turn that blocks for five minutes waiting on nobody. Scoping the
     approval rules to `name` here is also what keeps one user's always-allow
     list from applying to another's."""
+    sess = sessions.for_user(name)
+    sessions.bind(sess)
     ensure_conversation(name)
     agent.set_static_dir(conv_files_dir(name))
     approvals.begin_turn(name, interactive)
     data = load_conversation(name)
     agent.set_messages(data.get("messages", []))
+    return sess

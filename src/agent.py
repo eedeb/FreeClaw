@@ -18,6 +18,7 @@ import src.cancellation as cancellation
 import src.mcp_client as mcp_client
 import src.responses_api as responses_api
 import src.scraper as scraper
+import src.session as sessions
 from src.logging_setup import get_logger
 
 load_dotenv()
@@ -35,8 +36,16 @@ CLASSIFIER_PATH = BASE_DIR + "/../models/data.pth"
 STATIC_ROOT = os.path.normpath(BASE_DIR + '/../Flask/static')
 
 # Folder the agent's file tools operate in — repointed at the active user's
-# own files folder via set_static_dir().
-static_dir = BASE_DIR + '/../Flask/static/'
+# own files folder via set_static_dir(). Per-conversation state, so it lives on
+# the current Session; `agent.static_dir` still reads it (see __getattr__ at the
+# bottom of this module) for callers written before Sessions existed.
+
+
+def _sess():
+    """The conversation this turn is running in. Every per-conversation global
+    this module used to keep is an attribute on it — see src/session.py for
+    which state moved and which deliberately stayed process-wide."""
+    return sessions.current()
 
 
 def _server_base_url():
@@ -99,7 +108,6 @@ def _static_url(directory, filename):
     return link
 
 
-agent_messages = []
 tools = []
 
 # LLM providers are user-defined in Settings → Providers and persist in .env
@@ -546,7 +554,7 @@ def _cache_breakpoint_messages(messages):
     second and later requests read all of it from cache and pay only for the
     tool call and its result. It also carries across turns, since the history
     below it only ever grows. This relies on the continuation re-sending an
-    identical prefix — see _turn_prefix, which is what makes that true.
+    identical prefix — see Session.turn_prefix, which is what makes that true.
 
     Both are skipped where there's nothing worth marking: no system message, no
     marker, nothing stable above it, or no user message. A breakpoint over a
@@ -643,22 +651,17 @@ def _apply_optional_extras(call_kwargs, model):
 
 # Running token totals for the turn in flight. One turn can make several LLM
 # requests — every tool round-trip recurses into agent_stream and issues
-# another — so per-turn cost is only visible by summing them. Module-level
-# because the recursion means locals wouldn't aggregate; safe for the same
-# reason agent_messages is, in that agent_lock serialises whole turns.
+# another — so per-turn cost is only visible by summing them. Kept on the
+# Session rather than in a local because the recursion means a local wouldn't
+# aggregate, and on the Session rather than a module global so two conversations
+# running at once each keep their own tally.
 # `requests` counts every call made, `reported` only those that came back with
 # numbers — so "zero tokens" stays distinguishable from "this provider doesn't
 # say".
-_turn_usage = {}
 
 
 def _reset_turn_usage():
-    global _turn_usage
-    _turn_usage = {"prompt_tokens": 0, "completion_tokens": 0,
-                   "cached_tokens": 0, "requests": 0, "reported": 0}
-
-
-_reset_turn_usage()
+    _sess().reset_turn_usage()
 
 
 # What the first request of the turn sent, pinned so every tool continuation
@@ -678,18 +681,15 @@ _reset_turn_usage()
 #
 # Empty when no turn is in flight, which is how a direct tool_input caller with
 # no originating turn is told to fall back to working the window out for itself.
-_turn_prefix = {}
 
 
 def _pin_turn_prefix(start, turn_tools):
     """Record the prefix this turn's first request used."""
-    global _turn_prefix
-    _turn_prefix = {"start": start, "tools": turn_tools}
+    _sess().pin_turn_prefix(start, turn_tools)
 
 
 def _clear_turn_prefix():
-    global _turn_prefix
-    _turn_prefix = {}
+    _sess().clear_turn_prefix()
 
 
 # ── consecutive tool-call throttle ───────────────────────────
@@ -712,8 +712,8 @@ def _clear_turn_prefix():
 # clear. Nothing is blocked permanently — the point is to interrupt a runaway
 # often enough that it has to re-decide, not to cap how much work a turn can do.
 #
-# Module-level and reset per turn, for the same reason _turn_usage is: the
-# recursion means a local wouldn't carry across tool hops.
+# Kept on the Session and reset per turn, for the same reason the token tally
+# is: the recursion means a local wouldn't carry across tool hops.
 
 TOOL_CALL_RUN_LIMIT = 2
 
@@ -725,14 +725,9 @@ THROTTLE_NOTICE = (
     "it really is the only option, you may call it again on the next step."
 )
 
-_consecutive_tool_calls = 0
-_last_tool_name = None
-
 
 def _reset_tool_run():
-    global _consecutive_tool_calls, _last_tool_name
-    _consecutive_tool_calls = 0
-    _last_tool_name = None
+    _sess().reset_tool_run()
 
 
 def _throttle_tool_call(name):
@@ -742,15 +737,15 @@ def _throttle_tool_call(name):
     varied work is never throttled. A held-back call resets the run, so the same
     tool is free to go again on the next step if there really is no
     alternative."""
-    global _consecutive_tool_calls, _last_tool_name
-    if name != _last_tool_name:
-        _last_tool_name = name
-        _consecutive_tool_calls = 1
+    sess = _sess()
+    if name != sess.last_tool_name:
+        sess.last_tool_name = name
+        sess.consecutive_tool_calls = 1
         return False
-    if _consecutive_tool_calls >= TOOL_CALL_RUN_LIMIT:
-        _consecutive_tool_calls = 0
+    if sess.consecutive_tool_calls >= TOOL_CALL_RUN_LIMIT:
+        sess.consecutive_tool_calls = 0
         return True
-    _consecutive_tool_calls += 1
+    sess.consecutive_tool_calls += 1
     return False
 
 
@@ -758,7 +753,7 @@ def get_turn_usage():
     """Token totals for the turn that just ran. Read by the /v1 endpoint to
     fill in its `usage` block — the figures are the providers' own, so they're
     exact wherever the provider reports them and zero where it doesn't."""
-    return dict(_turn_usage)
+    return dict(_sess().turn_usage)
 
 
 def _num(obj, *names):
@@ -980,13 +975,15 @@ def set_static_dir(path):
     etc.) at a specific folder — e.g. static/<username>/files/. context.md
     (the agent's long-term memory, read/updated via the same file tools)
     lives in this same folder, so this scopes both. Creates the folder if it
-    doesn't exist yet."""
-    global static_dir
+    doesn't exist yet.
+
+    Scoped to the current Session, so pointing one conversation at a user's
+    folder no longer repoints every other conversation with it."""
     if not path.endswith(os.sep):
         path = path + os.sep
     os.makedirs(path, exist_ok=True)
-    static_dir = path
-    return static_dir
+    _sess().static_dir = path
+    return path
 
 
 user_creator = None
@@ -1003,7 +1000,7 @@ def set_user_creator(fn):
 
 
 def get_messages():
-    return agent_messages
+    return _sess().messages
 
 
 def _merge_system_messages(messages):
@@ -1068,9 +1065,12 @@ def set_messages(messages):
     """Load a previously-saved conversation (a plain list of OpenAI-style
     message dicts) as the active conversation for subsequent agent_stream
     calls. Healed on the way in so a conversation corrupted by an older
-    build (or a mid-turn crash) can't keep failing every provider call."""
-    global agent_messages
-    agent_messages = _heal_history(messages)
+    build (or a mid-turn crash) can't keep failing every provider call.
+
+    Replaces the list's *contents* rather than rebinding it, so a caller
+    holding the list it got from get_messages() keeps seeing the live
+    conversation instead of a detached snapshot."""
+    _sess().messages[:] = _heal_history(messages)
 
 
 # reset() builds the system message once; a conversation can then run for days
@@ -1144,25 +1144,25 @@ _CTX_ALWAYS = ("About", "Preferences")
 # search_context for a name it was never told about, and a question that
 # section answers goes to web_search instead. Rendered into the volatile tail,
 # which is rewritten every turn anyway, so the cached prefix is untouched.
-_new_sections = []
+# Per-conversation, so it lives on the Session.
 
 
 def _note_new_section(name):
     """Remember a section created mid-conversation so the next turn's prompt
     mentions it. No-op for one already listed."""
-    if name and name not in _new_sections:
-        _new_sections.append(name)
+    _sess().note_new_section(name)
 
 
 def _new_sections_line():
-    if not _new_sections:
+    new_sections = _sess().new_sections
+    if not new_sections:
         return ""
     return ("\nSections added this conversation (read with search_context): "
-            + ", ".join(_new_sections))
+            + ", ".join(new_sections))
 
 
 def _context_path():
-    return static_dir + "context.md"
+    return _sess().static_dir + "context.md"
 
 
 def _read_context():
@@ -1321,13 +1321,14 @@ def _refresh_volatile():
     and stays fixed for the conversation, which is what lets it sit in the
     cached prefix. The cost is that a fact the model saves mid-conversation
     won't appear in its own prompt until the next reset — but the *names* of
-    any sections it created do (see _new_sections), because a section the model
+    any sections it created do (see Session.new_sections), because a section the model
     doesn't know exists is one it can never call search_context for."""
-    if not agent_messages or agent_messages[0].get("role") != "system":
+    messages = _sess().messages
+    if not messages or messages[0].get("role") != "system":
         return
-    stable = _stable_prefix(agent_messages[0].get("content", ""))
-    agent_messages[0]["content"] = (stable + _VOLATILE_HEADER + _now_line()
-                                    + _new_sections_line() + "\n")
+    stable = _stable_prefix(messages[0].get("content", ""))
+    messages[0]["content"] = (stable + _VOLATILE_HEADER + _now_line()
+                              + _new_sections_line() + "\n")
 
 
 def reset(tts=False):
@@ -1342,10 +1343,10 @@ def reset(tts=False):
 
     Its content is ordered stable-instructions-first, volatile-tail-last (see
     _VOLATILE_HEADER) so the bulk of it can be cached by the provider."""
-    global agent_messages
+    sess = _sess()
     # The fresh snapshot below lists every section, so the running tally of
     # ones added mid-conversation starts over with it.
-    _new_sections.clear()
+    sess.new_sections.clear()
     # Create the file if it's missing so the model's first edit_file/create_file
     # lands somewhere; _context_block() reads it back below. Uses the same
     # headed template new users get, so a context.md that was deleted (or
@@ -1390,9 +1391,10 @@ almost never the fix, even when the request is open-ended.
     # what a provider's prompt cache needs in order to hit. This call is the
     # only place context.md is read into the prompt, so a reset is what picks
     # up edits made to it.
-    agent_messages = [{"role": "system", "content":
-                       prompt.rstrip() + _context_block()
-                       + _VOLATILE_HEADER + _now_line() + "\n"}]
+    # In place, not rebound — see set_messages() for why.
+    sess.messages[:] = [{"role": "system", "content":
+                         prompt.rstrip() + _context_block()
+                         + _VOLATILE_HEADER + _now_line() + "\n"}]
     # The pinned window index refers to a conversation that no longer exists.
     _clear_turn_prefix()
     refresh_tools()
@@ -1805,6 +1807,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     approval gate (see agent_stream). It defaults to False so there is no code
     path — not a future caller, not a mistake — that reaches the shell without
     a decision having been made first."""
+    # Read once, up front: every file tool below resolves against the calling
+    # conversation's own folder, and pinning it here means one dispatch can't
+    # straddle two folders if the Session were repointed mid-call.
+    static_dir = _sess().static_dir
     parameter = (args_dict.get('query') or args_dict.get('site') or args_dict.get('url')
                  or args_dict.get('command') or args_dict.get('filename')
                  or args_dict.get('header') or args_dict.get('contents') or None)
@@ -2175,7 +2181,7 @@ def _append_tool_response(call_id, name, content):
     an assistant message declares must end up answered by exactly one of these
     (see _heal_history), which is why the same shape is appended from four
     different places in agent_stream."""
-    agent_messages.append({
+    _sess().messages.append({
         "role": "tool",
         "tool_call_id": call_id,
         "name": name,
@@ -2191,8 +2197,14 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
       {"type": "reasoning", "text": "..."}        - a chunk of the model's thinking
       {"type": "tool_call", "name": "...", "arguments": {...}} - tool invocation started
       {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
-    The full, final conversation is available afterwards via agent_messages.
+    The full, final conversation is available afterwards via get_messages().
+
+    Runs against whichever Session is bound for this thread (src/session.py),
+    so two callers can drive their own turns at once. The recursive tool-hop
+    calls below inherit that binding.
     """
+    sess = _sess()
+    agent_messages = sess.messages
     _refresh_volatile()
     # Default model id — any provider with its own model set overrides it.
     model = "openai/gpt-oss-120b"
@@ -2267,14 +2279,14 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         yield {"type": "tool_result", "name": tool_name, "result": tool_input}
         _append_tool_response(tool_id, tool_name, tool_input)
         agent_input = tool_input
-        if _turn_prefix:
+        if sess.turn_prefix:
             # Continue from exactly where this turn's first request began, with
             # exactly the tools it was given. Re-deriving either would hand the
             # provider a prefix that diverges from the one it just cached, and
             # the tool set the turn's tag deliberately narrowed would widen back
             # to everything. See _turn_prefix.
-            start_index = _turn_prefix["start"]
-            check_tools = _turn_prefix["tools"]
+            start_index = sess.turn_prefix["start"]
+            check_tools = sess.turn_prefix["tools"]
         else:
             # No turn in flight: a direct tool_input caller. Resume from 2 user
             # messages ago, or the first user message if there aren't 2. A
@@ -2313,7 +2325,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # `yield from agent_stream(...)` below), so a fallback mid-conversation
     # (or even mid a single tool round-trip) surfaces here too, not just at
     # the very start of the turn.
-    _turn_usage["requests"] += 1
+    sess.turn_usage["requests"] += 1
     yield {"type": "provider", "name": provider}
 
     # Consume the stream, forwarding text chunks to the caller in real
@@ -2399,14 +2411,14 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # Logged always (so a provider that isn't caching, or isn't reporting,
         # is diagnosable from the log alone) and forwarded for display.
         for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
-            _turn_usage[key] += usage_seen[key]
-        _turn_usage["reported"] += 1
+            sess.turn_usage[key] += usage_seen[key]
+        sess.turn_usage["reported"] += 1
         logger.info(
             "Usage for provider '%s': prompt=%d cached=%d completion=%d "
             "(turn so far: %d requests, %d prompt, %d completion)",
             provider, usage_seen["prompt_tokens"], usage_seen["cached_tokens"],
-            usage_seen["completion_tokens"], _turn_usage["requests"],
-            _turn_usage["prompt_tokens"], _turn_usage["completion_tokens"],
+            usage_seen["completion_tokens"], sess.turn_usage["requests"],
+            sess.turn_usage["prompt_tokens"], sess.turn_usage["completion_tokens"],
         )
         # `context_tokens` is this request's prompt size — what the model
         # actually read this time, which is the number worth putting in front
@@ -2414,7 +2426,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # means only a slice of it is sent.
         yield {"type": "usage", "provider": provider,
                "context_tokens": usage_seen["prompt_tokens"],
-               **usage_seen, "turn": dict(_turn_usage)}
+               **usage_seen, "turn": dict(sess.turn_usage)}
 
     # Breaking out of the stream above leaves any tool call the model was still
     # emitting with truncated JSON arguments, so it can't be run — and a call
@@ -2612,7 +2624,32 @@ def agent(user_input=None, system_input=None, tool_input=None, tool_id=None, too
     for _ in agent_stream(user_input=user_input, system_input=system_input,
                           tool_input=tool_input, tool_id=tool_id, tool_name=tool_name):
         pass
-    return agent_messages
+    return _sess().messages
+
+
+# ── compatibility shim ───────────────────────────────────────
+#
+# `agent_messages` and `static_dir` used to be module globals, and callers
+# written before Sessions existed still read them as `agent.agent_messages` /
+# `agent.static_dir` (src/cli.py does). PEP 562 module __getattr__ resolves
+# them against the current Session, so those reads keep meaning what they
+# always meant without every call site having to change at once.
+#
+# Reads only. Assigning `agent.agent_messages = [...]` would bind a module
+# global that shadows this and silently detach the caller from the live
+# conversation — use set_messages() / set_static_dir(), which is what every
+# caller already does.
+_SESSION_ATTRS = {
+    "agent_messages": lambda s: s.messages,
+    "static_dir": lambda s: s.static_dir,
+}
+
+
+def __getattr__(name):
+    read = _SESSION_ATTRS.get(name)
+    if read is not None:
+        return read(sessions.current())
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # api_complete() used to live here: a stateless passthrough that forwarded the

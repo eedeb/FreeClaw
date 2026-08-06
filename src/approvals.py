@@ -34,6 +34,7 @@ import shlex
 import threading
 import uuid
 
+import src.session as sessions
 from src.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -63,9 +64,11 @@ _DECISION_TIMEOUT = "timeout"
 _DECISION_ABANDONED = "abandoned"
 
 # How long a pending prompt waits for an answer. The agent turn is blocked for
-# this long at worst (holding main.py's agent_lock), so it can't be generous:
-# five minutes is enough for someone who stepped away mid-answer, and short
-# enough that a closed browser tab doesn't wedge the app for the next user.
+# this long at worst, holding its own conversation's lock — so an unanswered
+# prompt now stalls only that conversation rather than the whole app, but it can
+# still wedge the user's own next turn: five minutes is enough for someone who
+# stepped away mid-answer, and short enough that a closed browser tab doesn't
+# leave their next message queued behind a prompt nobody is going to answer.
 APPROVAL_TIMEOUT = 300
 
 # Shell syntax that makes a command more than one command, or lets it write
@@ -207,14 +210,12 @@ def clear_rules(user):
 # ── per-turn context ─────────────────────────────────────────
 #
 # Which user the current turn belongs to, and whether there's anyone able to
-# answer a prompt for it. Module-level for the same reason agent.py keeps
-# static_dir and agent_messages that way: main.py's agent_lock serialises whole
-# turns, so exactly one is ever in flight. Both default to the safe answer, so
-# an entry point that forgets to call begin_turn() gets refusals rather than
-# unattended execution.
-
-_current_user = None
-_interactive = False
+# answer a prompt for it. Held on the current Session (src/session.py) rather
+# than in module globals, so two conversations taking a turn at once can't read
+# each other's answer to either question — one user's interactive web turn must
+# never lend its "someone is watching" to another user's background ping. Both
+# default to the safe answer, so an entry point that forgets to call
+# begin_turn() gets refusals rather than unattended execution.
 
 
 def begin_turn(user, interactive):
@@ -222,17 +223,17 @@ def begin_turn(user, interactive):
     answered. `interactive=False` (a scheduled ping, an API call — anything
     with no one watching) means saved rules still apply, but a command that
     would need asking is refused instead of hanging."""
-    global _current_user, _interactive
-    _current_user = user
-    _interactive = bool(interactive)
+    sess = sessions.current()
+    sess.approval_user = user
+    sess.approval_interactive = bool(interactive)
 
 
 def current_user():
-    return _current_user
+    return sessions.current().approval_user
 
 
 def is_interactive():
-    return _interactive
+    return sessions.current().approval_interactive
 
 
 # ── pending prompts ──────────────────────────────────────────
@@ -333,13 +334,19 @@ def resolve(request_id, decision):
     return True, None
 
 
-def abandon_all():
-    """Refuse every pending prompt. For a caller tearing down a turn (a
-    dropped connection, a shutdown) so a waiter can't sit out the full
-    timeout."""
+def abandon_all(user=None):
+    """Refuse pending prompts. For a caller tearing down a turn (a dropped
+    connection, a stop, a shutdown) so a waiter can't sit out the full timeout.
+
+    `user` limits it to that user's prompts, which is what a caller tearing
+    down one conversation wants now that turns can run concurrently — without
+    it, one user's dropped connection would refuse a command another user was
+    part-way through approving. Omit it to abandon every prompt in the process
+    (a shutdown)."""
     with _pending_lock:
-        reqs = list(_pending.values())
-        _pending.clear()
+        reqs = [r for r in _pending.values() if user is None or r.user == user]
+        for req in reqs:
+            del _pending[req.id]
     for req in reqs:
         req.decision = _DECISION_ABANDONED
         req._answered.set()

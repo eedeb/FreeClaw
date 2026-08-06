@@ -4,6 +4,7 @@ import src.agent as agent
 import src.approvals as approvals
 import src.cancellation as cancellation
 import src.mcp_client as mcp_client
+import src.session as sessions
 import src.telemetry as telemetry
 from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
@@ -105,13 +106,23 @@ def _handle_uncaught(e):
     return jsonify({'error': 'Internal server error — see logs/freeclaw.log for details.'}), 500
 
 
-# A handful of users may legitimately hit /chat at the same moment, and the
-# agent module keeps its "active conversation" as module-level globals
-# (static_dir, agent_messages, ...) rather than per-request state. This lock
-# makes sure one request's agent turn fully finishes (and is persisted to
-# disk) before another request is allowed to swap those globals out from
-# under it.
-agent_lock = threading.Lock()
+# A handful of users may legitimately hit /chat at the same moment. The agent's
+# "active conversation" now lives on a per-user Session (src/session.py) rather
+# than in module globals, so those requests no longer contend for one lock:
+# each turn takes its own conversation's lock, and two users run side by side.
+#
+# What still needs serialising is the conversation itself — a second turn must
+# not start in a conversation whose first turn hasn't finished and been
+# persisted — which is exactly the scope of Session.lock.
+def _session_lock(name):
+    """The lock serialising turns in `name`'s conversation."""
+    return sessions.for_user(name).lock
+
+
+# Global settings, on the other hand, are still global: the provider and MCP
+# routes below do a read-modify-write of .env, and two of those interleaving
+# would lose an entry. That's what this guards — config, never conversations.
+config_lock = threading.Lock()
 
 # NOTE: we deliberately do NOT call agent.reset() here at startup. reset()
 # reads/creates a context.md inside whatever folder agent.static_dir
@@ -177,7 +188,7 @@ def current_user():
 def _reset_conversation(name):
     """Start `name`'s conversation over. Shared by the /reset route and the
     /reset slash-command so the two can't drift."""
-    with agent_lock:
+    with _session_lock(name):
         activate_session(name)
         agent.reset()
         save_conversation(name, agent.get_messages(), title="New chat")
@@ -268,8 +279,12 @@ def api_delete_user(name):
         return jsonify({'error': 'Unauthorized'}), 401
     if not user_exists(name):
         return jsonify({'error': 'No such user'}), 404
-    with agent_lock:
+    with _session_lock(name):
         shutil.rmtree(user_dir(name), ignore_errors=True)
+        # Drop the in-memory conversation too, so a user recreated under the
+        # same name starts clean instead of inheriting the deleted one's
+        # messages from the registry.
+        sessions.discard(name)
         # If the deleted user was active in this browser session, clear it
         # so we don't keep pointing at a now-missing conversation.
         if session.get('current_user') == name:
@@ -357,7 +372,9 @@ def chat():
         return jsonify({'response': 'API disabled'})
 
     def generate():
-        with agent_lock:
+        # This user's conversation only — another user's turn runs alongside
+        # it rather than queueing behind it.
+        with _session_lock(name):
             # One try/except around the whole turn (not just agent_stream)
             # so a failure in activate_session() or the title check — not
             # just in the agent loop itself — still gets logged and turned
@@ -368,12 +385,12 @@ def chat():
                 # interactive=True: there's a browser on the other end of this
                 # stream that can answer a bash approval prompt (see
                 # /api/approval below).
-                activate_session(name, interactive=True)
+                sess = activate_session(name, interactive=True)
                 session_active = True
                 # Arm the Stop button for this turn. Clears any stop left over
                 # from the previous one, so a press that raced the end of its
                 # own turn can't kill this one.
-                cancellation.begin_turn()
+                cancellation.begin_turn(sess)
                 had_title = _has_title(name)
                 for event in agent.agent_stream(user_input=user_input):
                     yield f"data: {json.dumps(event)}\n\n"
@@ -389,8 +406,10 @@ def chat():
                 logger.exception("Chat request failed for user=%s", name)
                 # A turn that blew up mid-flight may have left an approval
                 # prompt on screen with nothing behind it; release any waiter
-                # instead of letting it sit out the full timeout.
-                approvals.abandon_all()
+                # instead of letting it sit out the full timeout. Scoped to
+                # this user, so another user's prompt isn't refused by a
+                # failure in a conversation that has nothing to do with it.
+                approvals.abandon_all(name)
                 if session_active:
                     # agent_stream can append several messages (e.g. a
                     # completed tool call) before failing on a later step —
@@ -408,7 +427,7 @@ def chat():
                 # Finished, failed, stopped, or the client hung up mid-stream
                 # (which closes the generator and runs this too) — either way
                 # the flag must not outlive the turn that owns it.
-                cancellation.end_turn()
+                cancellation.end_turn(sessions.for_user(name))
 
     return Response(
         stream_with_context(generate()),
@@ -419,24 +438,32 @@ def chat():
 
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
-    """Ask the in-flight turn to wind down.
+    """Ask this user's in-flight turn to wind down.
 
-    Like /api/approval below, this deliberately does NOT take agent_lock: the
-    turn being stopped is holding it, so waiting for it here would deadlock the
-    two against each other. Setting a flag the generator polls is the whole
-    mechanism.
+    Like /api/approval below, this deliberately does NOT take the conversation's
+    lock: the turn being stopped is holding it, so waiting for it here would
+    deadlock the two against each other. Setting a flag the generator polls is
+    the whole mechanism.
+
+    The Session has to be named rather than inferred — this request runs on a
+    different thread from the turn, so it has no binding of its own to read.
+    That also keeps Stop pointed at the presser's own conversation instead of
+    whichever turn happens to be running.
 
     Any pending bash approval is abandoned too — a turn blocked on a prompt is
     exactly the case where Stop is most wanted, and it can't reach a
     cancellation checkpoint while it sits in approvals.wait()."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
-    stopped = cancellation.request_stop()
-    if not stopped:
+    name = current_user()
+    if not name:
+        return jsonify({'error': 'No active conversation'}), 400
+    sess = sessions.existing(name)
+    if sess is None or not cancellation.request_stop(sess):
         # 409 rather than 400, matching /api/approval: the request was fine,
         # there just isn't a turn to stop (it finished as the click landed).
         return jsonify({'error': 'No turn is currently running.'}), 409
-    approvals.abandon_all()
+    approvals.abandon_all(name)
     return jsonify({'ok': True})
 
 
@@ -444,9 +471,11 @@ def api_stop():
 #
 # When a command isn't covered by a saved rule, the agent turn emits an
 # `approval_request` SSE event and blocks; the browser shows the command and
-# posts the answer back here. These routes deliberately do NOT take agent_lock
-# — the turn that's waiting is holding it. That's the whole mechanism: a
-# blocked generator on one thread, released by a request on another.
+# posts the answer back here. These routes deliberately do NOT take the
+# conversation's lock — the turn that's waiting is holding it. That's the whole
+# mechanism: a blocked generator on one thread, released by a request on
+# another. Prompts are keyed by request id, which is already unique per prompt,
+# so this keeps working unchanged now that several turns can be waiting at once.
 
 @app.route('/api/approval', methods=['POST'])
 def api_resolve_approval():
@@ -693,10 +722,14 @@ def v1_chat_completions():
     def run_turn():
         """One agent turn for `name`, yielding its events as they happen and
         persisting the conversation at the end. Mirrors the /chat route: the
-        same lock held across the whole turn, the same title behaviour, and a
-        save even when the turn raises part-way so completed tool work isn't
-        lost."""
-        with agent_lock:
+        same conversation lock held across the whole turn, the same title
+        behaviour, and a save even when the turn raises part-way so completed
+        tool work isn't lost.
+
+        Taking this user's lock (not a global one) is also what stops an API
+        call and a browser turn interleaving inside the same conversation while
+        leaving a different user's turn free to run alongside."""
+        with _session_lock(name):
             session_active = False
             try:
                 # interactive=False: an API caller can't answer a bash approval
@@ -968,7 +1001,7 @@ def api_add_mcp():
     entry = {'name': name, 'url': url, 'token': token, 'enabled': True,
              'transport': transport, 'command': command}
 
-    with agent_lock:
+    with config_lock:
         servers = mcp_client.read_servers()
         if any(s.get('name') == name for s in servers):
             return jsonify({'error': f"An MCP server named '{name}' already exists."}), 409
@@ -1011,7 +1044,7 @@ def api_toggle_mcp(name):
     if 'enabled' not in data:
         return jsonify({'error': "Body must include 'enabled'."}), 400
     enabled = bool(data.get('enabled'))
-    with agent_lock:
+    with config_lock:
         servers = mcp_client.read_servers()
         match = next((s for s in servers if s.get('name') == name), None)
         if match is None:
@@ -1032,7 +1065,7 @@ def api_toggle_mcp(name):
 def api_delete_mcp(name):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
-    with agent_lock:
+    with config_lock:
         servers = mcp_client.read_servers()
         remaining = [s for s in servers if s.get('name') != name]
         if len(remaining) == len(servers):
@@ -1100,7 +1133,7 @@ def api_add_provider():
         if any(c in val for c in _MCP_BAD_CHARS):  # same quote/newline rejects as MCP
             return jsonify({'error': f'The {field} contains unsupported characters (quotes or newlines).'}), 400
 
-    with agent_lock:
+    with config_lock:
         providers = agent.read_providers()
         if any(p.get('name') == name for p in providers):
             return jsonify({'error': f"A provider named '{name}' already exists."}), 409
@@ -1125,7 +1158,7 @@ def api_toggle_provider(name):
         return jsonify({'error': "Body must include 'enabled' or 'api'."}), 400
     if 'api' in data and data.get('api') not in agent.PROVIDER_APIS:
         return jsonify({'error': f"Unknown api '{data.get('api')}'."}), 400
-    with agent_lock:
+    with config_lock:
         providers = agent.read_providers()
         match = next((p for p in providers if p.get('name') == name), None)
         if match is None:
@@ -1154,7 +1187,7 @@ def api_reorder_providers():
     order = data.get('order')
     if not isinstance(order, list) or not all(isinstance(n, str) for n in order):
         return jsonify({'error': "Body must include 'order' as a list of provider names."}), 400
-    with agent_lock:
+    with config_lock:
         providers = agent.read_providers()
         by_name = {p.get('name'): p for p in providers}
         # Providers named in `order` come first, in that order; anything not
@@ -1176,7 +1209,7 @@ def api_reorder_providers():
 def api_delete_provider(name):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
-    with agent_lock:
+    with config_lock:
         providers = agent.read_providers()
         remaining = [p for p in providers if p.get('name') != name]
         if len(remaining) == len(providers):
@@ -1268,7 +1301,8 @@ def _pop_due_pings(name, now):
     ping runs on the next pass and is then removed. Timestamps are parsed with
     agent.parse_ping_time(), which accepts the off-format shapes models emit —
     a strict single-format parse here was silently skipping real pings. The
-    caller holds agent_lock, so this can't race add_ping rewriting the file."""
+    caller holds this user's conversation lock, so this can't race add_ping
+    rewriting the same file from a turn of theirs."""
     path = user_ping_path(name)
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -1298,11 +1332,18 @@ def _fire_due_pings():
     """One scheduler pass: deliver every due ping for every user."""
     now = datetime.now()
     for name in list_users():
-        # Hold agent_lock across pop+deliver for this user: it serialises the
-        # scheduler against live chat turns (which share the agent module's
-        # globals) and against add_ping writing the same ping.md. The lock is
-        # released between users so a burst of pings can't starve the web UI.
-        with agent_lock:
+        # Hold this user's conversation lock across pop+deliver: it serialises
+        # the scheduler against their live chat turns and against add_ping
+        # writing the same ping.md. Only theirs, so a burst of pings for one
+        # user no longer blocks everybody else's chat — and the lock is still
+        # released between users.
+        #
+        # `sessions.use()` rather than a bare activate_session(): this is a
+        # long-lived background thread that walks every user in turn, so the
+        # binding has to be scoped to each delivery instead of being left
+        # behind on the thread for the next user to inherit.
+        sess = sessions.for_user(name)
+        with sess.lock, sessions.use(sess):
             try:
                 due = _pop_due_pings(name, now)
             except Exception:
