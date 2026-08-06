@@ -503,29 +503,89 @@ class AllProvidersFailedError(RuntimeError):
         )
 
 
-def _cache_breakpoint_messages(messages):
-    """`messages` with the system message split at _VOLATILE_HEADER into two
-    content blocks: the stable instructions marked `cache_control: ephemeral`,
-    and the live tail left unmarked. A provider honouring this caches
-    everything up to the marker and re-reads only the short tail.
+def _marked_content(message):
+    """`message` with a cache_control breakpoint on the end of its content, or
+    None if there's nothing safe to mark.
 
-    Returns the input unchanged when there's no useful split — no system
-    message, no marker, or nothing stable above it (a breakpoint over text that
-    changes every turn could never be reused). Builds a new list, so
+    A plain string becomes a single text block; an existing block list has the
+    marker added to its last entry, so a message carrying an image keeps it.
+    Empty content is refused — a text block with no text is something providers
+    reject, and it would cache nothing anyway."""
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content.strip():
+            return None
+        return {**message, "content": [
+            {"type": "text", "text": content,
+             "cache_control": {"type": "ephemeral"}}]}
+    if isinstance(content, list) and content:
+        last = content[-1]
+        if not isinstance(last, dict) or "cache_control" in last:
+            return None
+        return {**message, "content": [
+            *content[:-1], {**last, "cache_control": {"type": "ephemeral"}}]}
+    return None
+
+
+def _cache_breakpoint_messages(messages):
+    """`messages` with up to two `cache_control: ephemeral` breakpoints, which
+    is what a provider that caches only on request needs in order to cache
+    anything at all.
+
+    The first splits the system message at _VOLATILE_HEADER: the stable
+    instructions are marked and the live tail is left unmarked, so everything up
+    to the marker is cached and only the short tail is re-read. The tool
+    definitions ride along in that block — they sit ahead of the system message
+    in the cached prefix, so marking it covers them too and they need no
+    breakpoint of their own.
+
+    The second goes on the last user message, and is what makes a turn's tool
+    round-trips cheap. Every continuation re-sends the whole conversation plus
+    one assistant/tool pair, so without a breakpoint down here the entire
+    history is fresh input on every request of the turn; with one, a turn's
+    second and later requests read all of it from cache and pay only for the
+    tool call and its result. It also carries across turns, since the history
+    below it only ever grows. This relies on the continuation re-sending an
+    identical prefix — see _turn_prefix, which is what makes that true.
+
+    Both are skipped where there's nothing worth marking: no system message, no
+    marker, nothing stable above it, or no user message. A breakpoint over a
+    suffix too small for the provider's minimum simply doesn't become a cache
+    block, so an unhelpful one costs nothing. Builds a new list, so
     agent_messages keeps its plain string content and nothing is persisted."""
-    if not messages or messages[0].get("role") != "system":
+    if not messages:
         return messages
-    head = messages[0]
-    content = head.get("content")
-    if not isinstance(content, str):
-        return messages  # already blocks, or an unexpected shape — leave it
-    stable, sep, volatile = content.partition(_VOLATILE_HEADER)
-    if not sep or not stable.strip():
-        return messages
-    return [{**head, "content": [
-        {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": _VOLATILE_HEADER + volatile},
-    ]}, *messages[1:]]
+    out = list(messages)
+    marked = False
+
+    head = out[0]
+    # `isinstance(content, str)` — anything else is already blocks, or an
+    # unexpected shape, and is left alone.
+    if head.get("role") == "system" and isinstance(head.get("content"), str):
+        stable, sep, volatile = head["content"].partition(_VOLATILE_HEADER)
+        # Nothing stable above the marker means a breakpoint over text that
+        # changes every turn, which could never be reused.
+        if sep and stable.strip():
+            out[0] = {**head, "content": [
+                {"type": "text", "text": stable,
+                 "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _VOLATILE_HEADER + volatile},
+            ]}
+            marked = True
+
+    # Last user message, not last message outright: the continuation's own
+    # assistant/tool pair is the one part that differs from the request before
+    # it, so marking that far down would write a new cache block per round-trip
+    # and read none of them back.
+    last_user = next((i for i in range(len(out) - 1, 0, -1)
+                      if out[i].get("role") == "user"), None)
+    if last_user is not None:
+        with_marker = _marked_content(out[last_user])
+        if with_marker is not None:
+            out[last_user] = with_marker
+            marked = True
+
+    return out if marked else messages
 
 
 # Keys we hang on our own message dicts for the UI's benefit and that no
@@ -546,8 +606,8 @@ _INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items")
 # reject outright:
 #   "usage" — stream_options.include_usage, so a streamed response reports its
 #             token counts (it carries none otherwise).
-#   "cache" — a cache_control breakpoint on the system message, for the models
-#             that need one (_WANTS_CACHE_BREAKPOINT).
+#   "cache" — cache_control breakpoints on the system message and the last user
+#             message, for the models that need them (_WANTS_CACHE_BREAKPOINT).
 # Both are sent optimistically. A provider that 400s with them on is retried
 # once without, and then never asked again — so an endpoint that doesn't
 # understand them costs one wasted request ever, nothing needs configuring, and
@@ -599,6 +659,37 @@ def _reset_turn_usage():
 
 
 _reset_turn_usage()
+
+
+# What the first request of the turn sent, pinned so every tool continuation
+# in that turn re-sends the identical prefix: {"start": int, "tools": list|None}.
+#
+# Both halves used to be recomputed per request, and both came out different.
+# The history slice was picked by a sliding window on the fresh turn
+# (_window_start) and by "two user messages ago" on the continuation, so the
+# two requests began at different messages — and a prefix that differs at its
+# first message caches nothing after the system block, however many breakpoints
+# it carries. The tool set was worse than a cache miss: check_tools defaults to
+# the full `tools` and only the user_input branch narrows it, so a turn the
+# classifier had restricted to 3 tools sent all 17 plus every MCP tool on the
+# continuation — paying for tools the turn had already decided it didn't want,
+# and invalidating the cached prefix (tools sit ahead of the system message in
+# it) on the way.
+#
+# Empty when no turn is in flight, which is how a direct tool_input caller with
+# no originating turn is told to fall back to working the window out for itself.
+_turn_prefix = {}
+
+
+def _pin_turn_prefix(start, turn_tools):
+    """Record the prefix this turn's first request used."""
+    global _turn_prefix
+    _turn_prefix = {"start": start, "tools": turn_tools}
+
+
+def _clear_turn_prefix():
+    global _turn_prefix
+    _turn_prefix = {}
 
 
 # ── consecutive tool-call throttle ───────────────────────────
@@ -799,9 +890,9 @@ def _create_completion(**kwargs):
         call_kwargs = plain_kwargs
         applied = []
         # The optional extras are chat-completions fields: stream_options, and
-        # a cache_control breakpoint on the system message. The Responses
-        # translation has its own shape for both, so for those providers
-        # there's nothing to add here and nothing to retry without.
+        # the cache_control breakpoints. The Responses translation has its own
+        # shape for both, so for those providers there's nothing to add here
+        # and nothing to retry without.
         if api != "responses" and name not in _unsupported_extras:
             call_kwargs, applied = _apply_optional_extras(call_kwargs, call_kwargs.get("model"))
 
@@ -1302,6 +1393,8 @@ almost never the fix, even when the request is open-ended.
     agent_messages = [{"role": "system", "content":
                        prompt.rstrip() + _context_block()
                        + _VOLATILE_HEADER + _now_line() + "\n"}]
+    # The pinned window index refers to a conversation that no longer exists.
+    _clear_turn_prefix()
     refresh_tools()
 
 
@@ -1403,12 +1496,12 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "create_user",
-                "description": "Creates a new FreeClaw user with their own chats and memory. Only when explicitly asked to add a user — never to switch context here.",
+                "description": "Creates a new FreeClaw user with their own chats and memory. Only when explicitly asked to add one — never to switch users.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "name": { "type": "string", "description": "Used as a folder name: letters, numbers, spaces, - or _" },
-                        "context": { "type": "string", "description": "Optional starting content for their context.md" }
+                        "name": { "type": "string", "description": "A folder name: letters, numbers, spaces, - or _" },
+                        "context": { "type": "string", "description": "Optional starting context.md" }
                     },
                     "required": ["name"]
                 }
@@ -1480,11 +1573,11 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "add_ping",
-                "description": "Schedules a reminder or future action; the action text reaches the user as a prompt when it fires.",
+                "description": "Schedules a reminder or future action; the action text arrives as a prompt when it fires.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "date_time": { "type": "string", "description": "Absolute, as 'YYYY-MM-DD HH:MM'. Never guess: today's date is in your prompt, but any time of day ('in 20 minutes', '6pm', 'tonight') needs get_time first." },
+                        "date_time": { "type": "string", "description": "Absolute, as 'YYYY-MM-DD HH:MM'. Today's date is in your prompt; any time of day needs get_time first — never guess it." },
                         "action": { "type": "string", "description": "An instruction to yourself, e.g. 'Remind them to take their medication.'" },
                     },
                     "required": ["date_time", "action"]
@@ -1495,13 +1588,13 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Replaces one exact string in an existing /static file. Use instead of create_file to change existing content — ping.md, or correcting or removing a context.md line (add_context adds one).",
+                "description": "Replaces one exact string in an existing /static file. Use instead of create_file to change existing content — ping.md, or fixing or removing a context.md line (add_context adds one).",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "filename": { "type": "string" },
-                        "old_str": { "type": "string", "description": "Exact string to replace" },
-                        "new_str": { "type": "string", "description": "Replacement" }
+                        "old_str": { "type": "string" },
+                        "new_str": { "type": "string" }
                     },
                     "required": ["filename", "old_str", "new_str"]
                 }
@@ -2130,10 +2223,13 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         agent_input = user_input
 
         recent, temp, tool_mode = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
+        # Normalised to an index either way (1 is "everything after the system
+        # message"), so there's a single number to pin for the continuations.
         if len(agent_messages) > recent + 2:
-            eco_messages = [agent_messages[0], *agent_messages[_window_start(agent_messages, recent):]]
+            window_start = _window_start(agent_messages, recent)
         else:
-            eco_messages = agent_messages
+            window_start = 1
+        eco_messages = [agent_messages[0], *agent_messages[window_start:]]
         if tool_mode == 'none':
             check_tools = None
         elif tool_mode == 'search':
@@ -2151,6 +2247,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # Personal-question) most likely to turn up something worth
             # remembering, and the system prompt tells the model to save it.
             check_tools = build_file_tools() + build_context_tools() + build_time_tools()
+        _pin_turn_prefix(window_start, check_tools)
     elif system_input:
         # Kept for direct/external callers only — note that appending a
         # second system-role message breaks the single-leading-system-message
@@ -2160,6 +2257,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         agent_messages.append({"role": "system", "content": system_input})
         agent_input = system_input
         eco_messages = agent_messages
+        _pin_turn_prefix(1, check_tools)
     # `is not None` (not truthiness): a tool can legitimately return "" —
     # e.g. reading an empty file — and that still has to be recorded as the
     # call's response and continue the turn, not fall through to the
@@ -2169,16 +2267,26 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         yield {"type": "tool_result", "name": tool_name, "result": tool_input}
         _append_tool_response(tool_id, tool_name, tool_input)
         agent_input = tool_input
-        # Resume from 2 user messages ago, or the first user message if
-        # there aren't 2. A system-initiated conversation may have no user
-        # turns at all — keep everything after the one system message then.
-        user_indices = [i for i, m in enumerate(agent_messages) if m['role'] == 'user']
-        if len(user_indices) >= 2:
-            start_index = user_indices[-2]
-        elif user_indices:
-            start_index = user_indices[0]
+        if _turn_prefix:
+            # Continue from exactly where this turn's first request began, with
+            # exactly the tools it was given. Re-deriving either would hand the
+            # provider a prefix that diverges from the one it just cached, and
+            # the tool set the turn's tag deliberately narrowed would widen back
+            # to everything. See _turn_prefix.
+            start_index = _turn_prefix["start"]
+            check_tools = _turn_prefix["tools"]
         else:
-            start_index = 1
+            # No turn in flight: a direct tool_input caller. Resume from 2 user
+            # messages ago, or the first user message if there aren't 2. A
+            # system-initiated conversation may have no user turns at all — keep
+            # everything after the one system message then.
+            user_indices = [i for i, m in enumerate(agent_messages) if m['role'] == 'user']
+            if len(user_indices) >= 2:
+                start_index = user_indices[-2]
+            elif user_indices:
+                start_index = user_indices[0]
+            else:
+                start_index = 1
         eco_messages = [agent_messages[0]] + agent_messages[start_index:]
     else:
         raise Exception("You must have either user input or system input.")
@@ -2389,6 +2497,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     _append_tool_response(skipped["id"], skipped_name,
                                           cancellation.STOP_NOTICE)
                 agent_messages.append({"role": "assistant", "content": cancellation.STOPPED_TEXT})
+                _clear_turn_prefix()
                 yield {"type": "stopped"}
                 return
             command_name = tc["function"]["name"]
@@ -2466,6 +2575,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 yield {"type": "tool_result", "name": command_name, "result": result}
                 _append_tool_response(tc["id"], command_name, result)
                 agent_messages.append({"role": "assistant", "content": cancellation.STOPPED_TEXT})
+                _clear_turn_prefix()
                 yield {"type": "stopped"}
                 return
             else:
@@ -2485,6 +2595,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     if usage_seen:
         final_msg["usage"] = usage_seen
     agent_messages.append(final_msg)
+    # The model answered instead of calling another tool, so the turn is over
+    # and its pinned prefix goes with it.
+    _clear_turn_prefix()
 
     # Reached with the flag set when the stop landed mid-stream: the turn ends
     # here on its own, but the page still needs telling that this was a stop
