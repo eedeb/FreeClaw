@@ -8,7 +8,7 @@ import src.session as sessions
 import src.telemetry as telemetry
 from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
-    user_context_path, user_ping_path, list_users, user_exists, create_user,
+    user_ping_path, list_users, user_exists, create_user,
     load_conversation, save_conversation, derive_title, ensure_conversation,
     activate_session,
 )
@@ -136,36 +136,6 @@ config_lock = threading.Lock()
 def logged_in():
     return session.get("authenticated") is True
 
-
-def create_user_with_context(name, context=None):
-    """Used by the agent's create_user tool (registered below via
-    agent.set_user_creator) so the assistant itself can spin up new
-    FreeClaw users. Raises ValueError with a user-facing message on bad
-    input; the agent surfaces that message back to whoever asked."""
-    safe_name = safe_username(name)
-    if not safe_name:
-        raise ValueError("Invalid name — use 1-40 letters, numbers, spaces, - or _.")
-    if user_exists(safe_name):
-        raise ValueError(f"A user named '{safe_name}' already exists.")
-    create_user(safe_name)
-    if context and str(context).strip():
-        # Filed under the template's About heading rather than replacing the
-        # file. The headings are the whole interface to memory now — the new
-        # user's agent is shown About and Preferences plus the list of header
-        # names, and reads
-        # the rest with search_context — so overwriting them would hand them a
-        # context.md with nothing to file anything into.
-        marker = "## About\n"
-        seed = str(context).strip() + "\n"
-        template = agent.CONTEXT_TEMPLATE
-        seeded = (template.replace(marker, marker + seed, 1)
-                  if marker in template else template.rstrip("\n") + "\n" + seed)
-        with open(user_context_path(safe_name), "w", encoding="utf-8") as f:
-            f.write(seeded)
-    return safe_name
-
-
-agent.set_user_creator(create_user_with_context)
 
 # Build the agent's tool list now (built-ins + any MCP servers configured in
 # .env) so tools are ready even for the very first request against an existing

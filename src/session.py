@@ -70,13 +70,18 @@ class Session:
     main.py's `_session_lock`).
     """
 
-    def __init__(self, name=None, static_dir=None):
+    def __init__(self, name=None, static_dir=None, depth=0):
         # The FreeClaw user this conversation belongs to. None for the
         # process-wide fallback Session, which belongs to nobody.
         self.name = name
         self.messages = []
         self.static_dir = static_dir or DEFAULT_STATIC_DIR
         self.new_sections = []
+
+        # How many sub-agents deep this conversation is. 0 for a user's own
+        # conversation; a child spawned by agent.spawn_subagent gets parent + 1.
+        # agent.MAX_SUBAGENT_DEPTH is what stops that recursing without end.
+        self.depth = depth
 
         # ── per-turn state ──
         self.turn_usage = new_turn_usage()

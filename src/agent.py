@@ -77,10 +77,10 @@ static_token_signer = None
 
 def set_static_token_signer(fn):
     """Registers the function that signs a static-file path into a
-    short-lived access token (main.py wires this up at startup, same pattern
-    as set_user_creator — agent.py can't import main.py directly since main.py
-    already imports agent.py). fn must accept the file's path relative to
-    Flask's static root and return a token string.
+    short-lived access token (main.py wires this up at startup — agent.py can't
+    import main.py directly, since main.py already imports agent.py). fn must
+    accept the file's path relative to Flask's static root and return a token
+    string.
 
     Needed because links the agent hands back (e.g. a generated .ics) get
     opened by the client via the OS — Safari/Calendar on iOS, not the app's
@@ -986,19 +986,6 @@ def set_static_dir(path):
     return path
 
 
-user_creator = None
-
-
-def set_user_creator(fn):
-    """Registers the function the create_user tool calls to actually create
-    a new FreeClaw user. main.py wires this up at startup (rather than
-    agent.py importing main.py directly, which would be circular) — fn must
-    accept (name, context=None) and return the created user's name, raising
-    an exception (with a clear message) on failure."""
-    global user_creator
-    user_creator = fn
-
-
 def get_messages():
     return _sess().messages
 
@@ -1331,9 +1318,14 @@ def _refresh_volatile():
                               + _new_sections_line() + "\n")
 
 
-def reset(tts=False):
+def reset(tts=False, refresh=True):
     """Start a fresh conversation for the current static_dir, seeded with
     that user's context.md.
+
+    `refresh=False` skips rebuilding the tool list. Every MCP server is
+    re-listed by refresh_tools(), which is network I/O and child-process work
+    — fine once per real conversation, wasteful for a sub-agent that spawns
+    inside a turn and wants the catalogue the parent already has.
 
     The result is a single system message, always exactly one and always at
     index 0: some providers' chat templates (confirmed on NVIDIA's qwen3.5)
@@ -1397,7 +1389,8 @@ almost never the fix, even when the request is open-ended.
                          + _VOLATILE_HEADER + _now_line() + "\n"}]
     # The pinned window index refers to a conversation that no longer exists.
     _clear_turn_prefix()
-    refresh_tools()
+    if refresh:
+        refresh_tools()
 
 
 # Canonical timestamp the add_ping tool asks the model for. Both the add_ping
@@ -1494,21 +1487,6 @@ def build_context_tools():
 
 def build_file_tools():
     return [
-        {
-            "type": "function",
-            "function": {
-                "name": "create_user",
-                "description": "Creates a new FreeClaw user with their own chats and memory. Only when explicitly asked to add one — never to switch users.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string", "description": "A folder name: letters, numbers, spaces, - or _" },
-                        "context": { "type": "string", "description": "Optional starting context.md" }
-                    },
-                    "required": ["name"]
-                }
-            }
-        },
         {
             "type": "function",
             "function": {
@@ -1703,8 +1681,155 @@ def build_utility_tools():
                     "required": ["command"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": SUBAGENT_TOOL_NAME,
+                # Two rules the model gets wrong without being told: the child
+                # cannot see this conversation (so the task has to carry its own
+                # context), and delegating trivial work costs more than doing it.
+                "description": (
+                    "Hands one self-contained task to a sub-agent that works on it separately and "
+                    "reports back. The sub-agent starts with no knowledge of this conversation and "
+                    "cannot ask you anything, so `task` must state everything it needs and say what "
+                    "to report. It shares your files and memory, and has the same tools except this "
+                    "one. Use it for work worth isolating — a multi-step search, or something whose "
+                    "intermediate output would bury this conversation. Do the work yourself when it "
+                    "is one or two tool calls; delegating those is slower and costs more."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "The complete instruction, including any context the sub-agent needs and what to report back."
+                        }
+                    },
+                    "required": ["task"]
+                }
+            }
         }
     ]
+
+
+# ── sub-agents ───────────────────────────────────────────────
+#
+# A sub-agent is a second conversation, run to completion inside one tool call
+# of the first. It gets its own Session — its own messages, its own token tally,
+# its own tool-call throttle — which is the whole reason the conversation state
+# had to come off the module globals: as a global, a child would have
+# overwritten its parent's.
+#
+# What it deliberately shares with its parent:
+#   * the workspace (static_dir), so files it creates are the ones the parent
+#     can then read, and so it reads the same context.md memory
+#   * the stop flag, so one press of Stop ends the parent and every child under
+#     it rather than just the outer loop
+#   * the approval user, so saved bash rules still apply to it
+#
+# What it deliberately does not get:
+#   * an interactive approval prompt. _run_tool returns a string; it has no way
+#     to emit an approval_request event to the browser mid-call, so a child that
+#     needed one would block for the full timeout with nothing on screen to
+#     answer. Non-interactive means saved rules still run and anything else is
+#     refused — the same rule a scheduled ping turn plays by.
+#   * this tool. A sub-agent that can spawn sub-agents is a fork bomb one bad
+#     loop away, so the depth cap below is enforced in two places: the tool is
+#     filtered out of a child's tool list (agent_stream), and the handler
+#     refuses even if a model somehow calls it anyway.
+
+SUBAGENT_TOOL_NAME = "spawn_subagent"
+
+# 0 would disable sub-agents entirely; 1 means a user's conversation can spawn
+# one, and that child cannot spawn its own. Raise it only with a good reason —
+# every level multiplies the worst-case number of LLM calls one turn can make.
+MAX_SUBAGENT_DEPTH = 1
+
+# Sub-agent replies are tool results, and a tool result is resent as part of the
+# parent's history on every later request in the turn. An unbounded one would
+# quietly become the most expensive thing in the conversation.
+SUBAGENT_RESULT_LIMIT = 6000
+
+
+def _subagent_instruction():
+    """Appended to the child's system prompt. It is not in a conversation with
+    anybody — telling it so is what stops it replying with clarifying questions
+    that no one will ever read."""
+    return (
+        "\n\nYou are a sub-agent. Another agent delegated one task to you and is waiting on "
+        "the result. Nobody will read this exchange or answer a question, so never ask one — "
+        "if something is ambiguous, choose the most reasonable reading, act, and say what you "
+        "assumed. Do the task with your tools, then reply with the result and anything the "
+        "agent that called you needs to know. That reply is all it receives.\n"
+    )
+
+
+def _run_subagent(task):
+    """Run `task` to completion in a child Session and return its final reply."""
+    parent = _sess()
+    task = (task or "").strip()
+    if not task:
+        return "Error: a task is required to spawn a sub-agent."
+    if parent.depth >= MAX_SUBAGENT_DEPTH:
+        # Belt and braces — agent_stream already withholds the tool at this
+        # depth, so reaching here means a model invented the call.
+        return ("A sub-agent cannot spawn another sub-agent. Do this task yourself "
+                "and report back.")
+    # Checked before anything is spawned, not just inside the child's loop: the
+    # child polls the stop flag between its own steps, but its *first* provider
+    # request happens before the first of those checks — so a stop that landed
+    # while the parent was mid-turn would still buy one full LLM call.
+    if cancellation.is_stopped(parent):
+        return "The sub-agent was not started: the turn was stopped by the user."
+
+    child = sessions.Session(name=f"{parent.name or 'agent'}:sub",
+                             static_dir=parent.static_dir,
+                             depth=parent.depth + 1)
+    # Saved bash rules are looked up per user, so the child has to know whose
+    # they are. Not interactive: see the note above this function.
+    child.approval_user = parent.approval_user
+    child.approval_interactive = False
+    # The same Event object, not a copy — Stop has to reach into the child, and
+    # the child's own loop polls cancellation.is_stopped() against this.
+    child.stop_event = parent.stop_event
+
+    logger.info("Spawning sub-agent (depth %d) for %s: %.200r",
+                child.depth, parent, task)
+    try:
+        with sessions.use(child):
+            # refresh=False: the parent already built the tool catalogue this
+            # turn, and re-listing every MCP server here would be network I/O
+            # inside a tool call.
+            reset(refresh=False)
+            child.messages[0]["content"] += _subagent_instruction()
+            agent(user_input=task)
+            reply = next((m.get("content") for m in reversed(child.messages)
+                          if m.get("role") == "assistant" and m.get("content")), "")
+            usage = dict(child.turn_usage)
+    except Exception as e:
+        logger.exception("Sub-agent failed for %s with task=%.200r", parent, task)
+        return f"The sub-agent failed: {e}"
+    finally:
+        # The child's requests were made on the parent's behalf, so they belong
+        # in the parent's turn total — otherwise delegating work would make a
+        # turn look cheaper than it was, which is the one number this project
+        # cannot afford to get wrong.
+        for key in ("prompt_tokens", "completion_tokens", "cached_tokens",
+                    "requests", "reported"):
+            parent.turn_usage[key] += child.turn_usage.get(key, 0)
+
+    logger.info("Sub-agent finished for %s: %d requests, %d prompt / %d completion tokens",
+                parent, usage["requests"], usage["prompt_tokens"], usage["completion_tokens"])
+
+    if cancellation.is_stopped(parent):
+        return "The sub-agent was stopped by the user before it finished."
+    if not reply.strip():
+        return ("The sub-agent finished without reporting anything. Treat the task as "
+                "not done and handle it yourself.")
+    if len(reply) > SUBAGENT_RESULT_LIMIT:
+        reply = reply[:SUBAGENT_RESULT_LIMIT] + "\n\n(truncated)"
+    return reply
 
 
 def _sanitize_tool_name(name):
@@ -1815,23 +1940,6 @@ def _run_tool(command_name, args_dict, bash_approved=False):
                  or args_dict.get('command') or args_dict.get('filename')
                  or args_dict.get('header') or args_dict.get('contents') or None)
     print(f"Agent called tool: {command_name}" + (f" — {parameter}" if parameter else ""))
-
-    if command_name == 'create_user':
-        new_name = args_dict.get('name')
-        new_context = args_dict.get('context')
-        if not new_name or not str(new_name).strip():
-            return "Error: a name is required to create a user."
-        if user_creator is None:
-            return "Error: user creation isn't available in this context."
-        try:
-            created_name = user_creator(new_name, new_context)
-        except Exception as e:
-            logger.exception("create_user tool failed for name=%r", new_name)
-            return f"Error creating user: {e}"
-        result = f"User '{created_name}' created successfully."
-        if new_context:
-            result += " Their context.md was set with the provided content."
-        return result
 
     # 'search' was this tool's name until it was renamed for being the bare
     # verb the model reached for when it meant search_context; still accepted
@@ -2117,6 +2225,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             output = 'Command was run successfully, Report back to the user.'
         return output
 
+    if command_name == SUBAGENT_TOOL_NAME:
+        return _run_subagent(args_dict.get('task'))
+
     if command_name in mcp_tool_registry:
         entry = mcp_tool_registry[command_name]
         server = entry["server"]
@@ -2149,6 +2260,20 @@ _TAG_SETTINGS = {
     'Explain':           (7, 0.2, 'all'),
 }
 _DEFAULT_TAG_SETTINGS = (7, 1.0, 'all')  # Coding, Writing, List, Suggest, Utility, ...
+
+
+def _apply_depth_limit(turn_tools, sess):
+    """Withhold the sub-agent tool from a conversation already at the depth cap.
+
+    Filtered here rather than in build_utility_tools() because the full `tools`
+    list is built once, process-wide, by refresh_tools() — it has no idea which
+    conversation is about to be handed it. This runs before the tool set is
+    pinned for the turn, so the continuations after each tool hop resend exactly
+    the same list and the cached prefix still matches."""
+    if turn_tools is None or sess.depth < MAX_SUBAGENT_DEPTH:
+        return turn_tools
+    return [t for t in turn_tools
+            if (t.get("function") or {}).get("name") != SUBAGENT_TOOL_NAME]
 
 
 def _window_start(messages, recent):
@@ -2259,6 +2384,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # Personal-question) most likely to turn up something worth
             # remembering, and the system prompt tells the model to save it.
             check_tools = build_file_tools() + build_context_tools() + build_time_tools()
+        check_tools = _apply_depth_limit(check_tools, sess)
         _pin_turn_prefix(window_start, check_tools)
     elif system_input:
         # Kept for direct/external callers only — note that appending a
@@ -2269,6 +2395,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         agent_messages.append({"role": "system", "content": system_input})
         agent_input = system_input
         eco_messages = agent_messages
+        check_tools = _apply_depth_limit(check_tools, sess)
         _pin_turn_prefix(1, check_tools)
     # `is not None` (not truthiness): a tool can legitimately return "" —
     # e.g. reading an empty file — and that still has to be recorded as the
