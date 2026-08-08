@@ -1318,7 +1318,7 @@ def _refresh_volatile():
                               + _new_sections_line() + "\n")
 
 
-def reset(tts=False, refresh=True):
+def reset(tts=False, refresh=True, subagent=False):
     """Start a fresh conversation for the current static_dir, seeded with
     that user's context.md.
 
@@ -1326,6 +1326,12 @@ def reset(tts=False, refresh=True):
     re-listed by refresh_tools(), which is network I/O and child-process work
     — fine once per real conversation, wasteful for a sub-agent that spawns
     inside a turn and wants the catalogue the parent already has.
+
+    `subagent=True` adds the sub-agent note. It goes in here, with `tts`, rather
+    than being appended to the finished message: everything below
+    _VOLATILE_HEADER is rewritten from the stable prefix on every turn, so a
+    note tacked on the end would be cacheable on no request and would vanish
+    entirely on the child's second one.
 
     The result is a single system message, always exactly one and always at
     index 0: some providers' chat templates (confirmed on NVIDIA's qwen3.5)
@@ -1376,6 +1382,8 @@ almost never the fix, even when the request is open-ended.
 """
     if tts:
         prompt += "\nYou are speaking through text-to-speech — write for clear, natural speech.\n"
+    if subagent:
+        prompt += _subagent_instruction()
 
     # Instructions + this one snapshot of context.md above the marker, live
     # clock below it. _refresh_volatile() rewrites everything from the marker
@@ -1686,26 +1694,22 @@ def build_utility_tools():
             "type": "function",
             "function": {
                 "name": SUBAGENT_TOOL_NAME,
-                # Two rules the model gets wrong without being told: the child
-                # cannot see this conversation (so the task has to carry its own
-                # context), and delegating trivial work costs more than doing it.
+                # This rides on every request of an 'all'-mode turn, so it's cut
+                # to the two rules the model actually gets wrong: the child
+                # can't see this conversation, and delegating trivial work costs
+                # more than doing it. Everything else it can infer — that the
+                # result comes back, that files are shared — or doesn't need.
+                # The child is told how to behave by its own system prompt
+                # (_subagent_instruction), which is paid for once per sub-agent
+                # rather than on every turn the tool is merely offered.
                 "description": (
-                    "Hands one self-contained task to a sub-agent that works on it separately and "
-                    "reports back. The sub-agent starts with no knowledge of this conversation and "
-                    "cannot ask you anything, so `task` must state everything it needs and say what "
-                    "to report. It shares your files and memory, and has the same tools except this "
-                    "one. Use it for work worth isolating — a multi-step search, or something whose "
-                    "intermediate output would bury this conversation. Do the work yourself when it "
-                    "is one or two tool calls; delegating those is slower and costs more."
+                    "Delegates one task to a sub-agent and returns its report. It can't see this "
+                    "conversation, so `task` must carry everything it needs. Worth it for "
+                    "multi-step work; for one or two tool calls, do them yourself."
                 ),
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "task": {
-                            "type": "string",
-                            "description": "The complete instruction, including any context the sub-agent needs and what to report back."
-                        }
-                    },
+                    "properties": { "task": { "type": "string" } },
                     "required": ["task"]
                 }
             }
@@ -1747,22 +1751,21 @@ SUBAGENT_TOOL_NAME = "spawn_subagent"
 MAX_SUBAGENT_DEPTH = 1
 
 # Sub-agent replies are tool results, and a tool result is resent as part of the
-# parent's history on every later request in the turn. An unbounded one would
-# quietly become the most expensive thing in the conversation.
-SUBAGENT_RESULT_LIMIT = 6000
+# parent's history on every later request in the turn — and then on every turn
+# after that, until the history window slides past it. An unbounded one would
+# quietly become the most expensive thing in the conversation. ~4k characters is
+# roughly a thousand tokens: a generous summary, and the point of delegating is
+# to get a summary back rather than a transcript.
+SUBAGENT_RESULT_LIMIT = 4000
 
 
 def _subagent_instruction():
-    """Appended to the child's system prompt. It is not in a conversation with
-    anybody — telling it so is what stops it replying with clarifying questions
-    that no one will ever read."""
-    return (
-        "\n\nYou are a sub-agent. Another agent delegated one task to you and is waiting on "
-        "the result. Nobody will read this exchange or answer a question, so never ask one — "
-        "if something is ambiguous, choose the most reasonable reading, act, and say what you "
-        "assumed. Do the task with your tools, then reply with the result and anything the "
-        "agent that called you needs to know. That reply is all it receives.\n"
-    )
+    """Added to a child's system prompt by reset(subagent=True). It is not in a
+    conversation with anybody — telling it so is what stops it replying with
+    clarifying questions no one will ever read."""
+    return ("\nYou are a sub-agent: you were given one task and nobody can answer a question. "
+            "If something is unclear, take the most reasonable reading, act, and say what you "
+            "assumed. Your final message is the whole result the caller gets.\n")
 
 
 def _run_subagent(task):
@@ -1801,8 +1804,7 @@ def _run_subagent(task):
             # refresh=False: the parent already built the tool catalogue this
             # turn, and re-listing every MCP server here would be network I/O
             # inside a tool call.
-            reset(refresh=False)
-            child.messages[0]["content"] += _subagent_instruction()
+            reset(refresh=False, subagent=True)
             agent(user_input=task)
             reply = next((m.get("content") for m in reversed(child.messages)
                           if m.get("role") == "assistant" and m.get("content")), "")
