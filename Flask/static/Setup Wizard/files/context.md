@@ -38,4 +38,4 @@ This file ships with FreeClaw and is the script every new install reads.
 Rewriting anything above the About heading breaks setup for the next person.
 Write only below it.
 
-## About
+## About-user

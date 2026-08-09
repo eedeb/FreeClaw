@@ -1095,7 +1095,7 @@ _CTX_HEADER = "\ncontext.md:\n"
 # send the model a table of contents instead of the whole file (see
 # _context_block). Used by users.create_user() and by reset() when the file has
 # gone missing, so both produce the same shape.
-CONTEXT_TEMPLATE = """## About
+CONTEXT_TEMPLATE = """## About-user
 ## Preferences
 ## People
 ## Work
@@ -1121,7 +1121,7 @@ _VOLATILE_HEADER = "\n\n--- live context (refreshed every turn) ---\n"
 # The sections always sent in full. Who the model is talking to and how they
 # want to be talked to both apply to every turn, unlike the rest of memory —
 # and preferences the model has to go and fetch are preferences it ignores.
-_CTX_ALWAYS = ("About", "Preferences")
+_CTX_ALWAYS = ("About-user", "Preferences")
 
 
 # Sections created since this conversation started. The table of contents in
