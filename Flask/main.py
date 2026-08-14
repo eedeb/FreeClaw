@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.approvals as approvals
+import src.browser_setup as browser_setup
 import src.cancellation as cancellation
 import src.mcp_client as mcp_client
 import src.session as sessions
@@ -909,8 +910,13 @@ def _mcp_server_public(s):
     """Shape a stored server for the client. The token is write-only — we only
     report whether one is set, never echo it back. The command is not a
     secret (it's what the user typed) so it round-trips, which is what lets
-    the UI show what a stdio server actually runs."""
-    return {
+    the UI show what a stdio server actually runs.
+
+    A builtin carries two extras: a description, since the user never typed a
+    command line to recognise it by, and — for one that drives a browser — how
+    far along the one-time Chromium download is, which is what the card shows
+    in place of the command."""
+    out = {
         'name': s.get('name', ''),
         'url': s.get('url', ''),
         'has_token': bool((s.get('token') or '').strip()),
@@ -918,6 +924,15 @@ def _mcp_server_public(s):
         'transport': s.get('transport') or mcp_client.HTTP,
         'command': s.get('command', ''),
     }
+    if s.get('builtin'):
+        out['builtin'] = True
+        out['description'] = s.get('description', '')
+        # The command is an absolute interpreter path we generated, not
+        # something the user would recognise or should edit. Don't show it.
+        out['command'] = ''
+    if s.get('needs_browser'):
+        out['browser'] = browser_setup.state()
+    return out
 
 
 @app.route('/api/mcp', methods=['GET'])
@@ -1027,14 +1042,32 @@ def api_toggle_mcp(name):
         # Disabling a stdio server has to actually stop its child process, not
         # just hide its tools — clear_cache() is what shuts those down.
         mcp_client.clear_cache()
+        # Enabling a browser-backed server is what triggers its one-time
+        # Chromium download, which is why FreeClaw's own install stays small.
+        # start() returns straight away and the work continues on a background
+        # thread; the card polls /api/mcp for the result. Its tools stay out of
+        # the agent's list until that lands (see load_mcp_tools).
+        browser = None
+        if enabled and match.get('needs_browser'):
+            browser = browser_setup.start()
         agent.refresh_tools()
-    return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in servers]})
+    resp = {'ok': True, 'servers': [_mcp_server_public(s) for s in servers]}
+    if browser and browser.get('status') == browser_setup.INSTALLING:
+        resp['warning'] = browser.get('message')
+    return jsonify(resp)
 
 
 @app.route('/api/mcp/<name>', methods=['DELETE'])
 def api_delete_mcp(name):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
+    # A server FreeClaw ships with isn't the user's to remove — read_servers()
+    # would put it straight back on the next page load, so deleting it would
+    # look broken rather than forbidden. Switching it off is the way to be rid
+    # of it, and that already stops its process and hides its tools.
+    if mcp_client.is_builtin(name):
+        return jsonify({'error': f"'{name}' ships with FreeClaw and can't be removed. "
+                                 "Switch it off instead."}), 400
     with config_lock:
         servers = mcp_client.read_servers()
         remaining = [s for s in servers if s.get('name') != name]

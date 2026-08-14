@@ -675,32 +675,64 @@
 
   // ── MCP servers ──
   const mcpList = $('mcp-list'), mcpMsg = $('mcp-msg');
+  // Set while a builtin's browser is downloading, so the card can refresh
+  // itself without the user reloading the page. Cleared on every render so
+  // polls can't stack up.
+  let mcpPoll = null;
+
+  // The line under a server's name: what it connects to for one the user
+  // added, and what it's for — plus how its one-time browser download is
+  // going — for one that ships with FreeClaw.
+  function mcpSubline(s) {
+    const bits = [];
+    if (s.builtin) {
+      bits.push('<span class="k">built in</span>');
+      if (s.description) bits.push(escapeHtml(s.description));
+    } else {
+      const isStdio = s.transport === 'stdio';
+      bits.push(`<span class="k">${isStdio ? 'stdio' : 'http'}</span>`);
+      bits.push(escapeHtml((isStdio ? s.command : s.url) || ''));
+      if (s.has_token) bits.push('🔑');
+    }
+    const b = s.browser;
+    if (b && s.enabled !== false) {
+      if (b.status === 'installing') bits.push('<span style="color:var(--warn,#e0a030)">downloading Chromium…</span>');
+      else if (b.status === 'error') bits.push(`<span style="color:var(--err)">${escapeHtml(b.message || 'browser setup failed')}</span>`);
+      else if (b.status === 'missing') bits.push('<span style="color:var(--err)">browser not installed</span>');
+    }
+    return bits.join(' · ');
+  }
 
   function renderMcp(servers) {
+    if (mcpPoll) { clearTimeout(mcpPoll); mcpPoll = null; }
     mcpList.innerHTML = '';
     if (!servers || servers.length === 0) { mcpList.innerHTML = '<div class="empty">No MCP servers connected yet.</div>'; return; }
     servers.forEach(s => {
       const enabled = s.enabled !== false;
       const card = document.createElement('div');
       card.className = 'card' + (enabled ? '' : ' disabled');
-      const isStdio = s.transport === 'stdio';
-      const target = isStdio ? s.command : s.url;
       card.innerHTML = `
         <div class="card-info">
           <div class="card-name">${escapeHtml(s.name)}</div>
-          <div class="card-sub"><span class="k">${isStdio ? 'stdio' : 'http'}</span> ${escapeHtml(target || '')}${s.has_token ? ' · 🔑' : ''}</div>
+          <div class="card-sub">${mcpSubline(s)}</div>
         </div>
         <input class="toggle" type="checkbox" ${enabled ? 'checked' : ''} title="${enabled ? 'Disable' : 'Enable'}"/>
-        <button class="del" type="button">remove</button>`;
+        ${s.builtin ? '' : '<button class="del" type="button">remove</button>'}`;
       const toggle = card.querySelector('.toggle');
       toggle.addEventListener('change', () => toggleMcp(s.name, toggle.checked, card, toggle));
-      wireDelete(card.querySelector('.del'), () => deleteMcp(s.name));
+      const del = card.querySelector('.del');
+      if (del) wireDelete(del, () => deleteMcp(s.name));
       mcpList.appendChild(card);
     });
+    // A download runs for minutes; check back until it resolves one way or
+    // the other, at which point the next render clears the timer.
+    if (servers.some(s => s.enabled !== false && s.browser && s.browser.status === 'installing')) {
+      mcpPoll = setTimeout(() => loadMcp(true), 5000);
+    }
   }
 
-  async function loadMcp() {
-    mcpList.innerHTML = '<div class="empty">loading…</div>';
+  async function loadMcp(quiet) {
+    if (!quiet) mcpList.innerHTML = '<div class="empty">loading…</div>';
     try {
       const res = await fetch('/api/mcp');
       const data = await res.json();
@@ -751,7 +783,11 @@
       const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-      card.classList.toggle('disabled', !enabled);
+      // Re-render rather than just recolouring the card: switching a builtin
+      // on can have started a browser download, and that belongs on screen
+      // straight away rather than at the next page load.
+      renderMcp(data.servers);
+      if (data.warning) showMsg(mcpMsg, data.warning, false);
     } catch (e) { toggle.checked = !enabled; showMsg(mcpMsg, e.message, false); }
     finally { toggle.disabled = false; }
   }

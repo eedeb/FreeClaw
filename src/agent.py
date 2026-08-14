@@ -14,6 +14,7 @@ from json_repair import repair_json
 from openai import OpenAI, APIConnectionError
 
 import src.approvals as approvals
+import src.browser_setup as browser_setup
 import src.cancellation as cancellation
 import src.mcp_client as mcp_client
 import src.responses_api as responses_api
@@ -1855,6 +1856,13 @@ def load_mcp_tools():
     for server in mcp_client.read_servers():
         if not server.get("enabled", True):
             continue
+        # A server that drives a browser can list its tools perfectly well
+        # before Chromium has been downloaded — it only launches one when a
+        # tool is actually called. Offering them anyway would hand the model
+        # two dozen tools that all fail the same way, so hold them back until
+        # the download that Settings kicked off has finished.
+        if server.get("needs_browser") and not browser_setup.chromium_present():
+            continue
         try:
             server_tools = mcp_client.list_tools(server)
         except Exception as e:
@@ -1862,9 +1870,10 @@ def load_mcp_tools():
             logger.exception("MCP server '%s' (%s) unavailable",
                              server.get('name'), mcp_client.describe(server))
             continue
+        excluded = set(server.get("exclude_tools") or ())
         for t in server_tools:
             real_name = t.get("name")
-            if not real_name:
+            if not real_name or real_name in excluded:
                 continue
             fn_name = _sanitize_tool_name(f"mcp_{server.get('name', '')}_{real_name}")
             # Guarantee uniqueness across servers/tools.

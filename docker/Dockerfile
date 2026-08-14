@@ -40,6 +40,19 @@ COPY VERSION ./
 # them here keeps the image runnable on its own too.
 RUN mkdir -p Flask/static logs
 
+# Where playwright unpacks Chromium for the shipped shadow-web MCP server.
+# Pointed at a directory rather than the default ~/.cache so docker-compose can
+# mount it: the download is a few hundred MB and lands in the container's
+# writable layer, which ./update-mac.sh throws away when it recreates the
+# container. Without the mount, every update re-downloads it.
+#
+# The browser is NOT fetched here. It arrives only if someone switches the
+# server on in Settings (src/browser_setup.py), which is also when the apt
+# libraries it needs get installed — we're root in this container, so that
+# works, and the image stays as small as it was for everyone who doesn't.
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
+RUN mkdir -p /app/.playwright
+
 EXPOSE 6767
 
 ENV PYTHONUNBUFFERED=1 \

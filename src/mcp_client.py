@@ -31,6 +31,7 @@ import queue
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -60,6 +61,58 @@ COMMANDS_KEY = "MCP_COMMANDS"
 HTTP = "http"
 STDIO = "stdio"
 TRANSPORTS = (HTTP, STDIO)
+
+
+# ── servers that ship with FreeClaw ──────────────────────────
+#
+# A builtin is an ordinary stdio server the user never has to add: it's always
+# in the MCP list, and the only thing `.env` stores for it is whether it's
+# switched on. The command, the environment and the tools we hold back are
+# defined here rather than persisted, so an entry saved by an older FreeClaw
+# can't pin a stale command line across an update.
+#
+# They ship disabled. A browser is a large dependency and a wide new path for
+# the agent to reach the network through, so switching it on is the user's
+# decision, not a side effect of installing FreeClaw.
+
+BUILTIN_SERVERS = [
+    {
+        "name": "shadow-web",
+        "transport": STDIO,
+        # `-m` rather than the `shadow-web-mcp` console script: on Linux
+        # FreeClaw runs out of a venv whose bin/ isn't necessarily on the
+        # child's PATH, while sys.executable always points at the interpreter
+        # that has the package installed.
+        "command": f'"{sys.executable}" -m shadow_web.mcp.server',
+        "env": {
+            # shadow-web defaults to camoufox — a second ~150MB browser
+            # download, and an anti-detect Firefox whose fingerprint spoofing
+            # we have no business switching on for a user. Chromium is what
+            # `playwright install chromium` puts on disk, so ask for it by
+            # name; without this the server raises rather than falling back.
+            "SHADOW_WEB_BROWSER": "chromium",
+        },
+        # `agent_run` starts its own LLM agent loop inside the MCP server,
+        # reading DEEPSEEK_API_KEY / OPENAI_API_KEY straight out of the
+        # environment it inherited from us. That routes around provider
+        # fallback, the token counter, the Stop button and bash approvals in
+        # one call, so the model is never shown it.
+        "exclude_tools": ("agent_run",),
+        "description": "Browser automation with token-compressed page snapshots.",
+        # Tools don't work until `playwright install chromium` has run; see
+        # src/browser_setup.py, which the enable path drives.
+        "needs_browser": True,
+        "builtin": True,
+    },
+]
+
+BUILTIN_NAMES = frozenset(s["name"] for s in BUILTIN_SERVERS)
+
+
+def is_builtin(name):
+    """Whether `name` is one of the servers FreeClaw ships with. Those can be
+    toggled but not deleted or overwritten."""
+    return name in BUILTIN_NAMES
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "FreeClaw", "version": "1.0"}
@@ -103,9 +156,13 @@ def read_servers():
     Sized to the longest list rather than keyed off URLs the way it was when
     http was the only transport — a stdio server has no URL, so that would
     have dropped every stdio entry. An entry with nothing to connect to (no URL
-    on an http server, no command on a stdio one) is skipped."""
+    on an http server, no command on a stdio one) is skipped.
+
+    The builtins (BUILTIN_SERVERS) are always present in the result, whether or
+    not `.env` exists yet — a fresh install has them in the list from the first
+    page load, switched off."""
     if not os.path.exists(ENV_PATH):
-        return []
+        return _merge_builtins([])
     env = dotenv_values(ENV_PATH)
     names = parse_env_list(env.get(NAMES_KEY))
     urls = parse_env_list(env.get(URLS_KEY))
@@ -133,7 +190,28 @@ def read_servers():
             "transport": transport,
             "command": command,
         })
-    return servers
+    return _merge_builtins(servers)
+
+
+def _merge_builtins(servers):
+    """`servers` with the shipped entries folded in.
+
+    A stored entry contributes exactly one thing: its `enabled` flag. Command,
+    environment and tool exclusions always come from BUILTIN_SERVERS, so an
+    install whose `.env` still carries what shipped two versions ago picks up
+    the current definition on upgrade. Builtins sort first so they sit at the
+    top of the Settings list rather than below whatever the user has added."""
+    stored = {s.get("name"): s for s in servers if s.get("name") in BUILTIN_NAMES}
+    out = []
+    for spec in BUILTIN_SERVERS:
+        entry = dict(spec)
+        prior = stored.get(spec["name"])
+        entry["url"] = ""
+        entry["token"] = ""
+        entry["enabled"] = bool(prior.get("enabled")) if prior else False
+        out.append(entry)
+    out.extend(s for s in servers if s.get("name") not in BUILTIN_NAMES)
+    return out
 
 
 def servers_to_env(servers):
@@ -157,9 +235,13 @@ def _sig(server):
     """Cache key identifying one server's live connection. Includes the
     transport so an http and a stdio server can never share a cache slot, and
     the token so a rotated credential opens a fresh session rather than
-    reusing one authorized with the old one."""
+    reusing one authorized with the old one. For stdio the overridden
+    environment is part of the key too: the same command run with a different
+    SHADOW_WEB_BROWSER is a different server, and reusing the running child
+    would silently ignore the change."""
     if (server.get("transport") or HTTP) == STDIO:
-        return (STDIO, server.get("command") or "")
+        env = server.get("env") or {}
+        return (STDIO, server.get("command") or "", tuple(sorted(env.items())))
     return (HTTP, server.get("url"), server.get("token"))
 
 
@@ -375,7 +457,7 @@ class _StdioServer:
     what parses, drops what doesn't, and queues messages so RPCs can wait with
     a timeout."""
 
-    def __init__(self, command):
+    def __init__(self, command, env=None):
         self.command = command
         self._inbox = queue.Queue()
         self._lock = threading.Lock()  # one in-flight request at a time
@@ -393,7 +475,10 @@ class _StdioServer:
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True,
                 bufsize=1,             # line buffered — newline-delimited JSON
-                env=os.environ.copy(),  # .env is already loaded into it
+                # .env is already loaded into our own environment; `env` on top
+                # of it is how a builtin pins settings the user shouldn't have
+                # to know about (see BUILTIN_SERVERS).
+                env={**os.environ, **(env or {})},
             )
         except FileNotFoundError:
             raise StdioSpawnFailed(
@@ -518,7 +603,7 @@ def _get_stdio(server, force=False):
             existing = None
         if existing is not None:
             return existing
-        proc = _StdioServer(command)
+        proc = _StdioServer(command, server.get("env"))
         _stdio_procs[sig] = proc
     # Handshake outside the registry lock — it can take seconds (npx fetching
     # a package), and holding the lock would stall every other server's

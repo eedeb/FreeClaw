@@ -13,3 +13,31 @@ ddgs
 beautifulsoup4
 json-repair
 python-dotenv
+
+# ── the shipped browser MCP server (src/mcp_client.py: BUILTIN_SERVERS) ──
+#
+# Deliberately not `shadow-web[mcp]`: that extra pulls camoufox, a second
+# ~150MB browser we pin off in favour of Chromium anyway (see BUILTIN_SERVERS).
+# The `mcp` package is the half of that extra we do need — it's what the
+# server's stdio entry point is built on.
+#
+# Pinned to an exact version on purpose. This is a young single-maintainer
+# package that FreeClaw installs on every machine, so a new release gets read
+# before it ships rather than arriving on its own with the next update.
+#
+# What this does NOT install is Chromium itself — a few hundred MB fetched only
+# if someone switches the server on (src/browser_setup.py). The Python side is
+# small; playwright's own wheel is the bulk of it.
+#
+# Both need Python 3.10+. The marker matters: without it, pip fails the whole
+# file on an older interpreter and takes flask and openai down with it, so a
+# Linux box on 3.9 would stop being able to install FreeClaw at all because of
+# a server that ships switched off. With it, those installs simply don't get
+# the browser server, and Settings says why.
+#
+# `<2` is load-bearing, not caution: the 2.0 SDK dropped `mcp.server.fastmcp`
+# for `mcp.server.mcpserver`, and shadow-web 0.4.1 imports the old path. An
+# unbounded requirement resolves to 2.x and the server dies on startup with
+# ModuleNotFoundError. Revisit when shadow-web ships a 2.x-compatible release.
+shadow-web==0.4.1; python_version >= "3.10"
+mcp>=1.2.0,<2; python_version >= "3.10"

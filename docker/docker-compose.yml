@@ -19,6 +19,11 @@ services:
     ports:
       - "6767:6767"
 
+    # Chromium maps a lot of shared memory and dies on Docker's 64MB default
+    # /dev/shm — as a renderer crash mid-page, not a clean error. Only matters
+    # once the shadow-web MCP server is switched on, but it costs nothing here.
+    shm_size: 1gb
+
     environment:
       # No reloader, no interactive debugger inside the container. Deliberately
       # the only value set here: anything the Settings UI can edit belongs in
@@ -38,6 +43,13 @@ services:
       - ../Flask/static:/app/Flask/static
       # Tracebacks, matching the Linux install's logs/freeclaw.log.
       - ../logs:/app/logs
+      # Chromium for the shadow-web MCP server, matching
+      # PLAYWRIGHT_BROWSERS_PATH in the Dockerfile. A named volume rather than
+      # a bind mount: it's a few hundred MB of machine-specific binaries, which
+      # belongs in Docker's storage and not in the user's install directory
+      # next to their chats. Surviving `./update-mac.sh` is the whole point —
+      # otherwise recreating the container means downloading it all again.
+      - playwright-browsers:/app/.playwright
       #
       # Deliberately NOT mounted: Flask/.api_enabled, the on/off flag for the
       # OpenAI-compatible API. The flag is the file's *existence*, so creating
@@ -46,3 +58,8 @@ services:
       # recreated (i.e. after ./update-mac.sh). Re-enable with /startapi or
       # the API chip on the homepage. Flask/.secret_key is likewise in the
       # container, but is unused because the installer sets SECRET_KEY in .env.
+
+volumes:
+  # Empty until someone switches the shadow-web MCP server on; a few hundred MB
+  # after. `docker volume rm freeclaw_playwright-browsers` reclaims it.
+  playwright-browsers:
