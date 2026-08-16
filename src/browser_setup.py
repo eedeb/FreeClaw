@@ -245,6 +245,13 @@ def start():
         if chromium_present():
             _state["status"] = None       # fall back to the on-disk check
             _state["message"] = ""
+            # Not inside _install(): an install that already has Chromium never
+            # reaches it, which would leave every existing FreeClaw without the
+            # virtual display the sign-in browser wants. Backgrounded because
+            # this is on the Settings request path, and it's a no-op when Xvfb
+            # is already there or we aren't root.
+            threading.Thread(target=_install_xvfb, name="xvfb-install",
+                             daemon=True).start()
             return {"status": READY, "message": ""}
         _state["status"] = INSTALLING
         _state["message"] = "Downloading Chromium (a few hundred MB) — this runs once."
