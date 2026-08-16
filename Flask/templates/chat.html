@@ -180,7 +180,7 @@
     }
     #reset-btn:active { border-color: rgba(192,57,57,0.5); color: #e05555; transform: scale(0.96); }
 
-    #home-btn, #settings-btn {
+    #home-btn, #settings-btn, #browser-btn {
       background: none;
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -197,8 +197,8 @@
       display: inline-flex;
       align-items: center;
     }
-    #home-btn:active, #settings-btn:active { border-color: var(--accent-dim); color: var(--accent); transform: scale(0.96); }
-    #settings-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+    #home-btn:active, #settings-btn:active, #browser-btn:active { border-color: var(--accent-dim); color: var(--accent); transform: scale(0.96); }
+    #settings-btn:hover, #browser-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
 
     /* ── Messages ── */
     #messages {
@@ -732,6 +732,7 @@
     </div>
     <div class="header-right">
       <span id="token-count">~0 tokens</span>
+      <a id="browser-btn" href="/browser" title="Browser" style="display:none">🌐</a>
       <a id="settings-btn" href="/settings" title="Settings">⚙</a>
       <button id="home-btn" title="Back to users">⌂</button>
       <button id="reset-btn">reset</button>
@@ -1698,8 +1699,31 @@
   // ── Load the conversation this session is currently pointed at ───
   let lastUpdatedAt = null;
 
+  // The browser link is only useful once the shadow-web server is switched on
+  // *and* its Chromium has finished downloading — before that the page it
+  // points at can't open anything. Checked once per load rather than polled:
+  // enabling the server is a Settings action, and Settings reloads this page.
+  let browserLinkChecked = false;
+  async function showBrowserLink(user) {
+    if (browserLinkChecked || !user) return;
+    browserLinkChecked = true;
+    const btn = document.getElementById('browser-btn');
+    if (!btn) return;
+    try {
+      const res = await fetch('/api/mcp');
+      if (!res.ok) return;
+      const servers = (await res.json()).servers || [];
+      const ready = servers.some(s => s.browser && s.enabled !== false
+                                   && s.browser.status === 'ready');
+      if (!ready) return;
+      btn.href = '/browser?user=' + encodeURIComponent(user);
+      btn.style.display = '';
+    } catch (e) { /* the link is a convenience; never break the chat over it */ }
+  }
+
   function applyConversation(data) {
     if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
+    showBrowserLink(data.user);
     if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
     const msgs = data.messages || [];
     const hasVisible = msgs.some(m => m.role === 'user' || (m.role === 'assistant' && m.content));

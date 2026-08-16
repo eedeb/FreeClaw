@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw · Browser</title>
+  <meta name="theme-color" content="#0d0d0f"/>
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0d0f; --surface: #141416; --border: #222228;
+      --accent: #c8f04a; --accent-dim: #a8cc38; --text: #e8e8ec;
+      --muted: #666672; --err: #e05555;
+      --radius: 4px; --mono: 'IBM Plex Mono', monospace; --sans: 'Syne', sans-serif;
+    }
+    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-tap-highlight-color: transparent; }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px; opacity: 0.35; pointer-events: none; z-index: 0;
+    }
+    .wrap { position: relative; z-index: 1; max-width: 1340px; margin: 0 auto; padding: 16px 18px 60px; }
+
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 6px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 14px;
+    }
+    header .logo { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; flex-shrink: 0; }
+    header .logo img { width: 100%; height: 100%; object-fit: cover; }
+    header h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+    header .sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+    header .spacer { flex: 1; }
+    .nav-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      border-radius: var(--radius); padding: 6px 11px; font-family: var(--mono); font-size: 12px;
+      cursor: pointer; text-decoration: none; transition: all 0.15s; white-space: nowrap;
+    }
+    .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+    /* ── browser chrome ── */
+    .chrome {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius) var(--radius) 0 0; padding: 8px 9px;
+    }
+    .chrome .icon {
+      background: transparent; border: 1px solid transparent; color: var(--muted);
+      border-radius: var(--radius); padding: 5px 9px; font-family: var(--mono); font-size: 13px;
+      cursor: pointer; line-height: 1; transition: all 0.15s;
+    }
+    .chrome .icon:hover:not(:disabled) { border-color: var(--border); color: var(--accent); }
+    .chrome .icon:disabled { opacity: 0.3; cursor: default; }
+    #addr {
+      flex: 1; min-width: 180px; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 999px; padding: 7px 13px; font-family: var(--mono); font-size: 12px;
+    }
+    #addr:focus { outline: none; border-color: var(--accent-dim); }
+    .chrome .sep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; }
+    button.act {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      border-radius: var(--radius); padding: 6px 11px; font-family: var(--mono); font-size: 11px;
+      cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    }
+    button.act:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+    button.act:disabled { opacity: 0.35; cursor: default; }
+    button.act.primary { background: var(--accent); border-color: var(--accent); color: #10100c; font-weight: 500; }
+    button.act.primary:hover:not(:disabled) { background: var(--accent-dim); color: #10100c; }
+    button.act.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+
+    /* ── viewport ── */
+    .viewport {
+      position: relative; border: 1px solid var(--border); border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius); background: #000;
+      aspect-ratio: 1280 / 800; overflow: hidden;
+    }
+    #screen { display: block; width: 100%; height: 100%; object-fit: contain; cursor: crosshair; }
+    #screen:focus { outline: none; }
+    .overlay {
+      position: absolute; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 10px; text-align: center;
+      background: var(--bg); font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 20px;
+    }
+    .overlay.hidden { display: none; }
+    .spin { width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .statusbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; min-height: 17px;
+    }
+    .statusbar .msg.err { color: var(--err); }
+    .statusbar .msg.ok { color: var(--accent); }
+
+    .banner {
+      font-family: var(--mono); font-size: 11px; line-height: 1.6;
+      border: 1px solid var(--border); border-left: 2px solid var(--accent-dim);
+      background: var(--surface); border-radius: var(--radius); padding: 9px 12px; margin-bottom: 12px;
+    }
+    .banner.warn { border-left-color: var(--err); }
+    .banner.hidden { display: none; }
+
+    section.saved { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border); }
+    section.saved h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+    .sec-desc { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin: 4px 0 12px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .chip {
+      font-family: var(--mono); font-size: 11px; color: var(--text);
+      background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px;
+    }
+    .empty { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .picker { display: flex; flex-direction: column; gap: 8px; max-width: 340px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+    <div>
+      <h1>Browser</h1>
+      <div class="sub">{% if user %}{{ user }}{% else %}no user selected{% endif %}</div>
+    </div>
+    <div class="spacer"></div>
+    {% if user %}<a class="nav-btn" href="/chat?name={{ user }}">Chat</a>{% endif %}
+    <a class="nav-btn" href="/settings">Settings</a>
+    <a class="nav-btn" href="/">Home</a>
+  </header>
+
+  {% if not user %}
+    {% if unknown %}
+      <div class="banner warn">No FreeClaw user called <strong>{{ unknown }}</strong>.</div>
+    {% endif %}
+    <div class="banner">
+      This browser runs on the machine FreeClaw runs on, and whatever you sign into here,
+      that user's agent inherits. Pick whose browser to open.
+    </div>
+    <div class="picker">
+      {% for name in users %}
+        <a class="nav-btn" href="/browser?user={{ name }}">{{ name }} →</a>
+      {% else %}
+        <span class="empty">No users yet — create one from the home page.</span>
+      {% endfor %}
+    </div>
+  {% else %}
+
+  <div class="banner warn">
+    Anything you sign into here, <strong>{{ user }}</strong>'s agent can act as you on —
+    reading, posting, buying — on every turn from now on, until you clear it below.
+  </div>
+  <div class="banner hidden" id="note"></div>
+
+  <div class="chrome">
+    <button class="icon" id="back" title="Back" disabled>&#8592;</button>
+    <button class="icon" id="forward" title="Forward" disabled>&#8594;</button>
+    <button class="icon" id="reload" title="Reload" disabled>&#8635;</button>
+    <input type="text" id="addr" placeholder="Search or type a URL, then press Enter"
+           autocomplete="off" spellcheck="false"/>
+    <span class="sep"></span>
+    <button class="act primary" id="save" disabled>Save logins</button>
+    <button class="act" id="close" disabled>Save &amp; close</button>
+    <button class="act danger" id="discard" disabled>Discard</button>
+  </div>
+
+  <div class="viewport">
+    <img id="screen" tabindex="0" alt="The remote browser"/>
+    <div class="overlay" id="overlay">
+      <div id="overlay-icon"></div>
+      <div id="overlay-text">Type an address above to open the browser.</div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span id="title-text"></span>
+    <span class="spacer" style="flex:1"></span>
+    <span class="msg" id="msg"></span>
+  </div>
+
+  <section class="saved">
+    <h2>Signed in</h2>
+    <p class="sec-desc">Domains {{ user }}'s agent holds cookies for.</p>
+    <div class="chips" id="domains"></div>
+    <button class="act danger" id="clear">Forget all saved logins</button>
+  </section>
+
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  const USER = {{ (user or '')|tojson }};
+  if (!USER) return;
+
+  const el = (id) => document.getElementById(id);
+  const screen = el('screen'), overlay = el('overlay'), msg = el('msg');
+
+  // The server renders at this size; clicks are scaled from the displayed
+  // image back into it, so the two must agree.
+  let viewport = { width: 1280, height: 800 };
+  let running = false;
+
+  function say(text, kind) {
+    msg.textContent = text || '';
+    msg.className = 'msg' + (kind ? ' ' + kind : '');
+  }
+
+  function showOverlay(text, spinning) {
+    el('overlay-text').textContent = text;
+    el('overlay-icon').innerHTML = spinning ? '<div class="spin"></div>' : '';
+    overlay.classList.remove('hidden');
+  }
+
+  async function api(path, options) {
+    const opts = Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {});
+    // The user is named in the request, not taken from the session's open chat.
+    const sep = path.includes('?') ? '&' : '?';
+    const res = await fetch('/api/browser/' + path + sep + 'user=' + encodeURIComponent(USER), opts);
+    let body = {};
+    try { body = await res.json(); } catch (e) { /* 204 / image routes */ }
+    if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    return body;
+  }
+
+  function setRunning(on) {
+    const wasRunning = running;
+    running = on;
+    ['back', 'forward', 'reload', 'save', 'close', 'discard'].forEach(
+      (id) => { el(id).disabled = !on; });
+    if (on) {
+      overlay.classList.add('hidden');
+      if (!wasRunning) nextFrame();
+    }
+  }
+
+  // Self-clocking frame loop: ask for the next screenshot as soon as the last
+  // one finished decoding, so a slow link simply gets fewer frames instead of
+  // queueing requests it can't keep up with.
+  function nextFrame() {
+    if (!running) return;
+    screen.src = '/api/browser/frame?user=' + encodeURIComponent(USER) + '&t=' + Date.now();
+  }
+  screen.addEventListener('load', () => setTimeout(nextFrame, 60));
+  screen.addEventListener('error', () => setTimeout(nextFrame, 400));
+
+  function send(command) {
+    if (!running) return;
+    api('input', { method: 'POST', body: JSON.stringify(command) })
+      .catch((e) => say(e.message, 'err'));
+  }
+
+  // ── input forwarding ──
+  screen.addEventListener('click', (e) => {
+    e.preventDefault();
+    screen.focus();
+    // object-fit: contain letterboxes the image inside the box, so the drawn
+    // area is not the element's area — map through the drawn rect or every
+    // click lands short once the aspect ratios diverge.
+    const rect = screen.getBoundingClientRect();
+    const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
+    const drawnW = viewport.width * scale, drawnH = viewport.height * scale;
+    const originX = rect.left + (rect.width - drawnW) / 2;
+    const originY = rect.top + (rect.height - drawnH) / 2;
+    const x = (e.clientX - originX) / scale;
+    const y = (e.clientY - originY) / scale;
+    if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return;
+    send({ kind: 'click', x: x, y: y });
+  });
+
+  screen.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    send({ kind: 'scroll', dy: e.deltaY });
+  }, { passive: false });
+
+  const NAMED_KEYS = new Set([
+    'Enter', 'Tab', 'Backspace', 'Delete', 'Escape', 'ArrowUp', 'ArrowDown',
+    'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
+  ]);
+
+  screen.addEventListener('keydown', (e) => {
+    if (!running) return;
+    // Let the real clipboard shortcuts through; everything else that reaches
+    // here is meant for the remote page.
+    if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'x', 'a'].includes(e.key.toLowerCase())) return;
+    if (NAMED_KEYS.has(e.key)) {
+      e.preventDefault();
+      send({ kind: 'key', key: e.key });
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      send({ kind: 'text', text: e.key });
+    }
+  });
+
+  screen.addEventListener('paste', (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData('text');
+    if (text) { e.preventDefault(); send({ kind: 'text', text: text }); }
+  });
+
+  // ── chrome ──
+  // One address bar for both jobs: with no browser open it starts one, and
+  // with one open it navigates. Two controls for "go to this page" is a
+  // distinction the user has no reason to care about.
+  async function go() {
+    const url = el('addr').value.trim();
+    if (!url) return;
+    if (running) { send({ kind: 'nav', url: url }); return; }
+    showOverlay('Starting the browser…', true);
+    say('');
+    try {
+      const info = await api('start', { method: 'POST', body: JSON.stringify({ url: url }) });
+      if (info.viewport) viewport = info.viewport;
+      if (info.note) { el('note').textContent = info.note; el('note').classList.remove('hidden'); }
+      setRunning(true);
+    } catch (e) {
+      showOverlay('Type an address above to open the browser.', false);
+      say(e.message, 'err');
+    }
+  }
+
+  el('addr').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); go(); screen.focus(); }
+  });
+  el('back').addEventListener('click', () => send({ kind: 'back' }));
+  el('forward').addEventListener('click', () => send({ kind: 'forward' }));
+  el('reload').addEventListener('click', () => send({ kind: 'reload' }));
+
+  el('save').addEventListener('click', async () => {
+    say('Saving…');
+    try {
+      const info = await api('save', { method: 'POST' });
+      renderDomains(info.saved_domains || []);
+      say('Saved — the agent can use these now.', 'ok');
+    } catch (e) { say(e.message, 'err'); }
+  });
+
+  el('close').addEventListener('click', async () => {
+    say('Saving…');
+    try {
+      const info = await api('finish', { method: 'POST' });
+      setRunning(false);
+      showOverlay('Browser closed. Type an address to open it again.', false);
+      renderDomains(info.saved_domains || []);
+      say('Saved and closed.', 'ok');
+    } catch (e) { say(e.message, 'err'); }
+  });
+
+  el('discard').addEventListener('click', async () => {
+    if (!confirm('Close without saving? Anything you signed into in this session is lost.')) return;
+    try { await api('cancel', { method: 'POST' }); } catch (e) { /* closing anyway */ }
+    setRunning(false);
+    showOverlay('Browser closed. Type an address to open it again.', false);
+    say('Closed without saving.');
+  });
+
+  el('clear').addEventListener('click', async () => {
+    if (!confirm('Forget every saved login? The agent will be signed out of all of them.')) return;
+    try {
+      const info = await api('saved', { method: 'DELETE' });
+      renderDomains(info.saved_domains || []);
+      say('Cleared.', 'ok');
+    } catch (e) { say(e.message, 'err'); }
+  });
+
+  function renderDomains(list) {
+    const box = el('domains');
+    box.innerHTML = '';
+    if (!list.length) {
+      const span = document.createElement('span');
+      span.className = 'empty';
+      span.textContent = 'Nothing yet — the agent browses signed out.';
+      box.appendChild(span);
+      return;
+    }
+    list.forEach((domain) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = domain;      // textContent: these come from cookies
+      box.appendChild(chip);
+    });
+  }
+
+  // Keeps the address bar and the saved list honest, and notices a session
+  // that timed out or died on the server side.
+  async function poll() {
+    try {
+      const info = await api('status');
+      if (info.viewport) viewport = info.viewport;
+      renderDomains(info.saved_domains || []);
+      if (info.running) {
+        if (!running) setRunning(true);
+        if (document.activeElement !== el('addr')) el('addr').value = info.url || '';
+        el('title-text').textContent = info.title || '';
+        if (info.error) say(info.error, 'err');
+      } else if (running) {
+        setRunning(false);
+        el('title-text').textContent = '';
+        showOverlay('The browser closed. Type an address to open it again.', false);
+      }
+    } catch (e) { /* transient */ }
+    setTimeout(poll, 2000);
+  }
+  poll();
+})();
+</script>
+</body>
+</html>

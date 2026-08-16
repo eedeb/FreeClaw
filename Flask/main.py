@@ -513,44 +513,74 @@ def api_delete_bash_approval():
     return jsonify({'ok': True, **approvals.list_rules(name)})
 
 
-# ── BROWSER SIGN-IN ──────────────────────────────────────────
+# ── BROWSER ──────────────────────────────────────────────────
 #
-# The agent's browser starts signed out of everything, so any site behind a
-# login is a wall it can't get past. These routes drive a second, headful
-# Chromium (src/browser_takeover.py) that the user operates through the web UI
-# — it renders as a stream of screenshots and forwards clicks and keystrokes.
-# On finish, its cookies are saved per user (src/browser_profiles.py) and the
-# agent's next browser call loads them.
+# A browser the user drives, running on the machine FreeClaw runs on. It exists
+# because the agent's own browser starts signed out of everything, so any site
+# behind a login is a wall — but it's a general browser, not a login wizard:
+# whatever the user does here, the agent inherits the cookies for.
 #
-# Every route is behind logged_in() and scoped to current_user(). There is no
+# It renders as a stream of screenshots (src/browser_takeover.py) and forwards
+# clicks and keystrokes back. On save, the cookies are written per FreeClaw
+# user (src/browser_profiles.py) and the agent's next browser call loads them.
+#
+# The user is named in the request (?user=… / "user" in the body) rather than
+# taken from the session's current chat: this is a window onto one user's
+# browsing, and which chat happens to be open is a different question. That's
+# no wider a door than FreeClaw already has — every named user sits behind the
+# single FC_PASSWORD, and /chat?name=… switches between them the same way — but
+# every route still requires logged_in(), and there is deliberately no
 # token-based escape hatch like serve_static's: a frame of this browser may
 # have someone's inbox in it, and a saved session is a live credential.
 
-# Schemes the sign-in browser will open. Anything else — file://, chrome://,
-# view-source: — turns a page meant for logging into websites into a reader for
-# the server's own filesystem, rendered back over HTTP as a screenshot.
+# Schemes the browser will open. Anything else — file://, chrome://,
+# view-source: — turns a window meant for websites into a reader for the
+# server's own filesystem, rendered back over HTTP as a screenshot.
 _BROWSER_SCHEMES = ('http://', 'https://')
 
 
+def _requested_user():
+    """The FreeClaw user this request is about, from the query string or the
+    JSON body. Validated against the real user list — the name becomes a path
+    under browser-profiles/, and it decides whose cookies are handed out."""
+    name = (request.args.get('user') or '').strip()
+    if not name and request.method in ('POST', 'DELETE'):
+        name = str((request.get_json(silent=True) or {}).get('user', '')).strip()
+    return name
+
+
 def _takeover_user():
-    """(user, error_response). The browser profile is per FreeClaw user, so
-    there has to be one selected before any of this means anything."""
-    name = current_user()
+    """(user, error_response) — the user, or the 400 to return instead."""
+    name = _requested_user()
     if not name:
-        return None, (jsonify({'error': 'Open a chat first — saved logins belong to a '
-                                        'specific FreeClaw user.'}), 400)
+        return None, (jsonify({'error': "Name a user: /browser?user=…"}), 400)
+    if not user_exists(name):
+        return None, (jsonify({'error': f"No FreeClaw user called {name!r}."}), 404)
     return name, None
 
 
-@app.route('/browser-login')
-def browser_login_page():
+@app.route('/browser')
+def browser_page():
     if not logged_in():
         return redirect(url_for('login'))
-    return render_template('browser_login.html', user=current_user())
+    name = _requested_user()
+    # No user named: send them to the one whose chat is open rather than making
+    # them pick again, and fall back to a picker when there isn't one.
+    if not name:
+        fallback = current_user()
+        if fallback:
+            return redirect(url_for('browser_page', user=fallback))
+    valid = bool(name) and user_exists(name)
+    return render_template(
+        'browser.html',
+        user=name if valid else None,
+        unknown=name if (name and not valid) else None,
+        users=list_users(),
+    )
 
 
-@app.route('/api/browser-login/start', methods=['POST'])
-def api_browser_login_start():
+@app.route('/api/browser/start', methods=['POST'])
+def api_browser_start():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
@@ -569,23 +599,23 @@ def api_browser_login_start():
     try:
         browser_takeover.start(name, url)
     except Exception as e:
-        logger.exception('Couldn\'t start the sign-in browser')
+        logger.exception('Couldn\'t start the browser')
         return jsonify({'error': f'Couldn\'t start the browser: {e}'}), 500
     return jsonify({'ok': True, **browser_takeover.status(name)})
 
 
-@app.route('/api/browser-login/status', methods=['GET'])
-def api_browser_login_status():
+@app.route('/api/browser/status', methods=['GET'])
+def api_browser_status():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
-    name = current_user()
-    if not name:
-        return jsonify({'running': False, 'saved_domains': []})
+    name, error = _takeover_user()
+    if error:
+        return error
     return jsonify(browser_takeover.status(name))
 
 
-@app.route('/api/browser-login/frame', methods=['GET'])
-def api_browser_login_frame():
+@app.route('/api/browser/frame', methods=['GET'])
+def api_browser_frame():
     """The latest screenshot. The page requests the next one as soon as this
     finishes loading, so the frame rate self-clocks to whatever the connection
     and the browser can actually manage instead of a fixed interval that's
@@ -597,7 +627,7 @@ def api_browser_login_frame():
         return error
     sess = browser_takeover.get(name)
     if sess is None or not sess.alive():
-        return jsonify({'error': 'No sign-in browser is open.'}), 404
+        return jsonify({'error': 'No browser is open.'}), 404
     sess.touch()
     frame = sess.frame()
     if frame is None:
@@ -608,8 +638,8 @@ def api_browser_login_frame():
     return response
 
 
-@app.route('/api/browser-login/input', methods=['POST'])
-def api_browser_login_input():
+@app.route('/api/browser/input', methods=['POST'])
+def api_browser_input():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
@@ -617,10 +647,11 @@ def api_browser_login_input():
         return error
     sess = browser_takeover.get(name)
     if sess is None or not sess.alive():
-        return jsonify({'error': 'No sign-in browser is open.'}), 404
+        return jsonify({'error': 'No browser is open.'}), 404
     data = request.get_json(silent=True) or {}
     kind = str(data.get('kind', '')).strip()
-    if kind not in ('click', 'text', 'key', 'scroll', 'nav', 'back', 'reload'):
+    if kind not in ('click', 'text', 'key', 'scroll', 'nav',
+                    'back', 'forward', 'reload'):
         return jsonify({'error': f'Unknown input kind {kind!r}.'}), 400
     if kind == 'nav':
         url = str(data.get('url', '')).strip()
@@ -633,8 +664,10 @@ def api_browser_login_input():
     return jsonify({'ok': True})
 
 
-@app.route('/api/browser-login/finish', methods=['POST'])
-def api_browser_login_finish():
+@app.route('/api/browser/save', methods=['POST'])
+def api_browser_save():
+    """Write the logins out without closing the browser — sign into one site,
+    save, carry on to the next."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
@@ -642,7 +675,24 @@ def api_browser_login_finish():
         return error
     sess = browser_takeover.get(name)
     if sess is None or not sess.alive():
-        return jsonify({'error': 'No sign-in browser is open.'}), 404
+        return jsonify({'error': 'No browser is open.'}), 404
+    if not sess.save():
+        return jsonify({'error': sess.error or "Couldn't save the logins."}), 500
+    mcp_client.clear_cache()
+    agent.refresh_tools()
+    return jsonify({'ok': True, 'saved_domains': browser_profiles.domains(name)})
+
+
+@app.route('/api/browser/finish', methods=['POST'])
+def api_browser_finish():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    sess = browser_takeover.get(name)
+    if sess is None or not sess.alive():
+        return jsonify({'error': 'No browser is open.'}), 404
     saved = sess.finish()
     if not saved:
         return jsonify({'error': sess.error or 'Couldn\'t save the logins.'}), 500
@@ -654,8 +704,8 @@ def api_browser_login_finish():
     return jsonify({'ok': True, 'saved_domains': browser_profiles.domains(name)})
 
 
-@app.route('/api/browser-login/cancel', methods=['POST'])
-def api_browser_login_cancel():
+@app.route('/api/browser/cancel', methods=['POST'])
+def api_browser_cancel():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
@@ -667,8 +717,8 @@ def api_browser_login_cancel():
     return jsonify({'ok': True})
 
 
-@app.route('/api/browser-login/saved', methods=['DELETE'])
-def api_browser_login_clear():
+@app.route('/api/browser/saved', methods=['DELETE'])
+def api_browser_clear():
     """Forget every site this user's agent is signed into."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401

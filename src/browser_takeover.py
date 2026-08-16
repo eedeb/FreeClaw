@@ -5,7 +5,7 @@ VPS, or a container on their Mac. The agent's browser therefore has no way to
 show a login form to anybody, and any site requiring sign-in is simply a wall.
 
 This module puts a second, *separate* Chromium behind FreeClaw's web UI. The
-user opens /browser-login, sees the page rendered as a stream of screenshots,
+user opens /browser?user=…, sees the page rendered as a stream of screenshots,
 clicks and types into it, and signs in. On "Done", the context's cookies and
 localStorage are written to that user's storage_state (src/browser_profiles.py)
 and the browser closes. The agent's next tool call spawns an MCP child that
@@ -173,11 +173,22 @@ class TakeoverSession:
         with self._state_lock:
             return dict(self._meta)
 
+    def save(self):
+        """Write the logins out and keep browsing.
+
+        Separate from `finish` because this is a browser, not a wizard: someone
+        signs into one site, saves so the agent has it, and carries on to the
+        next. Blocks until the file is on disk — the caller's next move is to
+        tell the user it's saved, and saying so early would be a lie the agent
+        then acts on."""
+        self.touch()
+        done = threading.Event()
+        self._commands.put({"kind": "save", "done": done})
+        done.wait(timeout=30)
+        return self.saved
+
     def finish(self):
-        """Ask the worker to save the logins and shut down. Blocks until it
-        has, because the caller's next move is to tell the user it's saved —
-        and saying so before the file exists would be a lie the agent then
-        acts on."""
+        """Save and shut down. Blocks, for the same reason as `save`."""
         self.touch()
         self._commands.put({"kind": "finish"})
         self._done.wait(timeout=30)
@@ -272,12 +283,12 @@ class TakeoverSession:
         while True:
             now = time.time()
             if now - self.touched_at > IDLE_TIMEOUT:
-                logger.info("Sign-in browser for %r idle; saving and closing", self.user)
-                self._save(context)
+                logger.info("Browser for %r idle; saving and closing", self.user)
+                self._save(context, close=True)
                 return
             if now - self.started_at > MAX_SESSION:
-                logger.info("Sign-in browser for %r hit the time limit; saving", self.user)
-                self._save(context)
+                logger.info("Browser for %r hit the time limit; saving", self.user)
+                self._save(context, close=True)
                 return
 
             acted = False
@@ -289,11 +300,18 @@ class TakeoverSession:
             if command is not None:
                 kind = command.get("kind")
                 if kind == "finish":
-                    self._save(context)
+                    self._save(context, close=True)
                     return
                 if kind == "cancel":
                     self.status = "closed"
                     return
+                if kind == "save":
+                    self._save(context, close=False)
+                    # Always set, even when the save failed — the waiter reads
+                    # `saved`/`error` for the outcome, and leaving it unset
+                    # would hang the request until its timeout instead.
+                    command["done"].set()
+                    continue
                 self._apply(command)
                 acted = True
                 # Drain anything queued behind it — a burst of keystrokes
@@ -303,7 +321,11 @@ class TakeoverSession:
                         extra = self._commands.get_nowait()
                     except queue.Empty:
                         break
-                    if extra.get("kind") in ("finish", "cancel"):
+                    # Anything with its own control flow or a waiter behind it
+                    # goes back on the queue for the main loop to handle —
+                    # passing a "save" to _apply would silently drop it and
+                    # leave its caller blocked until the timeout.
+                    if extra.get("kind") in ("finish", "cancel", "save"):
                         self._commands.put(extra)
                         break
                     self._apply(extra)
@@ -341,6 +363,8 @@ class TakeoverSession:
                           timeout=45000)
             elif kind == "back":
                 page.go_back(wait_until="domcontentloaded", timeout=30000)
+            elif kind == "forward":
+                page.go_forward(wait_until="domcontentloaded", timeout=30000)
             elif kind == "reload":
                 page.reload(wait_until="domcontentloaded", timeout=30000)
         except Exception as e:                    # noqa: BLE001 — see docstring
@@ -361,7 +385,10 @@ class TakeoverSession:
             self._frame = shot
             self._meta = meta
 
-    def _save(self, context):
+    def _save(self, context, close):
+        """Write storage_state out. `close` decides whether this was the end of
+        the session or just a checkpoint in the middle of it."""
+        was = self.status
         self.status = "saving"
         path = profiles.ensure_dir(self.user)
         if not path:
@@ -384,7 +411,7 @@ class TakeoverSession:
             self.status = "error"
             self.error = f"Couldn't capture the browser session: {e}"
             return
-        self.status = "closed"
+        self.status = "closed" if close else (was or "running")
 
 
 # ── module-level API used by Flask ───────────────────────────

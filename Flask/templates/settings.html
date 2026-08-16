@@ -699,10 +699,10 @@
       if (b.status === 'installing') bits.push('<span style="color:var(--warn,#e0a030)">downloading Chromium…</span>');
       else if (b.status === 'error') bits.push(`<span style="color:var(--err)">${escapeHtml(b.message || 'browser setup failed')}</span>`);
       else if (b.status === 'missing') bits.push('<span style="color:var(--err)">browser not installed</span>');
-      // The browser starts signed out of everything, so a site behind a login
-      // is a wall until someone signs it in. Only worth offering once Chromium
-      // is actually there — the sign-in page needs it too.
-      else if (b.status === 'ready') bits.push('<a href="/browser-login" style="color:var(--accent)">sign in to sites →</a>');
+      // The agent's browser starts signed out of everything, so a site behind
+      // a login is a wall until someone signs it in there. Only worth offering
+      // once Chromium is actually there — that browser needs it too.
+      else if (b.status === 'ready') bits.push('<a href="/browser" style="color:var(--accent)">open browser →</a>');
     }
     return bits.join(' · ');
   }
