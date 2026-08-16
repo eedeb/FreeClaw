@@ -83,7 +83,15 @@ BUILTIN_SERVERS = [
         # FreeClaw runs out of a venv whose bin/ isn't necessarily on the
         # child's PATH, while sys.executable always points at the interpreter
         # that has the package installed.
-        "command": f'"{sys.executable}" -m shadow_web.mcp.server',
+        #
+        # src.browser_mcp_shim rather than shadow_web.mcp.server itself: the
+        # package's MCP server hardcodes a fresh in-memory browser context, so
+        # a user who signs into a site is signed out again the moment the child
+        # restarts. The shim replaces that one function with a version that
+        # loads FC_BROWSER_STORAGE_STATE, and runs shadow-web unchanged
+        # otherwise. See src/browser_mcp_shim.py for why it's a shim and not a
+        # patch or a fork.
+        "command": f'"{sys.executable}" -m src.browser_mcp_shim',
         "env": {
             # shadow-web defaults to camoufox — a second ~150MB browser
             # download, and an anti-detect Firefox whose fingerprint spoofing
@@ -113,6 +121,39 @@ def is_builtin(name):
     """Whether `name` is one of the servers FreeClaw ships with. Those can be
     toggled but not deleted or overwritten."""
     return name in BUILTIN_NAMES
+
+
+def for_user(server, user):
+    """`server` with this FreeClaw user's browser logins bound to it.
+
+    Only does anything for a server that drives a browser; everything else is
+    returned untouched, so callers can apply it blindly.
+
+    The mechanism is `_sig()` below: a stdio server's identity includes its
+    overridden environment, so handing two users two different
+    FC_BROWSER_STORAGE_STATE paths gets them two separate child processes
+    holding two separate cookie jars — without a per-user process registry
+    existing anywhere. That isolation is the whole reason this is applied at
+    call time rather than baked into BUILTIN_SERVERS: a storage_state is a live
+    credential, and one shared child would mean every FreeClaw user browsing as
+    whoever signed in last.
+
+    A user with no saved logins gets no variable at all rather than a path to a
+    file that isn't there, so the child's signature (and its process) is shared
+    with every other signed-out user instead of one being spawned per name."""
+    if not server.get("needs_browser"):
+        return server
+    # Imported here rather than at module scope: browser_profiles imports the
+    # logger, and mcp_client is imported by agent.py during startup before that
+    # is necessarily configured.
+    import src.browser_profiles as browser_profiles
+
+    path = browser_profiles.state_path(user)
+    if not path or not os.path.exists(path):
+        return server
+    out = dict(server)
+    out["env"] = {**(server.get("env") or {}), "FC_BROWSER_STORAGE_STATE": path}
+    return out
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "FreeClaw", "version": "1.0"}

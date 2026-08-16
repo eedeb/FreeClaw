@@ -20,6 +20,7 @@ footprint shouldn't grow because a feature *could* be switched on.
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -39,6 +40,8 @@ ERROR = "error"          # fetched but unusable, or the fetch failed
 DOWNLOAD_TIMEOUT = 1800
 # The smoke test either launches in a couple of seconds or is never going to.
 SMOKE_TEST_TIMEOUT = 120
+# A few MB from a mirror that apt has already refreshed.
+XVFB_TIMEOUT = 300
 
 _lock = threading.Lock()
 _state = {"status": None, "message": ""}
@@ -160,12 +163,42 @@ def _install_args():
     return ["install", "--with-deps", "chromium"] if root else ["install", "chromium"]
 
 
+def _install_xvfb():
+    """A virtual display for the human sign-in browser (src/browser_takeover.py).
+
+    Only the sign-in browser needs it: the agent's own browser is headless, but
+    Google and Microsoft refuse to *sign in* a browser they can tell is
+    headless, which is the one thing that flow exists to do. A few MB of apt,
+    and like the Chromium libraries above it needs root — so in the container
+    we fetch it and on a Linux install we don't, and browser_takeover falls
+    back to headless with a message saying which command fixes it.
+
+    Best effort throughout: failing here costs the user Google sign-in, not
+    their browser tools, so it must not turn a working install into an error."""
+    if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        return
+    if shutil.which("Xvfb"):
+        return
+    try:
+        subprocess.run(["apt-get", "install", "-y", "--no-install-recommends", "xvfb"],
+                       capture_output=True, text=True, timeout=XVFB_TIMEOUT, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        logger.warning("Couldn't install Xvfb; the sign-in browser will run headless")
+        return
+    if shutil.which("Xvfb"):
+        logger.info("Xvfb installed for the sign-in browser")
+    else:
+        logger.warning("Xvfb still absent after apt-get; the sign-in browser will run headless")
+
+
 def _install():
     try:
         ok, out = _run(_install_args(), DOWNLOAD_TIMEOUT)
         if not ok:
             _finish(ERROR, f"Couldn't download Chromium: {out[-400:] or 'unknown error'}")
             return
+        # After the Chromium install, which is what runs `apt-get update`.
+        _install_xvfb()
         ok, out = _smoke_test()
         if not ok:
             _finish(ERROR, _missing_deps_hint(out)

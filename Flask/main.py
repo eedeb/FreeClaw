@@ -2,7 +2,12 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.approvals as approvals
+import src.browser_profiles as browser_profiles
 import src.browser_setup as browser_setup
+# Neither of these imports playwright at module scope — it arrives only when a
+# sign-in browser is actually opened, which keeps the web process the same size
+# it was for everyone who never uses one (the reasoning in browser_setup.py).
+import src.browser_takeover as browser_takeover
 import src.cancellation as cancellation
 import src.mcp_client as mcp_client
 import src.session as sessions
@@ -14,6 +19,7 @@ from src.users import (
     activate_session,
 )
 from src.logging_setup import get_logger
+import atexit
 import uuid
 import json
 import re
@@ -147,6 +153,12 @@ try:
 except Exception as e:
     print(f"[freeclaw] Warning: couldn't load tools at startup ({e}).")
     logger.exception("Couldn't load tools at startup")
+
+
+# A sign-in browser holds an X display and a Chromium; Settings -> Restart
+# exits the process, so without this one would be left running with nothing
+# able to reach it.
+atexit.register(browser_takeover.shutdown_all)
 
 
 def current_user():
@@ -499,6 +511,174 @@ def api_delete_bash_approval():
         if not approvals.remove_rule(name, kind, value):
             return jsonify({'error': 'No such rule'}), 404
     return jsonify({'ok': True, **approvals.list_rules(name)})
+
+
+# ── BROWSER SIGN-IN ──────────────────────────────────────────
+#
+# The agent's browser starts signed out of everything, so any site behind a
+# login is a wall it can't get past. These routes drive a second, headful
+# Chromium (src/browser_takeover.py) that the user operates through the web UI
+# — it renders as a stream of screenshots and forwards clicks and keystrokes.
+# On finish, its cookies are saved per user (src/browser_profiles.py) and the
+# agent's next browser call loads them.
+#
+# Every route is behind logged_in() and scoped to current_user(). There is no
+# token-based escape hatch like serve_static's: a frame of this browser may
+# have someone's inbox in it, and a saved session is a live credential.
+
+# Schemes the sign-in browser will open. Anything else — file://, chrome://,
+# view-source: — turns a page meant for logging into websites into a reader for
+# the server's own filesystem, rendered back over HTTP as a screenshot.
+_BROWSER_SCHEMES = ('http://', 'https://')
+
+
+def _takeover_user():
+    """(user, error_response). The browser profile is per FreeClaw user, so
+    there has to be one selected before any of this means anything."""
+    name = current_user()
+    if not name:
+        return None, (jsonify({'error': 'Open a chat first — saved logins belong to a '
+                                        'specific FreeClaw user.'}), 400)
+    return name, None
+
+
+@app.route('/browser-login')
+def browser_login_page():
+    if not logged_in():
+        return redirect(url_for('login'))
+    return render_template('browser_login.html', user=current_user())
+
+
+@app.route('/api/browser-login/start', methods=['POST'])
+def api_browser_login_start():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    url = str((request.get_json(silent=True) or {}).get('url', '')).strip()
+    if not url:
+        return jsonify({'error': 'Body must include a url.'}), 400
+    if '://' not in url:
+        url = 'https://' + url
+    if not url.lower().startswith(_BROWSER_SCHEMES):
+        return jsonify({'error': 'Only http:// and https:// addresses can be opened here.'}), 400
+    if not browser_setup.chromium_present():
+        return jsonify({'error': 'Chromium isn\'t installed yet. Switch the browser server on '
+                                 'in Settings first — that\'s what downloads it.'}), 409
+    try:
+        browser_takeover.start(name, url)
+    except Exception as e:
+        logger.exception('Couldn\'t start the sign-in browser')
+        return jsonify({'error': f'Couldn\'t start the browser: {e}'}), 500
+    return jsonify({'ok': True, **browser_takeover.status(name)})
+
+
+@app.route('/api/browser-login/status', methods=['GET'])
+def api_browser_login_status():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = current_user()
+    if not name:
+        return jsonify({'running': False, 'saved_domains': []})
+    return jsonify(browser_takeover.status(name))
+
+
+@app.route('/api/browser-login/frame', methods=['GET'])
+def api_browser_login_frame():
+    """The latest screenshot. The page requests the next one as soon as this
+    finishes loading, so the frame rate self-clocks to whatever the connection
+    and the browser can actually manage instead of a fixed interval that's
+    wrong on both a LAN and a slow VPS link."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    sess = browser_takeover.get(name)
+    if sess is None or not sess.alive():
+        return jsonify({'error': 'No sign-in browser is open.'}), 404
+    sess.touch()
+    frame = sess.frame()
+    if frame is None:
+        # Still loading the first page — not an error, just nothing to draw.
+        return jsonify({'error': 'No frame yet.'}), 204
+    response = app.response_class(frame, mimetype='image/jpeg')
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/api/browser-login/input', methods=['POST'])
+def api_browser_login_input():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    sess = browser_takeover.get(name)
+    if sess is None or not sess.alive():
+        return jsonify({'error': 'No sign-in browser is open.'}), 404
+    data = request.get_json(silent=True) or {}
+    kind = str(data.get('kind', '')).strip()
+    if kind not in ('click', 'text', 'key', 'scroll', 'nav', 'back', 'reload'):
+        return jsonify({'error': f'Unknown input kind {kind!r}.'}), 400
+    if kind == 'nav':
+        url = str(data.get('url', '')).strip()
+        if '://' not in url:
+            url = 'https://' + url
+        if not url.lower().startswith(_BROWSER_SCHEMES):
+            return jsonify({'error': 'Only http:// and https:// addresses can be opened here.'}), 400
+        data = {**data, 'url': url}
+    sess.send({**data, 'kind': kind})
+    return jsonify({'ok': True})
+
+
+@app.route('/api/browser-login/finish', methods=['POST'])
+def api_browser_login_finish():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    sess = browser_takeover.get(name)
+    if sess is None or not sess.alive():
+        return jsonify({'error': 'No sign-in browser is open.'}), 404
+    saved = sess.finish()
+    if not saved:
+        return jsonify({'error': sess.error or 'Couldn\'t save the logins.'}), 500
+    # The agent's browser child was spawned with the old profile (or none), and
+    # `_sig` keys it on that. Drop the cached children so the next tool call
+    # spawns one that loads what was just saved.
+    mcp_client.clear_cache()
+    agent.refresh_tools()
+    return jsonify({'ok': True, 'saved_domains': browser_profiles.domains(name)})
+
+
+@app.route('/api/browser-login/cancel', methods=['POST'])
+def api_browser_login_cancel():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    sess = browser_takeover.get(name)
+    if sess is not None:
+        sess.cancel()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/browser-login/saved', methods=['DELETE'])
+def api_browser_login_clear():
+    """Forget every site this user's agent is signed into."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    browser_profiles.clear(name)
+    mcp_client.clear_cache()
+    agent.refresh_tools()
+    return jsonify({'ok': True, 'saved_domains': []})
 
 
 @app.route('/reset', methods=['GET', 'POST'])

@@ -50,6 +50,13 @@ services:
       # next to their chats. Surviving `./update-mac.sh` is the whole point —
       # otherwise recreating the container means downloading it all again.
       - playwright-browsers:/app/.playwright
+      # Saved browser logins, one folder per FreeClaw user
+      # (src/browser_profiles.py). A bind mount rather than a named volume,
+      # unlike the Chromium build above: this is small, it's the user's own
+      # data, and it should be as visible and as deletable as their chats are.
+      # Gitignored. Deliberately NOT under Flask/static, which is served over
+      # HTTP — these files are live session credentials.
+      - ../browser-profiles:/app/browser-profiles
       #
       # Deliberately NOT mounted: Flask/.api_enabled, the on/off flag for the
       # OpenAI-compatible API. The flag is the file's *existence*, so creating

@@ -2241,7 +2241,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 
     if command_name in mcp_tool_registry:
         entry = mcp_tool_registry[command_name]
-        server = entry["server"]
+        # Bound to the user here rather than in the registry: mcp_tool_registry
+        # is global and shared by every conversation, while a browser server's
+        # saved logins are per user. `for_user` is a no-op for everything else.
+        server = mcp_client.for_user(entry["server"], approvals.current_user())
         try:
             return mcp_client.call_tool(server, entry["tool"], args_dict)
         except Exception as e:

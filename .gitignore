@@ -33,5 +33,11 @@ __pycache__/
 *.pyc
 venv/
 
+# Saved browser logins, one folder per FreeClaw user (src/browser_profiles.py).
+# Cookies and localStorage for whatever the user signed the agent into — live
+# credentials, and the reason this directory is a sibling of Flask/static/
+# rather than inside it.
+browser-profiles/
+
 # OS cruft
 .DS_Store

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw · Browser sign-in</title>
+  <meta name="theme-color" content="#0d0d0f"/>
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0d0f; --surface: #141416; --border: #222228;
+      --accent: #c8f04a; --accent-dim: #a8cc38; --text: #e8e8ec;
+      --muted: #666672; --err: #e05555;
+      --radius: 4px; --mono: 'IBM Plex Mono', monospace; --sans: 'Syne', sans-serif;
+    }
+    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-tap-highlight-color: transparent; }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px; opacity: 0.35; pointer-events: none; z-index: 0;
+    }
+    .wrap { position: relative; z-index: 1; max-width: 1340px; margin: 0 auto; padding: 20px 18px 80px; }
+
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 26px;
+    }
+    header .logo { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; flex-shrink: 0; }
+    header .logo img { width: 100%; height: 100%; object-fit: cover; }
+    header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+    header .sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+    header .spacer { flex: 1; }
+    .nav-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      border-radius: var(--radius); padding: 7px 12px; font-family: var(--mono); font-size: 12px;
+      cursor: pointer; text-decoration: none; transition: all 0.15s;
+    }
+    .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+    section { margin-bottom: 30px; }
+    .sec-head h2 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+    .sec-desc { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin: 4px 0 14px; }
+
+    .banner {
+      font-family: var(--mono); font-size: 11px; line-height: 1.6;
+      border: 1px solid var(--border); border-left: 2px solid var(--accent-dim);
+      background: var(--surface); border-radius: var(--radius); padding: 9px 12px; margin-bottom: 14px;
+    }
+    .banner.warn { border-left-color: var(--err); }
+    .banner.hidden { display: none; }
+
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type=text] {
+      flex: 1; min-width: 220px; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: var(--radius); padding: 9px 11px; font-family: var(--mono); font-size: 12px;
+    }
+    input[type=text]:focus { outline: none; border-color: var(--accent-dim); }
+    button {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      border-radius: var(--radius); padding: 9px 14px; font-family: var(--mono); font-size: 12px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #10100c; font-weight: 500; }
+    button.primary:hover:not(:disabled) { background: var(--accent-dim); color: #10100c; }
+    button.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+
+    /* The remote page. Fixed aspect from the server viewport so clicks map. */
+    #screen-wrap { margin-top: 14px; display: none; }
+    #screen-wrap.live { display: block; }
+    #screen {
+      display: block; width: 100%; max-width: 1280px; border: 1px solid var(--border);
+      border-radius: var(--radius); background: var(--surface); cursor: crosshair;
+    }
+    #screen:focus { outline: 1px solid var(--accent-dim); }
+    #screen-hint { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 6px; }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+    .chip {
+      font-family: var(--mono); font-size: 11px; color: var(--text);
+      background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px;
+    }
+    .empty { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .status { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; min-height: 16px; }
+    .status.err { color: var(--err); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+    <div>
+      <h1>Browser sign-in</h1>
+      <div class="sub">{% if user %}user: {{ user }}{% else %}no user selected{% endif %}</div>
+    </div>
+    <div class="spacer"></div>
+    <a class="nav-btn" href="/settings">Settings</a>
+    <a class="nav-btn" href="/">Home</a>
+  </header>
+
+  {% if not user %}
+    <div class="banner warn">
+      Saved logins belong to a specific FreeClaw user, and none is selected in this browser
+      session yet. Open a chat from the home page first, then come back.
+    </div>
+  {% else %}
+
+  <section>
+    <div class="sec-head"><h2>Sign the agent in</h2></div>
+    <p class="sec-desc">
+      Opens a real browser on the machine FreeClaw runs on and shows it to you here. Sign in
+      as you normally would; when you press Done, the cookies are saved and the agent uses
+      them the next time it browses.
+    </p>
+    <div class="banner warn">
+      This is a standing grant, not a one-off. Every site you sign into here, the agent can
+      act on as you — reading, posting, buying — on every turn from now on, until you clear it
+      below. Sign in only to what you'd be comfortable handing over.
+    </div>
+
+    <div class="row">
+      <input type="text" id="url" placeholder="example.com/login" autocomplete="off" spellcheck="false"/>
+      <button class="primary" id="open">Open</button>
+      <button id="finish" disabled>Done — save logins</button>
+      <button class="danger" id="cancel" disabled>Cancel</button>
+    </div>
+
+    <div class="banner hidden" id="note"></div>
+    <div class="status" id="status"></div>
+
+    <div id="screen-wrap">
+      <div class="row" style="margin-bottom:8px">
+        <button id="back">&larr; Back</button>
+        <button id="reload">Reload</button>
+        <input type="text" id="addr" placeholder="address" autocomplete="off" spellcheck="false"/>
+        <button id="go">Go</button>
+      </div>
+      <img id="screen" tabindex="0" alt="The remote browser"/>
+      <div id="screen-hint">Click the page to focus it, then type as normal. Scrolling works with the wheel.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Currently signed in</h2></div>
+    <p class="sec-desc">Domains the agent's browser holds cookies for.</p>
+    <div class="chips" id="domains"></div>
+    <button class="danger" id="clear">Forget all saved logins</button>
+  </section>
+
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  const el = (id) => document.getElementById(id);
+  if (!el('open')) return;   // no user selected — nothing to wire up
+
+  // The server renders at this size; clicks are scaled from the displayed
+  // image back into it, so the two must agree.
+  let viewport = { width: 1280, height: 800 };
+  let running = false;
+  let framePending = false;
+
+  const screen = el('screen');
+  const status = el('status');
+
+  function say(text, isError) {
+    status.textContent = text || '';
+    status.classList.toggle('err', !!isError);
+  }
+
+  async function api(path, options) {
+    const res = await fetch('/api/browser-login/' + path, Object.assign({
+      headers: { 'Content-Type': 'application/json' },
+    }, options || {}));
+    let body = {};
+    try { body = await res.json(); } catch (e) { /* 204 and image routes */ }
+    if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    return body;
+  }
+
+  function setRunning(on) {
+    running = on;
+    el('finish').disabled = !on;
+    el('cancel').disabled = !on;
+    el('open').disabled = on;
+    el('screen-wrap').classList.toggle('live', on);
+    if (on && !framePending) nextFrame();
+  }
+
+  // Self-clocking frame loop: ask for the next screenshot as soon as the last
+  // one finished decoding, so a slow link simply gets fewer frames instead of
+  // queueing requests it can't keep up with.
+  function nextFrame() {
+    if (!running) { framePending = false; return; }
+    framePending = true;
+    screen.src = '/api/browser-login/frame?t=' + Date.now();
+  }
+  screen.addEventListener('load', () => setTimeout(nextFrame, 60));
+  screen.addEventListener('error', () => setTimeout(nextFrame, 400));
+
+  function send(command) {
+    if (!running) return;
+    api('input', { method: 'POST', body: JSON.stringify(command) })
+      .catch((e) => say(e.message, true));
+  }
+
+  // ── input forwarding ──
+  screen.addEventListener('click', (e) => {
+    e.preventDefault();
+    screen.focus();
+    const rect = screen.getBoundingClientRect();
+    const scaleX = viewport.width / rect.width;
+    const scaleY = viewport.height / rect.height;
+    send({ kind: 'click',
+           x: (e.clientX - rect.left) * scaleX,
+           y: (e.clientY - rect.top) * scaleY });
+  });
+
+  screen.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    send({ kind: 'scroll', dy: e.deltaY });
+  }, { passive: false });
+
+  const NAMED_KEYS = new Set([
+    'Enter', 'Tab', 'Backspace', 'Delete', 'Escape', 'ArrowUp', 'ArrowDown',
+    'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
+  ]);
+
+  screen.addEventListener('keydown', (e) => {
+    if (!running) return;
+    // Let the user copy/paste with the real clipboard; everything else that
+    // reaches here is meant for the remote page.
+    if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'x', 'a'].includes(e.key.toLowerCase())) return;
+    if (NAMED_KEYS.has(e.key)) {
+      e.preventDefault();
+      send({ kind: 'key', key: e.key });
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      send({ kind: 'text', text: e.key });
+    }
+  });
+
+  screen.addEventListener('paste', (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData('text');
+    if (text) { e.preventDefault(); send({ kind: 'text', text: text }); }
+  });
+
+  // ── controls ──
+  el('open').addEventListener('click', async () => {
+    const url = el('url').value.trim();
+    if (!url) { say('Enter an address first.', true); return; }
+    say('Starting the browser…');
+    try {
+      const info = await api('start', { method: 'POST', body: JSON.stringify({ url: url }) });
+      if (info.viewport) viewport = info.viewport;
+      if (info.note) { el('note').textContent = info.note; el('note').classList.remove('hidden'); }
+      setRunning(true);
+      say('Browser open. Sign in, then press Done.');
+    } catch (e) { say(e.message, true); }
+  });
+
+  el('finish').addEventListener('click', async () => {
+    say('Saving…');
+    try {
+      const info = await api('finish', { method: 'POST' });
+      setRunning(false);
+      renderDomains(info.saved_domains || []);
+      say('Saved. The agent can use these logins now.');
+    } catch (e) { say(e.message, true); }
+  });
+
+  el('cancel').addEventListener('click', async () => {
+    try { await api('cancel', { method: 'POST' }); } catch (e) { /* closing anyway */ }
+    setRunning(false);
+    say('Closed without saving.');
+  });
+
+  el('back').addEventListener('click', () => send({ kind: 'back' }));
+  el('reload').addEventListener('click', () => send({ kind: 'reload' }));
+  el('go').addEventListener('click', () => {
+    const url = el('addr').value.trim();
+    if (url) send({ kind: 'nav', url: url });
+  });
+  el('addr').addEventListener('keydown', (e) => { if (e.key === 'Enter') el('go').click(); });
+
+  el('clear').addEventListener('click', async () => {
+    if (!confirm('Forget every saved login? The agent will be signed out of all of them.')) return;
+    try {
+      const info = await api('saved', { method: 'DELETE' });
+      renderDomains(info.saved_domains || []);
+      say('Cleared.');
+    } catch (e) { say(e.message, true); }
+  });
+
+  function renderDomains(list) {
+    const box = el('domains');
+    box.innerHTML = '';
+    if (!list.length) {
+      const span = document.createElement('span');
+      span.className = 'empty';
+      span.textContent = 'Nothing yet — the agent browses signed out.';
+      box.appendChild(span);
+      return;
+    }
+    list.forEach((domain) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = domain;      // textContent: these come from cookies
+      box.appendChild(chip);
+    });
+  }
+
+  // Keep the address bar and the saved list honest, and notice a session that
+  // timed out or crashed on the server side.
+  async function poll() {
+    try {
+      const info = await api('status');
+      if (info.viewport) viewport = info.viewport;
+      renderDomains(info.saved_domains || []);
+      if (info.running) {
+        if (!running) setRunning(true);
+        if (document.activeElement !== el('addr')) el('addr').value = info.url || '';
+        if (info.error) say(info.error, true);
+      } else if (running) {
+        setRunning(false);
+        say('The sign-in browser closed.');
+      }
+    } catch (e) { /* transient */ }
+    setTimeout(poll, 2000);
+  }
+  poll();
+})();
+</script>
+</body>
+</html>
