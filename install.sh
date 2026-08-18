@@ -186,7 +186,19 @@ _pip_install() {
     success "${label} installed"
 }
 
-_pip_install "PyTorch (CPU)" torch --index-url https://download.pytorch.org/whl/cpu
+# download.pytorch.org/whl/cpu only carries x86_64 builds, and --index-url
+# *replaces* PyPI rather than adding to it. On aarch64 (a Raspberry Pi, most
+# often) that leaves pip with no torch wheel and no PyPI to fall back to. It
+# fails obscurely rather than cleanly: pip goes looking for a source build, and
+# a Pi ships a piwheels index whose flit_core metadata is corrupt, so what
+# surfaces is an unrelated-looking "No matching distribution found for
+# flit_core". Plain PyPI already resolves to a CPU-only aarch64 wheel here.
+# Mirrors the same split in docker/Dockerfile.
+if [[ "$(uname -m)" == "x86_64" ]]; then
+    _pip_install "PyTorch (CPU)" torch --index-url https://download.pytorch.org/whl/cpu
+else
+    _pip_install "PyTorch (CPU)" torch
+fi
 _pip_install "classy-ai" classy-ai
 _pip_install "sentence-transformers" sentence_transformers --no-deps
 _pip_install "web & API libs" -r requirements.txt
