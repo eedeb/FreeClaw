@@ -169,6 +169,20 @@ info "Creating virtual environment"
 python3 -m venv venv
 success "Virtual environment created"
 
+# Debian/Raspberry Pi OS Bookworm bundles pip 23.0.1, and pip 23.0 checks that a
+# wheel's metadata name matches the name that was requested - comparing the raw
+# strings, so "typing_extensions" fails to match "typing-extensions" and "Jinja2"
+# fails to match "jinja2". piwheels, which every Raspberry Pi has configured
+# system-wide, serves those exact spellings. The result is not a clean error: pip
+# discards every candidate, backtracks to whatever ancient version has no floor
+# (torch 2.1.2 paired with a typing-extensions from 2021), and where no such
+# version exists it falls back to a source build whose own build dependencies
+# then fail the identical check. pip 23.1 normalized the comparison. Upgrading
+# first is what makes everything below resolve correctly on a Pi.
+info "Upgrading pip"
+venv/bin/pip install --upgrade pip -q
+success "pip upgraded"
+
 section_gap
 divider
 section_gap
@@ -186,19 +200,29 @@ _pip_install() {
     success "${label} installed"
 }
 
-# download.pytorch.org/whl/cpu only carries x86_64 builds, and --index-url
-# *replaces* PyPI rather than adding to it. On aarch64 (a Raspberry Pi, most
-# often) that leaves pip with no torch wheel and no PyPI to fall back to. It
-# fails obscurely rather than cleanly: pip goes looking for a source build, and
-# a Pi ships a piwheels index whose flit_core metadata is corrupt, so what
-# surfaces is an unrelated-looking "No matching distribution found for
-# flit_core". Plain PyPI already resolves to a CPU-only aarch64 wheel here.
-# Mirrors the same split in docker/Dockerfile.
-if [[ "$(uname -m)" == "x86_64" ]]; then
-    _pip_install "PyTorch (CPU)" torch --index-url https://download.pytorch.org/whl/cpu
-else
-    _pip_install "PyTorch (CPU)" torch
-fi
+# Same, minus -q. torch is the only download big enough (a few hundred MB, onto
+# an SD card, often over a slow link) that a quiet install is indistinguishable
+# from a hang, so let pip's progress bar through for that one.
+_pip_install_loud() {
+    local label="$1"
+    shift
+    info "Installing ${label}..."
+    venv/bin/pip install "$@"
+    success "${label} installed"
+}
+
+# The CPU index is right for every architecture, not just x86_64 - it carries
+# manylinux aarch64 wheels too. That matters more than it used to: PyPI's plain
+# aarch64 torch now pulls the entire CUDA stack (nvidia-cublas, cudnn, nccl,
+# triton - roughly 3GB) to serve Jetson-class boards, none of which a Raspberry
+# Pi can load.
+#
+# --only-binary is a guard, not a preference. Without it a failed resolve doesn't
+# error, it silently becomes a source build of torch, which needs more RAM than a
+# Pi has and grinds for hours before dying. If this does fail outright, the
+# machine is on 32-bit Raspberry Pi OS (uname -m reports armv7l, which has no
+# wheels anywhere) or on a Python newer than torch supports.
+_pip_install_loud "PyTorch (CPU)" torch --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu
 _pip_install "classy-ai" classy-ai
 _pip_install "sentence-transformers" sentence_transformers --no-deps
 _pip_install "web & API libs" -r requirements.txt
