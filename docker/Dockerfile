@@ -6,11 +6,20 @@ FROM python:3.12-slim
 
 # bash + coreutils are here for the agent's bash tool, not for the build.
 # curl/ca-certificates back the search and scraping pipeline.
+#
+# xvfb is the virtual display the *sign-in* browser needs (see
+# src/browser_takeover.py). Baked into the image rather than fetched when the
+# browser server is switched on, unlike Chromium itself: it's tens of MB
+# against Chromium's few hundred, and the runtime path can only work while apt
+# still has package lists — which the cleanup on the last line of this very
+# command deletes. Without it that browser falls back to headless, and headless
+# is the one thing Google and Microsoft sign-in refuse.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash \
         coreutils \
         curl \
         ca-certificates \
+        xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

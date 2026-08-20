@@ -94,10 +94,15 @@ def ensure_display():
     if (os.environ.get("DISPLAY") or "").strip():
         return True, ""
     if not shutil.which("Xvfb"):
+        # install.sh, update.sh and the container image all install this now,
+        # so reaching here means an install that predates that and hasn't been
+        # updated, or a distro whose package manager none of them knew — hence
+        # both the update and the manual command.
         return False, (
             "Xvfb isn't installed, so the sign-in browser is running headless. "
             "Most sites are fine with that, but Google and Microsoft sign-in "
-            "will refuse it. Install it with:  apt-get install -y xvfb"
+            "will refuse it. Run ./update.sh, or install it yourself with:  "
+            "sudo apt-get install -y xvfb"
         )
 
     global _xvfb_proc

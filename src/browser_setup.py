@@ -40,7 +40,9 @@ ERROR = "error"          # fetched but unusable, or the fetch failed
 DOWNLOAD_TIMEOUT = 1800
 # The smoke test either launches in a couple of seconds or is never going to.
 SMOKE_TEST_TIMEOUT = 120
-# A few MB from a mirror that apt has already refreshed.
+# Per apt call — the index refresh, then tens of MB of X server. Generous
+# because this runs unattended in the background and a slow mirror shouldn't
+# cost the user their sign-in browser.
 XVFB_TIMEOUT = 300
 
 _lock = threading.Lock()
@@ -168,10 +170,22 @@ def _install_xvfb():
 
     Only the sign-in browser needs it: the agent's own browser is headless, but
     Google and Microsoft refuse to *sign in* a browser they can tell is
-    headless, which is the one thing that flow exists to do. A few MB of apt,
-    and like the Chromium libraries above it needs root — so in the container
-    we fetch it and on a Linux install we don't, and browser_takeover falls
-    back to headless with a message saying which command fixes it.
+    headless, which is the one thing that flow exists to do. Like the Chromium
+    libraries above it needs root, so this does nothing on a Linux install,
+    where FreeClaw runs as an ordinary user — that install gets Xvfb from
+    install.sh/update.sh instead, and browser_takeover falls back to headless
+    with a message naming the command if it's somehow still missing.
+
+    A backstop, not the main path: the container image now ships Xvfb
+    (docker/Dockerfile), so this only has anything to do inside a container
+    built before that landed and not yet rebuilt.
+
+    `apt-get update` first because that is exactly the case this runs in — the
+    image deletes /var/lib/apt/lists after its own install, so an `apt-get
+    install` on its own can only fail with "unable to locate package". (The
+    Chromium download path happens to run an update via `playwright install
+    --with-deps`, but the already-downloaded path doesn't, and relying on that
+    is what left this silently broken.)
 
     Best effort throughout: failing here costs the user Google sign-in, not
     their browser tools, so it must not turn a working install into an error."""
@@ -180,15 +194,19 @@ def _install_xvfb():
     if shutil.which("Xvfb"):
         return
     try:
-        subprocess.run(["apt-get", "install", "-y", "--no-install-recommends", "xvfb"],
-                       capture_output=True, text=True, timeout=XVFB_TIMEOUT, check=False)
+        for args in (["apt-get", "update"],
+                     ["apt-get", "install", "-y", "--no-install-recommends", "xvfb"]):
+            proc = subprocess.run(args, capture_output=True, text=True,
+                                  timeout=XVFB_TIMEOUT, check=False)
     except (OSError, subprocess.TimeoutExpired):
         logger.warning("Couldn't install Xvfb; the sign-in browser will run headless")
         return
     if shutil.which("Xvfb"):
         logger.info("Xvfb installed for the sign-in browser")
     else:
-        logger.warning("Xvfb still absent after apt-get; the sign-in browser will run headless")
+        logger.warning("Xvfb still absent after apt-get (%s); the sign-in browser "
+                       "will run headless",
+                       ((proc.stderr or proc.stdout or "").strip()[-200:] or "no output"))
 
 
 def _install():

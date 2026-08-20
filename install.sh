@@ -94,6 +94,56 @@ divider() {
     echo -e "   ${DIM}${GRAY}────────────────────────────────────────────────────${RESET}"
 }
 
+# Xvfb — the virtual display FreeClaw's sign-in browser runs on
+# (src/browser_takeover.py). Without it that browser falls back to headless,
+# and headless is precisely what Google and Microsoft sign-in refuse, so a
+# feature that exists to get past a login wall can't. Tens of MB, and the only
+# chance to install it: FreeClaw itself runs as an ordinary user and can't
+# apt-get anything.
+#
+# Never fatal. This is one optional feature, and no package manager problem
+# should cost someone the whole install — so every path here ends in a warning
+# and carries on, and the Settings page says the same thing later if the
+# browser starts up without a display.
+install_xvfb() {
+    if command -v Xvfb &>/dev/null; then
+        success "Xvfb already present (sign-in browser)"
+        return 0
+    fi
+    info "Installing Xvfb (virtual display for the sign-in browser)..."
+    # Every call is `|| true`: `set -e` is on, and a package manager failing
+    # here must not take the install down with it. Whether it worked is decided
+    # below by looking for the binary, which is the only thing that matters.
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq || true
+        sudo apt-get install -y -qq --no-install-recommends xvfb || true
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y -q xorg-x11-server-Xvfb || true
+    elif command -v yum &>/dev/null; then
+        sudo yum install -y -q xorg-x11-server-Xvfb || true
+    elif command -v zypper &>/dev/null; then
+        # By the file it provides, not a package name: openSUSE moved Xvfb from
+        # xorg-x11-server to xorg-x11-server-extra, and the capability resolves
+        # on both.
+        sudo zypper --non-interactive install /usr/bin/Xvfb || true
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm --needed xorg-server-xvfb || true
+    elif command -v apk &>/dev/null; then
+        sudo apk add --quiet xvfb || true
+    else
+        warn "No supported package manager found — skipping Xvfb."
+        warn "Install it yourself if you want to sign the agent into Google/Microsoft."
+        return 0
+    fi
+    if command -v Xvfb &>/dev/null; then
+        success "Xvfb installed"
+    else
+        warn "Couldn't install Xvfb — everything else is fine, but the sign-in"
+        warn "browser will run headless, which Google and Microsoft refuse."
+    fi
+    return 0
+}
+
 # ── Preflight ────────────────────────────────
 
 print_banner
@@ -226,6 +276,9 @@ _pip_install_loud "PyTorch (CPU)" torch --only-binary=:all: --index-url https://
 _pip_install "classy-ai" classy-ai
 _pip_install "sentence-transformers" sentence_transformers --no-deps
 _pip_install "web & API libs" -r requirements.txt
+
+# A system package rather than a wheel, and optional — see install_xvfb().
+install_xvfb
 
 section_gap
 divider

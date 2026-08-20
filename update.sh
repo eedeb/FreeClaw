@@ -42,6 +42,48 @@ section_gap() {
     echo ""
 }
 
+# Xvfb — the virtual display FreeClaw's sign-in browser runs on
+# (src/browser_takeover.py). Here as well as in install.sh because an install
+# made before this existed has no other way to get it: FreeClaw runs as an
+# ordinary user and can't apt-get anything itself, so without this the sign-in
+# browser stays headless forever, and headless is exactly what Google and
+# Microsoft sign-in refuse.
+#
+# A no-op on every run after the first, and never fatal — an update must not
+# fail over an optional feature.
+ensure_xvfb() {
+    command -v Xvfb &>/dev/null && return 0
+    info "Installing Xvfb (virtual display for the sign-in browser)..."
+    # Every call is `|| true`: `set -e` is on, and a package manager problem
+    # must not abort the update. The check afterwards is what decides.
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq || true
+        sudo apt-get install -y -qq --no-install-recommends xvfb || true
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y -q xorg-x11-server-Xvfb || true
+    elif command -v yum &>/dev/null; then
+        sudo yum install -y -q xorg-x11-server-Xvfb || true
+    elif command -v zypper &>/dev/null; then
+        # By the file it provides, not a package name: openSUSE moved Xvfb from
+        # xorg-x11-server to xorg-x11-server-extra, and the capability resolves
+        # on both.
+        sudo zypper --non-interactive install /usr/bin/Xvfb || true
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm --needed xorg-server-xvfb || true
+    elif command -v apk &>/dev/null; then
+        sudo apk add --quiet xvfb || true
+    else
+        warn "No supported package manager — skipping Xvfb (sign-in browser stays headless)."
+        return 0
+    fi
+    if command -v Xvfb &>/dev/null; then
+        success "Xvfb installed — the sign-in browser can now run headful"
+    else
+        warn "Couldn't install Xvfb; the sign-in browser will run headless."
+    fi
+    return 0
+}
+
 # ── Header ───────────────────────────────────
 
 echo ""
@@ -132,6 +174,9 @@ section_gap
 info "Syncing dependencies..."
 venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
 success "Dependencies up to date"
+
+# System package, not a wheel, and only installed once — see ensure_xvfb().
+ensure_xvfb
 
 section_gap
 divider
