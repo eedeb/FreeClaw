@@ -312,9 +312,11 @@ def main():
     with silence():
         # Tools are only (re)loaded by agent.reset(), which activate_session()
         # skips for a returning user with an existing conversation — so load
-        # them explicitly here to make sure they're always available.
+        # them explicitly here to make sure they're always available. For this
+        # user by name: which MCP servers are switched on is their choice, so
+        # the catalogue to warm is theirs and not the install's.
         try:
-            agent.refresh_tools()
+            agent.refresh_tools(username)
         except Exception:
             pass
         # interactive=True: there's a terminal here that can answer a bash

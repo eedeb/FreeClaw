@@ -36,9 +36,11 @@ which endpoint is rate-limited and which one 400s on `stream_options` is the
 same answer for every user. Moving them here would make every new conversation
 re-learn each provider's quirks by burning a wasted request.
 
-The tool catalogue (`tools`, `mcp_tool_registry`) stays global for the same
-reason: MCP servers are configured per install, and a stdio server is one child
-process shared by everyone, not one per conversation.
+The tool catalogue stays out of here too, though it isn't quite process-wide
+any more: `agent.py` keys it by FreeClaw *user*, since which MCP servers are
+switched on is each user's own choice. Still not per conversation — a user's
+two conversations are offered the same tools, and the stdio child behind a
+server is one process shared by all of them.
 """
 
 import contextlib

@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 from datetime import datetime
 
@@ -109,7 +110,22 @@ def _static_url(directory, filename):
     return link
 
 
+# The catalogue of tools offered to the model, per FreeClaw user.
+#
+# It can't be one process-wide list any more: which MCP servers are switched on
+# is a per-user choice (src/mcp_client.py, "per-user selection"), so two people
+# taking a turn at the same moment have to be offered different tools. The
+# built-in tools are identical for everyone — only the MCP part differs — so a
+# catalogue is built per user and cached until something changes it.
+#
+# `tools` and `mcp_tool_registry` remain as the no-user catalogue: what a
+# caller with no FreeClaw user behind it gets (the fallback Session), and what
+# refresh_tools() warms at startup.
 tools = []
+
+# user (or None) -> {"tools": [...], "registry": {...}}
+_catalogues = {}
+_catalogues_lock = threading.Lock()
 
 # LLM providers are user-defined in Settings → Providers and persist in .env
 # as five parallel JSON lists — the same storage shape MCP servers use (see
@@ -967,7 +983,9 @@ def _user_facing_error(failures):
 
 # Maps the sanitized function name we expose to the model (e.g.
 # "mcp_github_create_issue") back to the (server, real tool name) needed to
-# actually invoke it. Rebuilt by load_mcp_tools().
+# actually invoke it. Built per user by load_mcp_tools() and looked up through
+# registry_for(); this one is the no-user catalogue's, kept as a module
+# attribute for the same reason `tools` is.
 mcp_tool_registry = {}
 
 
@@ -1323,10 +1341,11 @@ def reset(tts=False, refresh=True, subagent=False):
     """Start a fresh conversation for the current static_dir, seeded with
     that user's context.md.
 
-    `refresh=False` skips rebuilding the tool list. Every MCP server is
-    re-listed by refresh_tools(), which is network I/O and child-process work
-    — fine once per real conversation, wasteful for a sub-agent that spawns
-    inside a turn and wants the catalogue the parent already has.
+    `refresh=False` skips building the tool list. The first build for a user
+    lists every MCP server they have on, which is network I/O and
+    child-process work — fine once per real conversation, wasteful for a
+    sub-agent that spawns inside a turn and wants the catalogue the parent
+    already has.
 
     `subagent=True` adds the sub-agent note. It goes in here, with `tts`, rather
     than being appended to the finished message: everything below
@@ -1399,7 +1418,11 @@ almost never the fix, even when the request is open-ended.
     # The pinned window index refers to a conversation that no longer exists.
     _clear_turn_prefix()
     if refresh:
-        refresh_tools()
+        # Warms this user's catalogue rather than dropping everyone's: a reset
+        # is not a config change, and anything that *is* one — a server added,
+        # removed or toggled — invalidates the cache itself, so a fresh
+        # conversation no longer has to re-list every server to be current.
+        _catalogue(_tools_user())
 
 
 # Canonical timestamp the add_ping tool asks the model for. Both the add_ping
@@ -1842,18 +1865,21 @@ def _sanitize_tool_name(name):
     return cleaned[:60]
 
 
-def load_mcp_tools():
-    """Connect to each MCP server configured in .env, fetch its tools, and
-    return them as OpenAI-style function definitions. Also (re)builds
-    mcp_tool_registry, which maps the function name exposed to the model back
-    to the (server, real tool name) needed to actually call it.
+def load_mcp_tools(user=None):
+    """Connect to each MCP server `user` has switched on, fetch its tools, and
+    return `(definitions, registry)` — the tools as OpenAI-style function
+    definitions, and the mapping from the function name exposed to the model
+    back to the (server, real tool name) needed to actually call it.
+
+    `user` is a FreeClaw user name, and decides which servers are in play: the
+    on/off choice is theirs, not the install's (see mcp_client.read_servers).
+    None means the install defaults, for a caller with no user behind it.
 
     A single unreachable server is logged and skipped rather than taking down
     the whole tool list."""
-    global mcp_tool_registry
     registry = {}
     out = []
-    for server in mcp_client.read_servers():
+    for server in mcp_client.read_servers(user):
         if not server.get("enabled", True):
             continue
         # A server that drives a browser can list its tools perfectly well
@@ -1894,18 +1920,90 @@ def load_mcp_tools():
                 },
             })
             registry[fn_name] = {"server": server, "tool": real_name}
-    mcp_tool_registry = registry
-    return out
+    return out, registry
 
 
-def refresh_tools():
-    """Rebuild the full tool list = built-in tools + any MCP server tools.
-    Safe to call anytime (e.g. after the MCP server list changes); does not
-    touch the conversation or the LLM client."""
-    global tools
-    tools = (build_file_tools() + build_context_tools() + build_search_tools()
-             + build_utility_tools() + build_time_tools() + load_mcp_tools())
-    return tools
+def _build_catalogue(user):
+    """One user's tool list and MCP registry, built from scratch."""
+    mcp_tools, registry = load_mcp_tools(user)
+    return {
+        "tools": (build_file_tools() + build_context_tools() + build_search_tools()
+                  + build_utility_tools() + build_time_tools() + mcp_tools),
+        "registry": registry,
+    }
+
+
+def _catalogue(user):
+    """`user`'s catalogue, built on first use and cached until something
+    invalidates it.
+
+    Cached because agent_stream re-derives the tool set on every hop of a turn,
+    and building it walks every server the user has on. mcp_client caches each
+    server's tools/list itself, so what's saved here is mostly dict-building —
+    but it's on the hot path, so it's worth paying once.
+
+    Two threads racing to build the same user's catalogue both build one and
+    the second wins; that's cheaper than holding a lock across what can be
+    network I/O, and the result is the same list either way."""
+    entry = _catalogues.get(user)
+    if entry is None:
+        entry = _build_catalogue(user)
+        with _catalogues_lock:
+            _catalogues[user] = entry
+    return entry
+
+
+def tools_for(user):
+    """The tools to offer `user`'s turn."""
+    return _catalogue(user)["tools"]
+
+
+def registry_for(user):
+    """`user`'s map from exposed function name to the MCP server and tool
+    behind it. Only names in here can be dispatched to MCP for them, which is
+    what stops a server one user switched off from being reachable by them at
+    all rather than merely being left out of the list they were shown."""
+    return _catalogue(user)["registry"]
+
+
+def invalidate_tools(user=None):
+    """Drop the cached catalogue for `user` — every user's if None — so the
+    next turn rebuilds it. What a per-user on/off toggle calls: one person
+    switching a server off shouldn't cost everyone else a re-list."""
+    with _catalogues_lock:
+        if user is None:
+            _catalogues.clear()
+        else:
+            _catalogues.pop(user, None)
+
+
+def refresh_tools(user=None):
+    """Rebuild the tool catalogue = built-in tools + the MCP tools of every
+    server that's on. Safe to call anytime; does not touch the conversation or
+    the LLM client.
+
+    Every user's cached catalogue is dropped, not just `user`'s: what calls
+    this is a change to the install — a server added or removed, a browser
+    login saved, the Chromium download finishing — and those change what's on
+    offer for everybody. A change that's one person's alone goes through
+    invalidate_tools() instead."""
+    global tools, mcp_tool_registry
+    invalidate_tools()
+    entry = _catalogue(user)
+    if user is None:
+        tools, mcp_tool_registry = entry["tools"], entry["registry"]
+    return entry["tools"]
+
+
+def _tools_user():
+    """The FreeClaw user whose MCP selection this thread's turn should see.
+
+    The approval user rather than the Session's name: a sub-agent runs in a
+    Session named "<parent>:sub" but belongs to — and is answerable for — the
+    same person, so it gets offered the same servers. Falls back to the
+    Session's own name for an entry point that never declared one, and to None
+    (the install defaults) for the fallback Session."""
+    return approvals.current_user() or _sess().name
 
 
 def _filename_arg(args_dict, take_basename=False):
@@ -2239,10 +2337,11 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     if command_name == SUBAGENT_TOOL_NAME:
         return _run_subagent(args_dict.get('task'))
 
-    if command_name in mcp_tool_registry:
-        entry = mcp_tool_registry[command_name]
-        # Bound to the user here rather than in the registry: mcp_tool_registry
-        # is global and shared by every conversation, while a browser server's
+    registry = registry_for(_tools_user())
+    if command_name in registry:
+        entry = registry[command_name]
+        # Bound to the user here rather than in the registry: an entry holds
+        # the server as configured for the install, while a browser server's
         # saved logins are per user. `for_user` is a no-op for everything else.
         server = mcp_client.for_user(entry["server"], approvals.current_user())
         try:
@@ -2279,11 +2378,12 @@ _DEFAULT_TAG_SETTINGS = (7, 1.0, 'all')  # Coding, Writing, List, Suggest, Utili
 def _apply_depth_limit(turn_tools, sess):
     """Withhold the sub-agent tool from a conversation already at the depth cap.
 
-    Filtered here rather than in build_utility_tools() because the full `tools`
-    list is built once, process-wide, by refresh_tools() — it has no idea which
-    conversation is about to be handed it. This runs before the tool set is
-    pinned for the turn, so the continuations after each tool hop resend exactly
-    the same list and the cached prefix still matches."""
+    Filtered here rather than in build_utility_tools() because a catalogue is
+    built per user, not per conversation — it has no idea which of that user's
+    conversations is about to be handed it, or how deep that one is. This runs
+    before the tool set is pinned for the turn, so the continuations after each
+    tool hop resend exactly the same list and the cached prefix still
+    matches."""
     if turn_tools is None or sess.depth < MAX_SUBAGENT_DEPTH:
         return turn_tools
     return [t for t in turn_tools
@@ -2348,7 +2448,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # Default model id — any provider with its own model set overrides it.
     model = "openai/gpt-oss-120b"
     temp = 1
-    check_tools = tools
+    check_tools = tools_for(_tools_user())
     if user_input and system_input:
         raise Exception("You cannot have both user input and system input at the same time.")
     elif user_input:

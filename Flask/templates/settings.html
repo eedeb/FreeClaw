@@ -100,6 +100,17 @@
       padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
     }
     .form select:focus { outline: none; border-color: var(--accent-dim); }
+    /* "Enabled for: [user]" — the row that says whose switches the list below
+       belongs to. Sits outside .form (it isn't part of adding anything), so it
+       restates the select styling rather than inheriting it. */
+    .who { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; flex-wrap: wrap; }
+    .who select {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
+      padding: 6px 9px; font-family: var(--mono); font-size: 12px;
+    }
+    .who select:focus { outline: none; border-color: var(--accent-dim); }
+    .who .note { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
 
@@ -235,6 +246,13 @@
       Connect external <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" style="color:var(--accent-dim)">Model Context Protocol</a> servers to give the agent new tools.
       <b>Remote (HTTP)</b> talks to a hosted server over a URL. <b>Local (stdio)</b> runs a command on this
       machine and speaks to it over its stdin/stdout — which is how most published MCP servers ship.
+      Adding and removing a server covers the whole install; <b>switching one on is per user</b>, so each
+      person's agent carries only the tools they actually want.
+    </div>
+    <div class="who">
+      <span class="form-label">Enabled for</span>
+      <select id="mcp-user"></select>
+      <span id="mcp-user-note" class="note"></span>
     </div>
     <div id="mcp-list" class="card-list"></div>
     <div class="form">
@@ -675,10 +693,37 @@
 
   // ── MCP servers ──
   const mcpList = $('mcp-list'), mcpMsg = $('mcp-msg');
+  const mcpUserSel = $('mcp-user'), mcpUserNote = $('mcp-user-note');
   // Set while a builtin's browser is downloading, so the card can refresh
   // itself without the user reloading the page. Cleared on every render so
   // polls can't stack up.
   let mcpPoll = null;
+  // Whose switches are on screen. Which servers exist is install-wide, but
+  // each one being on or off belongs to a user — so every call below carries
+  // this, and the server answers with the name it actually used (null when
+  // there's no user to speak of yet, e.g. a fresh install).
+  let mcpUser = null;
+
+  function renderMcpUsers(users, user) {
+    const names = users || [];
+    // Falling back to the first user rather than leaving nobody selected: with
+    // no chat open this browser session has no current user, and a picker
+    // showing a name while the switches under it did nothing would be a lie.
+    mcpUser = user || names[0] || null;
+    mcpUserSel.innerHTML = '';
+    names.forEach(n => {
+      const opt = document.createElement('option');
+      opt.value = n; opt.textContent = n;
+      if (n === mcpUser) opt.selected = true;
+      mcpUserSel.appendChild(opt);
+    });
+    // No users yet — the list below is still worth showing (it's what a new
+    // user will start with), but there's nobody to switch anything on for.
+    mcpUserSel.hidden = names.length === 0;
+    mcpUserNote.textContent = names.length === 0
+      ? 'no users yet — start a chat to create one'
+      : '';
+  }
 
   // The line under a server's name: what it connects to for one the user
   // added, and what it's for — plus how its one-time browser download is
@@ -723,6 +768,8 @@
         <input class="toggle" type="checkbox" ${enabled ? 'checked' : ''} title="${enabled ? 'Disable' : 'Enable'}"/>
         ${s.builtin ? '' : '<button class="del" type="button">remove</button>'}`;
       const toggle = card.querySelector('.toggle');
+      // Nothing to switch it on *for* until a user exists.
+      toggle.disabled = !mcpUser;
       toggle.addEventListener('change', () => toggleMcp(s.name, toggle.checked, card, toggle));
       const del = card.querySelector('.del');
       if (del) wireDelete(del, () => deleteMcp(s.name));
@@ -735,12 +782,20 @@
     }
   }
 
+  // The query string every MCP call needs: whose switches this is about. Left
+  // off until we know, so the first load takes the server's answer (whoever
+  // this browser session is chatting as) rather than guessing.
+  function mcpUserQuery(prefix) {
+    return mcpUser ? `${prefix}user=${encodeURIComponent(mcpUser)}` : '';
+  }
+
   async function loadMcp(quiet) {
     if (!quiet) mcpList.innerHTML = '<div class="empty">loading…</div>';
     try {
-      const res = await fetch('/api/mcp');
+      const res = await fetch(`/api/mcp${mcpUserQuery('?')}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcpUsers(data.users, data.user);
       renderMcp(data.servers);
     } catch (e) { mcpList.innerHTML = `<div class="empty" style="color:var(--err)">${escapeHtml(e.message)}</div>`; }
   }
@@ -769,10 +824,13 @@
     try {
       const res = await fetch('/api/mcp', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, url, token, transport, command })
+        // `user` doesn't scope the add — that's install-wide — it just keeps
+        // the refreshed list showing the same person's switches.
+        body: JSON.stringify({ name, url, token, transport, command, user: mcpUser })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcpUsers(data.users, data.user);
       renderMcp(data.servers);
       $('mcp-name').value = ''; $('mcp-url').value = ''; $('mcp-token').value = ''; $('mcp-command').value = '';
       if (data.warning) showMsg(mcpMsg, data.warning, false);
@@ -784,27 +842,36 @@
   async function toggleMcp(name, enabled, card, toggle) {
     toggle.disabled = true;
     try {
-      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled, user: mcpUser }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       // Re-render rather than just recolouring the card: switching a builtin
       // on can have started a browser download, and that belongs on screen
       // straight away rather than at the next page load.
+      renderMcpUsers(data.users, data.user);
       renderMcp(data.servers);
       if (data.warning) showMsg(mcpMsg, data.warning, false);
     } catch (e) { toggle.checked = !enabled; showMsg(mcpMsg, e.message, false); }
-    finally { toggle.disabled = false; }
+    // Back to whatever it was before the click, which is off entirely when
+    // there's no user to be switching anything on for.
+    finally { toggle.disabled = !mcpUser; }
   }
 
   async function deleteMcp(name) {
     try {
-      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/mcp/${encodeURIComponent(name)}${mcpUserQuery('?')}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderMcpUsers(data.users, data.user);
       renderMcp(data.servers);
     } catch (e) { showMsg(mcpMsg, e.message, false); }
   }
 
+  mcpUserSel.addEventListener('change', () => {
+    mcpUser = mcpUserSel.value || null;
+    mcpMsg.style.display = 'none';
+    loadMcp();
+  });
   $('mcp-add').addEventListener('click', addMcp);
   $('mcp-transport').addEventListener('change', syncMcpTransport);
   $('mcp-token').addEventListener('keydown', e => { if (e.key === 'Enter') addMcp(); });

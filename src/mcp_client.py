@@ -20,6 +20,10 @@ the web UI. `read_servers()` parses those into
 old behaviour — no MCP_ENABLED means enabled, no MCP_TRANSPORTS means http —
 so an existing install is untouched.
 
+Which of those servers is switched *on* is a per-FreeClaw-user choice stored
+outside `.env` — see "per-user selection" below, and pass `read_servers(user)`
+to get one person's view of the list.
+
 `list_tools()` / `call_tool()` dispatch on the transport, so callers never have
 to care which kind of server they're holding.
 """
@@ -174,6 +178,129 @@ _session_cache = {}
 _http = requests.Session()
 
 
+# ── per-user selection ───────────────────────────────────────
+#
+# *Which* servers exist is an install-wide decision — someone adds "composio"
+# once, with its URL and its token, and it's there for everyone to see. Whether
+# a given server is switched *on* is not: one FreeClaw user may want the
+# browser and another may not want their agent carrying twenty extra tools it
+# never uses. So the on/off choice is stored per user, and the `enabled` flag
+# in `.env` is demoted to the default a user inherits until they make a choice
+# of their own — which is what keeps an existing install's servers on for
+# everybody after an update, and keeps a builtin shipping switched off.
+#
+# The choices live in `Flask/static/<user>/.mcp_enabled.json`, alongside that
+# user's bash approval rules and there for the same two reasons: outside
+# `static/<user>/files/`, so the agent's own file tools can't rewrite the list
+# of tools it's allowed, and still under `static/`, which the Docker install
+# bind-mounts so a choice survives `update.sh` recreating the container.
+
+PREFS_FILENAME = ".mcp_enabled.json"
+
+# Computed the way src/approvals.py computes it rather than imported from
+# src/users.py: users.py imports agent.py and agent.py imports this module, so
+# reaching back into users.py would close an import cycle.
+STATIC_ROOT = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Flask", "static")
+)
+
+# Serialises the read-modify-write in set_enabled(). Contended only between two
+# people in Settings at once, so one lock for every user is plenty.
+_prefs_lock = threading.Lock()
+
+
+def prefs_path(user):
+    """Where `user`'s on/off choices live. None for a name that isn't a single
+    path segment — this is the one place a bad user name could otherwise steer
+    a write out of the static tree."""
+    if not user:
+        return None
+    if os.sep in user or (os.altsep and os.altsep in user) or user in (".", ".."):
+        return None
+    return os.path.join(STATIC_ROOT, user, PREFS_FILENAME)
+
+
+def read_prefs(user):
+    """`{server name: bool}` for the servers this user has actually chosen
+    for. A server missing from the mapping hasn't been chosen either way and
+    takes the install default, so this is deliberately not a complete list.
+
+    An unreadable or corrupt file is treated as "no choices made". The failure
+    mode is then a user seeing the install defaults rather than their tools
+    disappearing mid-conversation."""
+    path = prefs_path(user)
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        logger.exception("Couldn't read MCP choices for user=%r; using defaults", user)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: bool(v) for k, v in data.items() if isinstance(k, str)}
+
+
+def set_enabled(user, name, enabled):
+    """Record that `user` wants server `name` switched on or off, and return
+    their full mapping. Writes via a temp file and a rename so a reader never
+    catches the file half-written."""
+    path = prefs_path(user)
+    if not path:
+        raise ValueError(f"Not a valid user name: {user!r}")
+    with _prefs_lock:
+        prefs = read_prefs(user)
+        prefs[name] = bool(enabled)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(prefs, f)
+        os.replace(tmp, path)
+    logger.info("MCP server %r switched %s for user=%r",
+                name, "on" if enabled else "off", user)
+    return prefs
+
+
+def forget_everywhere(name):
+    """Drop every user's choice about `name` — for a server being removed from
+    the install. Without this, adding a server back under a name someone had
+    once switched off would silently come back switched off for them, with
+    nothing on screen explaining why."""
+    if not os.path.isdir(STATIC_ROOT):
+        return
+    for user in os.listdir(STATIC_ROOT):
+        path = prefs_path(user)
+        if not path or not os.path.exists(path):
+            continue
+        with _prefs_lock:
+            prefs = read_prefs(user)
+            if name not in prefs:
+                continue
+            prefs.pop(name)
+            try:
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(prefs, f)
+                os.replace(tmp, path)
+            except OSError:
+                logger.exception("Couldn't drop MCP choice %r for user=%r", name, user)
+
+
+def _apply_user_prefs(servers, user):
+    """`servers` with each `enabled` flag resolved against `user`'s choices.
+    Copies rather than mutating: the same dicts are handed to callers holding
+    the install-wide view, which must keep the defaults it's about to write
+    back to `.env`."""
+    if not user:
+        return servers
+    prefs = read_prefs(user)
+    if not prefs:
+        return servers
+    return [{**s, "enabled": prefs[s["name"]]} if s.get("name") in prefs else s
+            for s in servers]
+
+
 # ── .env storage (read + serialize) ──────────────────────────
 
 def parse_env_list(raw):
@@ -190,7 +317,7 @@ def parse_env_list(raw):
     return val if isinstance(val, list) else []
 
 
-def read_servers():
+def read_servers(user=None):
     """The configured MCP servers, read fresh from `.env` on every call so
     runtime edits need no restart.
 
@@ -201,9 +328,16 @@ def read_servers():
 
     The builtins (BUILTIN_SERVERS) are always present in the result, whether or
     not `.env` exists yet — a fresh install has them in the list from the first
-    page load, switched off."""
+    page load, switched off.
+
+    `user` resolves each `enabled` flag against that FreeClaw user's own
+    choices (see "per-user selection" above), which is what a turn wants: the
+    servers to offer *this* person's agent. Leave it out for the install-wide
+    view — what the add and remove paths want, since they write the list
+    straight back to `.env` and must not persist one user's choice as
+    everyone's default."""
     if not os.path.exists(ENV_PATH):
-        return _merge_builtins([])
+        return _apply_user_prefs(_merge_builtins([]), user)
     env = dotenv_values(ENV_PATH)
     names = parse_env_list(env.get(NAMES_KEY))
     urls = parse_env_list(env.get(URLS_KEY))
@@ -231,7 +365,7 @@ def read_servers():
             "transport": transport,
             "command": command,
         })
-    return _merge_builtins(servers)
+    return _apply_user_prefs(_merge_builtins(servers), user)
 
 
 def _merge_builtins(servers):
@@ -769,10 +903,51 @@ def _stringify_result(result):
 
 
 def clear_cache():
-    """Drop every cached tool list and live session. Called whenever the
-    server list changes, so an edited or removed server is re-connected from
-    scratch — which for stdio means killing the child process it was using
-    rather than leaving it running with no way to reach it."""
+    """Drop every cached tool list and live session. Called whenever something
+    changes that could affect any server — so each is re-connected from
+    scratch, which for stdio means killing the child process it was using
+    rather than leaving it running with no way to reach it.
+
+    Scorched earth, and every user's servers go with it. When only one server
+    is actually affected — added, removed, or switched off by the last user who
+    had it on — `release()` below does the same job to that server alone."""
     _tool_cache.clear()
     _session_cache.clear()
     shutdown_stdio_servers()
+
+
+def release(server):
+    """Drop everything cached for one server: its tool list, its HTTP session,
+    and — for stdio — every child process running its command.
+
+    *Every* child, not one: a server that drives a browser is spawned once per
+    FreeClaw user, since each child carries that user's logins in its
+    environment (see `for_user`), so one server can have several processes
+    behind it. They're matched on the command rather than the full signature
+    for exactly that reason.
+
+    Used where clear_cache() would be too broad — now that a server can be on
+    for one user and off for another, tearing down every connection in the
+    process because one person flipped one switch would interrupt whatever
+    everyone else's agent was in the middle of."""
+    stdio = (server.get("transport") or HTTP) == STDIO
+    command = server.get("command") or ""
+
+    def mine(sig):
+        if sig[0] != (STDIO if stdio else HTTP):
+            return False
+        return sig[1] == (command if stdio else server.get("url"))
+
+    for cache in (_tool_cache, _session_cache):
+        for sig in [k for k in cache if mine(k)]:
+            cache.pop(sig, None)
+    if not stdio:
+        return
+    with _stdio_registry_lock:
+        sigs = [k for k in _stdio_procs if mine(k)]
+        procs = [_stdio_procs.pop(sig) for sig in sigs]
+    for proc in procs:
+        try:
+            proc.shutdown()
+        except Exception:
+            logger.exception("Couldn't shut down stdio MCP process %r", proc.command)

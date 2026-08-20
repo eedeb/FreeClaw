@@ -1165,15 +1165,40 @@ def _mcp_server_public(s):
     return out
 
 
+def _mcp_user(explicit=None):
+    """Whose on/off choices a request is about: the ?user= / "user" it named,
+    else whoever this browser session is chatting as.
+
+    Which servers *exist* is install-wide, but whether each is switched on is
+    that user's own (src/mcp_client.py, "per-user selection") — so Settings
+    lets you pick which user you're setting up rather than making you open
+    their chat first. Returns (name, error_response); name is None with no
+    error when nobody is selected at all, which is a readable list of the
+    install defaults and no toggles, not a failure."""
+    raw = explicit if explicit is not None else request.args.get('user')
+    if raw:
+        name = safe_username(raw)
+        if not name or not user_exists(name):
+            return None, (jsonify({'error': f'No such user: {raw}'}), 404)
+        return name, None
+    return current_user(), None
+
+
 @app.route('/api/mcp', methods=['GET'])
 def api_list_mcp():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _mcp_user()
+    if error:
+        return error
     try:
-        servers = mcp_client.read_servers()
+        servers = mcp_client.read_servers(name)
     except Exception as e:
         return _log_and_error(e, message=str(e))
-    return jsonify({'servers': [_mcp_server_public(s) for s in servers]})
+    # `user` and `users` so the Settings list can say — and let you change —
+    # whose switches are on screen.
+    return jsonify({'servers': [_mcp_server_public(s) for s in servers],
+                    'user': name, 'users': list_users()})
 
 
 @app.route('/api/mcp', methods=['POST'])
@@ -1181,6 +1206,12 @@ def api_add_mcp():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json(silent=True) or {}
+    # Adding is install-wide; `user` only says whose switches the list coming
+    # back should show, so the Settings page re-renders as the same person it
+    # was already looking at.
+    view_user, bad_user = _mcp_user(data.get('user'))
+    if bad_user:
+        return bad_user
     name = str(data.get('name', '')).strip()
     url = str(data.get('url', '')).strip()
     token = str(data.get('token', '')).strip()
@@ -1230,7 +1261,12 @@ def api_add_mcp():
         # the user gets immediate feedback instead of a silent no-op. For
         # stdio this is also what spawns the process for the first time, so a
         # bad command line surfaces here rather than mid-conversation.
-        mcp_client.clear_cache()
+        #
+        # release() rather than clear_cache(): only this name's cache can be
+        # stale (an earlier server that used the same URL or command), and
+        # dropping every other server's live connection would interrupt
+        # whatever anyone else's agent is in the middle of.
+        mcp_client.release(entry)
         error = None
         tool_count = 0
         try:
@@ -1241,47 +1277,80 @@ def api_add_mcp():
                              name, mcp_client.describe(entry))
         agent.refresh_tools()
 
-    resp = {'ok': True, 'servers': [_mcp_server_public(s) for s in servers], 'tool_count': tool_count}
+    resp = {'ok': True, 'user': view_user, 'users': list_users(),
+            'servers': [_mcp_server_public(s)
+                        for s in mcp_client.read_servers(view_user)],
+            'tool_count': tool_count}
     if error:
         resp['warning'] = f"Saved, but couldn't reach the server yet: {error}"
     return jsonify(resp)
 
 
+def _enabled_for_anyone(name):
+    """Whether any FreeClaw user still has server `name` switched on."""
+    for user in list_users():
+        match = next((s for s in mcp_client.read_servers(user)
+                      if s.get('name') == name), None)
+        if match is not None and match.get('enabled', True):
+            return True
+    return False
+
+
 @app.route('/api/mcp/<name>', methods=['PATCH'])
 def api_toggle_mcp(name):
-    """Enable/disable a server without touching its saved URL/token — a
-    disabled server's tools are left out of the agent's tool list (see
-    load_mcp_tools in agent.py) but its config stays in .env untouched, so
-    re-enabling it later needs no re-entering of credentials."""
+    """Switch a server on or off **for one user**, without touching its saved
+    URL/token — a server that's off is left out of that user's tool list (see
+    load_mcp_tools in agent.py) while its config stays in .env untouched, so
+    switching it back on later needs no re-entering of credentials.
+
+    Per user, not per install: two people sharing a FreeClaw shouldn't have to
+    share a tool set, and one of them wanting the browser shouldn't put twenty
+    browser tools in front of the other's model on every turn. The `enabled`
+    flag in .env stays what a user inherits until they choose, so nothing here
+    writes it."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json(silent=True) or {}
     if 'enabled' not in data:
         return jsonify({'error': "Body must include 'enabled'."}), 400
     enabled = bool(data.get('enabled'))
-    with config_lock:
-        servers = mcp_client.read_servers()
-        match = next((s for s in servers if s.get('name') == name), None)
-        if match is None:
-            return jsonify({'error': 'No such MCP server'}), 404
-        match['enabled'] = enabled
-        try:
-            _write_env(mcp_client.servers_to_env(servers))
-        except Exception as e:
-            return _log_and_error(e, message=f'Could not save: {e}')
-        # Disabling a stdio server has to actually stop its child process, not
-        # just hide its tools — clear_cache() is what shuts those down.
-        mcp_client.clear_cache()
-        # Enabling a browser-backed server is what triggers its one-time
-        # Chromium download, which is why FreeClaw's own install stays small.
-        # start() returns straight away and the work continues on a background
-        # thread; the card polls /api/mcp for the result. Its tools stay out of
-        # the agent's list until that lands (see load_mcp_tools).
-        browser = None
-        if enabled and match.get('needs_browser'):
-            browser = browser_setup.start()
-        agent.refresh_tools()
-    resp = {'ok': True, 'servers': [_mcp_server_public(s) for s in servers]}
+    user, error = _mcp_user(data.get('user'))
+    if error:
+        return error
+    if not user:
+        return jsonify({'error': 'Pick which user to switch this on for.'}), 400
+
+    # Not under config_lock: that one guards read-modify-write of .env, and
+    # this writes a per-user file instead (mcp_client.set_enabled takes its
+    # own lock). Two users toggling at once no longer contend at all.
+    servers = mcp_client.read_servers(user)
+    match = next((s for s in servers if s.get('name') == name), None)
+    if match is None:
+        return jsonify({'error': 'No such MCP server'}), 404
+    try:
+        mcp_client.set_enabled(user, name, enabled)
+    except Exception as e:
+        return _log_and_error(e, message=f'Could not save: {e}')
+    match['enabled'] = enabled
+
+    # Switching a stdio server off has to actually stop its child process, not
+    # just hide its tools — but only once nobody is left using it. Ending
+    # someone else's server because this user stopped wanting it would break a
+    # conversation they're in the middle of.
+    if not enabled and not _enabled_for_anyone(name):
+        mcp_client.release(match)
+    # Switching a browser-backed server on is what triggers its one-time
+    # Chromium download, which is why FreeClaw's own install stays small.
+    # start() returns straight away and the work continues on a background
+    # thread; the card polls /api/mcp for the result. Its tools stay out of the
+    # agent's list until that lands (see load_mcp_tools).
+    browser = None
+    if enabled and match.get('needs_browser'):
+        browser = browser_setup.start()
+    agent.invalidate_tools(user)
+
+    resp = {'ok': True, 'user': user, 'users': list_users(),
+            'servers': [_mcp_server_public(s) for s in servers]}
     if browser and browser.get('status') == browser_setup.INSTALLING:
         resp['warning'] = browser.get('message')
     return jsonify(resp)
@@ -1291,10 +1360,15 @@ def api_toggle_mcp(name):
 def api_delete_mcp(name):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
+    # Removing is install-wide too — `?user=` only picks whose switches the
+    # list coming back should show.
+    view_user, error = _mcp_user()
+    if error:
+        return error
     # A server FreeClaw ships with isn't the user's to remove — read_servers()
     # would put it straight back on the next page load, so deleting it would
     # look broken rather than forbidden. Switching it off is the way to be rid
-    # of it, and that already stops its process and hides its tools.
+    # of it, and that already takes its tools out of that user's list.
     if mcp_client.is_builtin(name):
         return jsonify({'error': f"'{name}' ships with FreeClaw and can't be removed. "
                                  "Switch it off instead."}), 400
@@ -1303,13 +1377,24 @@ def api_delete_mcp(name):
         remaining = [s for s in servers if s.get('name') != name]
         if len(remaining) == len(servers):
             return jsonify({'error': 'No such MCP server'}), 404
+        gone = next(s for s in servers if s.get('name') == name)
         try:
             _write_env(mcp_client.servers_to_env(remaining))
         except Exception as e:
             return _log_and_error(e, message=f'Could not save: {e}')
-        mcp_client.clear_cache()
+        # Only this server's connections need dropping — and its child process
+        # does need killing, or removing it would leave an orphan running with
+        # nothing able to reach it.
+        mcp_client.release(gone)
+        # Nobody's on/off choice about a server that no longer exists is worth
+        # keeping: re-adding the name later would otherwise come back switched
+        # off for whoever had once switched it off, with nothing on screen to
+        # explain why.
+        mcp_client.forget_everywhere(name)
         agent.refresh_tools()
-    return jsonify({'ok': True, 'servers': [_mcp_server_public(s) for s in remaining]})
+    return jsonify({'ok': True, 'user': view_user, 'users': list_users(),
+                    'servers': [_mcp_server_public(s)
+                                for s in mcp_client.read_servers(view_user)]})
 
 
 # ── LLM PROVIDERS (env-backed parallel lists) ────────────────
