@@ -2476,7 +2476,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         recent, temp, tool_mode, min_certainty = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
         # Normalised to an index either way (1 is "everything after the system
         # message"), so there's a single number to pin for the continuations.
-        if certainty <= min_certainty:
+        if certainty[0] <= min_certainty:
             recent = 7
             temp = 1.0
             tool_mode='all'
