@@ -2361,18 +2361,18 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 # and no tools; precision-flavored intents run colder. The system message at
 # index 0 is always sent on top of the recent slice.
 _TAG_SETTINGS = {
-    'Greeting/goodbye':  (3, 1.0, 'file'),
-    'Personal-question': (5, 1.0, 'file'),
-    'Banter':            (5, 1.0, 'file'),
-    'About-user':        (5, 1.0, 'file'),
-    'Search':            (5, 0.4, 'search'),
-    'Context':           (9, 1.0, 'all'),
-    'Edit':              (9, 1.0, 'all'),
-    'Logic':             (7, 0.2, 'all'),
-    'Math':              (7, 0.2, 'all'),
-    'Explain':           (7, 0.2, 'all'),
+    'Greeting/goodbye':  (3, 1.0, 'file', 0.95),
+    'Personal-question': (5, 1.0, 'file', 0.95),
+    'Banter':            (5, 1.0, 'file', 0.95),
+    'About-user':        (5, 1.0, 'file', 0.95),
+    'Search':            (5, 0.4, 'search', 0.9),
+    'Context':           (9, 1.0, 'all', 0.3),
+    'Edit':              (9, 1.0, 'all', 0.3),
+    'Logic':             (7, 0.2, 'all', 0.7),
+    'Math':              (7, 0.2, 'all', 0.7),
+    'Explain':           (7, 0.2, 'all', 0.7),
 }
-_DEFAULT_TAG_SETTINGS = (7, 1.0, 'all')  # Coding, Writing, List, Suggest, Utility, ...
+_DEFAULT_TAG_SETTINGS = (7, 1.0, 'all', 0.0)  # Coding, Writing, List, Suggest, Utility, ...
 
 
 def _apply_depth_limit(turn_tools, sess):
@@ -2466,16 +2466,20 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # last one ended.
         _reset_tool_run()
 
-        intent, _ = Classy.classify(user_input, CLASSIFIER_PATH)
+        intent, certainty = Classy.classify(user_input, CLASSIFIER_PATH)
         tag = intent[0]
         print('Intent: ' + tag)
 
         agent_messages.append({"role": "user", "content": user_input})
         agent_input = user_input
 
-        recent, temp, tool_mode = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
+        recent, temp, tool_mode, min_certainty = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
         # Normalised to an index either way (1 is "everything after the system
         # message"), so there's a single number to pin for the continuations.
+        if certainty <= min_certainty:
+            recent = 7
+            temp = 1.0
+            tool_mode='all'
         if len(agent_messages) > recent + 2:
             window_start = _window_start(agent_messages, recent)
         else:
