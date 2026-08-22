@@ -48,7 +48,7 @@ for tag in tags:
 
 # Hyperparams
 input_size=len(dictionary)
-hidden_size=64
+hidden_size=32
 output_size=len(tags)
 learning_rate=0.03
 epochs=20
@@ -200,15 +200,34 @@ def backprop(phrase, actual, hidden_output, bag, optimized_bag):
 
 # Prepare data
 training_data=[]
-eval_data=[]
 for tag_index, tag in enumerate(patterns):
     for phrase_index, phrase in enumerate(tag):
         bag=build_bow(phrase, dictionary)
         optimized_bag=optimize_bow(bag)
-        if phrase_index % 9 == 8:
-            eval_data.append((bag,optimized_bag,phrase,tag_index))
-        else:
-            training_data.append((bag, optimized_bag, phrase, tag_index))
+        training_data.append((bag, optimized_bag, phrase, tag_index))
+
+# Build Eval
+
+eval_intents=json.loads(open('intents.json').read())["eval"]
+eval_tags=[]
+for tag in eval_intents:
+    eval_tags.append(tag["tag"])
+eval_patterns=[]
+for tag in eval_intents:
+    tag_patterns=[]
+    for pattern in tag["patterns"]:
+        tag_patterns.append(pattern)
+    eval_patterns.append(tag_patterns) 
+
+eval_data=[]
+for tag_index, tag in enumerate(eval_patterns):
+    for phrase_index, phrase in enumerate(tag):
+        bag=build_bow(phrase, dictionary)
+        optimized_bag=optimize_bow(bag)
+        eval_data.append((bag, optimized_bag, phrase, tag_index))
+
+
+
 
 epoch=0
 for i in range(epochs):

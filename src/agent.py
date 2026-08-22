@@ -2362,16 +2362,17 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 # intents run colder. The system message at index 0 is always sent on top of
 # the recent slice.
 _TAG_SETTINGS = {
-    'Greeting/goodbye':  (3, 1.0, 'file', 0.95),
-    'Personal-question': (5, 1.0, 'file', 0.95),
-    'Banter':            (5, 1.0, 'file', 0.95),
-    'About-user':        (5, 1.0, 'file', 0.95),
-    'Search':            (5, 0.4, 'search', 0.9),
-    'Context':           (9, 1.0, 'all', 0.3),
-    'Edit':              (9, 1.0, 'all', 0.3),
-    'Logic':             (7, 0.2, 'all', 0.7),
-    'Math':              (7, 0.2, 'all', 0.7),
-    'Explain':           (7, 0.2, 'all', 0.7),
+    'Followup':  (12, 1.0, 'all',    0.0),
+    'Code':      ( 9, 0.2, 'all',    0.5),
+    'Reason':    ( 7, 0.2, 'all',    0.7),
+    'Compose':   ( 7, 1.0, 'all',    0.7),
+    'Files':     ( 7, 0.4, 'file',   0.8),
+    'Websearch': ( 5, 0.4, 'search', 0.85),
+    'System':    ( 5, 0.2, 'all',    0.85),
+    'Memory':    ( 5, 0.5, 'file',   0.8),
+    'Smalltalk': ( 4, 1.0, 'file',   0.9),
+    'Control':   ( 2, 0.2, 'none',   0.9),
+    'Imagine':   ( 7, 1.0, 'all',    0.0),
 }
 _DEFAULT_TAG_SETTINGS = (7, 1.0, 'all', 0.0)  # Coding, Writing, List, Suggest, Utility, ...
 
