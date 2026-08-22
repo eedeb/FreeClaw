@@ -2357,9 +2357,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 
 
 # Per-intent settings for a turn: (recent messages to send, temperature,
-# tools offered). Simple conversational intents get a small context window
-# and no tools; precision-flavored intents run colder. The system message at
-# index 0 is always sent on top of the recent slice.
+# tools offered, minimum certainty to act on the tag). Simple conversational
+# intents get a small context window and a trimmed toolset; precision-flavored
+# intents run colder. The system message at index 0 is always sent on top of
+# the recent slice.
 _TAG_SETTINGS = {
     'Greeting/goodbye':  (3, 1.0, 'file', 0.95),
     'Personal-question': (5, 1.0, 'file', 0.95),
@@ -2474,12 +2475,19 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         agent_input = user_input
 
         recent, temp, tool_mode, min_certainty = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
-        # Normalised to an index either way (1 is "everything after the system
-        # message"), so there's a single number to pin for the continuations.
+        # classify() returns both lists ordered by descending probability, so
+        # [0] is the winning tag's own score. Below the tag's threshold, drop
+        # back to the default settings: the narrow windows and trimmed toolsets
+        # above are only safe when the tag is actually right, and a turn that
+        # loses the tool it needed is a worse failure than a few extra tokens.
+        # Unlisted tags carry a 0.0 threshold, which never fires — they are
+        # already on these values.
         if certainty[0] <= min_certainty:
             recent = 7
             temp = 1.0
             tool_mode='all'
+        # Normalised to an index either way (1 is "everything after the system
+        # message"), so there's a single number to pin for the continuations.
         if len(agent_messages) > recent + 2:
             window_start = _window_start(agent_messages, recent)
         else:
