@@ -7,15 +7,20 @@ import math
 
 nltk.download("punkt_tab")
 
-remove_punctuation = str.maketrans("", "", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+remove_punctuation = str.maketrans("", "", "!\"#&'(),.:;?@[\\]_`{|}~")
 
 # Math
-def sigmoid(x):
+def activation(x):
     return 1 / (1 + math.exp(-x))
 
-def sigmoid_derivative(s):
-    return s * (1 - s)
+def activation_derivative(s):
+    return 1
 
+def softmax(logits):
+    m = max(logits)
+    exps = [math.exp(z - m) for z in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
 
 
 # Build dictionary
@@ -43,10 +48,10 @@ for tag in tags:
 
 # Hyperparams
 input_size=len(dictionary)
-hidden_size=16
+hidden_size=64
 output_size=len(tags)
-learning_rate=0.1
-epochs=100
+learning_rate=0.03
+epochs=20
 print("Input size: ", input_size)
 print("Hidden size: ", hidden_size)
 print("Output size: ", output_size)
@@ -113,12 +118,13 @@ def forward_pass(optimized_bag, bag):
 
 
         output+=hidden_bias[neuron_index]
-        output=sigmoid(output)
+        output=activation(output)
 
         hidden_output.append(output)
 
     # Output Layer
     output_output=[]
+    logits=[]
     for neuron_index, neuron in enumerate(output_layer):
         #neuron=[0.123, 0.456, ...]
         output=0
@@ -130,9 +136,10 @@ def forward_pass(optimized_bag, bag):
 
 
         output+=output_bias[neuron_index]
-        output=sigmoid(output)
+        #output=activation(output)
 
-        output_output.append(output)
+        logits.append(output)
+    output_output=softmax(logits)
     return output_output, hidden_output
 
 def backprop(phrase, actual, hidden_output, bag, optimized_bag):
@@ -152,7 +159,7 @@ def backprop(phrase, actual, hidden_output, bag, optimized_bag):
             expected_output=expected[output_index]
     
             error=expected_output-output
-            output_delta=error*sigmoid_derivative(output)
+            output_delta=error
             output_deltas.append(output_delta)
     
     # Find hidden deltas
@@ -193,26 +200,48 @@ def backprop(phrase, actual, hidden_output, bag, optimized_bag):
 
 # Prepare data
 training_data=[]
-for tag in patterns:
-    for phrase in tag:
+eval_data=[]
+for tag_index, tag in enumerate(patterns):
+    for phrase_index, phrase in enumerate(tag):
         bag=build_bow(phrase, dictionary)
         optimized_bag=optimize_bow(bag)
-        training_data.append((bag, optimized_bag, phrase))
+        if phrase_index % 9 == 8:
+            eval_data.append((bag,optimized_bag,phrase,tag_index))
+        else:
+            training_data.append((bag, optimized_bag, phrase, tag_index))
 
 epoch=0
 for i in range(epochs):
     random.shuffle(training_data)
+    epoch_loss=0.0
+    correct=0
+    eval_loss=0.0
+    eval_correct=0
     for item in training_data:
-        bag, optimized_bag, phrase=item
+        bag, optimized_bag, phrase, tag_index=item
         actual, hidden=forward_pass(optimized_bag, bag)
+        epoch_loss += -math.log(max(actual[tag_index], 1e-12))
+        if actual.index(max(actual))==tag_index:
+            correct+=1
         backprop(phrase,actual,hidden,bag,optimized_bag)
+
+
+    for item in eval_data:
+        bag, optimized_bag, phrase, tag_index=item
+        actual, hidden=forward_pass(optimized_bag, bag)
+        eval_loss += -math.log(max(actual[tag_index], 1e-12))
+        if actual.index(max(actual)) == tag_index:
+            eval_correct+=1
+
+    
     epoch+=1
     print("Epoch: "+str(epoch))
-    test="write a story about a duck"
-    test_bag = build_bow(test,dictionary)
-    optimize_bag = optimize_bow(test_bag)
-    actual,_ = forward_pass(optimize_bag, test_bag)
-    print(actual)
+    print("Loss: "+str(epoch_loss/len(training_data)))
+    print("Correct: "+str(correct))
+    print("Eval Loss: "+str(eval_loss/len(eval_data)))
+    print("Eval Correct: "+str(eval_correct))
+
+
 
 format = {
     "dictionary": dictionary,

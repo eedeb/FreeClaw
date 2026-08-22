@@ -7,11 +7,20 @@ import math
 
 nltk.download("punkt_tab")
 
-remove_punctuation = str.maketrans("", "", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+remove_punctuation = str.maketrans("", "", "!\"#&'(),.:;?@[\\]_`{|}~")
 
 # Math
-def sigmoid(x):
+def activation(x):
     return 1 / (1 + math.exp(-x))
+
+def activation_derivative(s):
+    return 1
+
+def softmax(logits):
+    m = max(logits)
+    exps = [math.exp(z - m) for z in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
 
 # Weights load on first classify() and stay cached, so importing this module
 # costs nothing and the caller decides where model.json lives.
@@ -48,9 +57,15 @@ def build_bow(phrase,dictionary):
         else:
             bag.append(0)
     return bag
+def optimize_bow(bag):
+    optimized_bag=[]
+    for item_index, item in enumerate(bag):
+        if item == 1:
+            optimized_bag.append(item_index)
+    return optimized_bag
 
 # Forward Pass
-def forward_pass(bag):
+def forward_pass(optimized_bag, bag):
     # Hidden Layer
     hidden_output=[]
     for neuron_index, neuron in enumerate(hidden_layer):
@@ -58,18 +73,19 @@ def forward_pass(bag):
         output=0
 
 
-        for item_index, item in enumerate(bag):
+        for item_index in optimized_bag:
             # for float in previous layer
-            output+=item*neuron[item_index]
+            output+=1*neuron[item_index]
 
 
         output+=hidden_bias[neuron_index]
-        output=sigmoid(output)
+        output=activation(output)
 
         hidden_output.append(output)
 
     # Output Layer
     output_output=[]
+    logits=[]
     for neuron_index, neuron in enumerate(output_layer):
         #neuron=[0.123, 0.456, ...]
         output=0
@@ -81,15 +97,19 @@ def forward_pass(bag):
 
 
         output+=output_bias[neuron_index]
-        output=sigmoid(output)
+        #output=activation(output)
 
-        output_output.append(output)
+        logits.append(output)
+    output_output=softmax(logits)
     return output_output, hidden_output
+
+
 
 def classify(phrase, path):
     load_model(path)
     bag=build_bow(phrase,dictionary)
-    output, hidden_output=forward_pass(bag)
+    optimize_bag=optimize_bow(bag)
+    output, hidden_output=forward_pass(optimize_bag,bag)
     # output=[0.123, 0.456, 0.789, ...]
     # tags=["greeting", "goodbye", "thanks", ...]
     sorted_tags=[]
