@@ -84,6 +84,89 @@ ensure_xvfb() {
     return 0
 }
 
+# torch, classy-ai and sentence-transformers backed the old Classy classifier.
+# What replaced it (models/run_model.py) is plain Python over JSON weights, so
+# all three are dead weight now — several hundred MB of it, on machines that are
+# often running from an SD card.
+#
+# This is the only place that cleanup can happen. Syncing requirements.txt only
+# ever adds, and pip never removes a package just because nothing requires it
+# any more, so an existing install has no other way to shed them.
+#
+# Never fatal, for the same reason as ensure_xvfb: an update that dies while
+# tidying up is worse than one that leaves a few old wheels behind.
+remove_legacy_ml() {
+    local candidates=(torch classy-ai sentence-transformers)
+    local found=()
+    local p
+
+    for p in "${candidates[@]}"; do
+        if venv/bin/pip show "$p" &>/dev/null; then
+            found+=("$p")
+        fi
+    done
+
+    if [[ ${#found[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    info "Removing packages the new classifier doesn't need (${found[*]})..."
+    venv/bin/pip uninstall -y -q "${found[@]}" &>/dev/null || true
+
+    # torch is the only one of the three that drags a CUDA stack in behind it
+    # (nvidia-cublas, cudnn, nccl, triton — up to ~3GB where the CPU index
+    # wasn't used). Those are orphaned the moment it goes, and nothing else
+    # FreeClaw installs touches CUDA.
+    #
+    # Deliberately not a general orphan sweep: torch also shares jinja2,
+    # filelock and fsspec with packages FreeClaw does need, and flask would go
+    # down with jinja2. Matched by exact name against pip's own list so this
+    # can't reach something that merely looks similar.
+    if printf '%s\n' "${found[@]}" | grep -qx torch; then
+        local orphans
+        orphans=$(venv/bin/pip list --format=freeze 2>/dev/null \
+            | cut -d= -f1 \
+            | grep -E '^(nvidia-[a-z0-9_-]+|triton)$' || true)
+        if [[ -n "$orphans" ]]; then
+            info "Removing the CUDA libraries torch pulled in..."
+            venv/bin/pip uninstall -y -q $orphans &>/dev/null || true
+        fi
+    fi
+
+    # Report what actually went, not what was attempted — a uninstall that
+    # failed on a permissions problem would otherwise be invisible.
+    local still=()
+    for p in "${found[@]}"; do
+        if venv/bin/pip show "$p" &>/dev/null; then
+            still+=("$p")
+        fi
+    done
+
+    if [[ ${#still[@]} -eq 0 ]]; then
+        success "Removed ${found[*]}"
+    else
+        warn "Couldn't remove: ${still[*]} — FreeClaw still works, just larger."
+    fi
+    return 0
+}
+
+# The new classifier tokenises with NLTK, which needs a word table that pip
+# doesn't carry. Installs predating it have never fetched one, and without it
+# models/run_model.py raises on the first classify(). install.sh does this for
+# fresh installs; this is the same step for everyone already running.
+ensure_nltk_data() {
+    if venv/bin/python -c "import nltk; nltk.data.find('tokenizers/punkt_tab')" &>/dev/null; then
+        return 0
+    fi
+    info "Downloading NLTK tokenizer data..."
+    if venv/bin/python -c "import nltk; nltk.download('punkt_tab', quiet=True)" &>/dev/null; then
+        success "NLTK tokenizer data installed"
+    else
+        warn "Couldn't fetch NLTK data; Classy will retry on first use."
+    fi
+    return 0
+}
+
 # ── Header ───────────────────────────────────
 
 echo ""
@@ -174,6 +257,9 @@ section_gap
 info "Syncing dependencies..."
 venv/bin/pip install -q -r requirements.txt 2>/dev/null || true
 success "Dependencies up to date"
+
+ensure_nltk_data
+remove_legacy_ml
 
 # System package, not a wheel, and only installed once — see ensure_xvfb().
 ensure_xvfb

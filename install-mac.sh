@@ -292,7 +292,7 @@ section_gap
 
 step "4" "Building the container image..."
 section_gap
-warn "First build downloads PyTorch — expect a few minutes."
+info "First build pulls the Python dependencies — this takes a minute."
 section_gap
 
 docker compose -f docker/docker-compose.yml build 2>&1 | indent

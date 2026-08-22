@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Weights for the local Classy intent classifier.
-CLASSIFIER_PATH = BASE_DIR + "/../models/data.pth"
+CLASSIFIER_PATH = BASE_DIR + "/../models/model.json"
 
 # Root that Flask's /static/<path:filename> route serves from. Each user
 # gets their own subfolder under here (set via set_static_dir), so links back

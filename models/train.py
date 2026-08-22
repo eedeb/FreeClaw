@@ -92,9 +92,14 @@ def build_bow(phrase,dictionary):
         else:
             bag.append(0)
     return bag
-
+def optimize_bow(bag):
+    optimized_bag=[]
+    for item_index, item in enumerate(bag):
+        if item == 1:
+            optimized_bag.append(item_index)
+    return optimized_bag
 # Forward Pass
-def forward_pass(bag):
+def forward_pass(optimized_bag, bag):
     # Hidden Layer
     hidden_output=[]
     for neuron_index, neuron in enumerate(hidden_layer):
@@ -102,9 +107,9 @@ def forward_pass(bag):
         output=0
 
 
-        for item_index, item in enumerate(bag):
+        for item_index in optimized_bag:
             # for float in previous layer
-            output+=item*neuron[item_index]
+            output+=1*neuron[item_index]
 
 
         output+=hidden_bias[neuron_index]
@@ -130,7 +135,7 @@ def forward_pass(bag):
         output_output.append(output)
     return output_output, hidden_output
 
-def backprop(phrase, actual, hidden_output, bag):
+def backprop(phrase, actual, hidden_output, bag, optimized_bag):
     # Find expected output
     expected=[]
     for tag in patterns:
@@ -180,9 +185,9 @@ def backprop(phrase, actual, hidden_output, bag):
         # For each number 
         hidden_delta=hidden_deltas[hidden_index
                                    ]
-        for value_index, hidden_value in enumerate(bag):
+        for value_index in optimized_bag:
             # For each value from the hidden layer/number of connects in each neuron
-            hidden_layer[hidden_index][value_index]+=learning_rate*hidden_delta*hidden_value
+            hidden_layer[hidden_index][value_index]+=learning_rate*hidden_delta*1
         
         hidden_bias[hidden_index]+=learning_rate*hidden_delta
 
@@ -190,20 +195,23 @@ def backprop(phrase, actual, hidden_output, bag):
 training_data=[]
 for tag in patterns:
     for phrase in tag:
-        training_data.append((phrase,tag))
+        bag=build_bow(phrase, dictionary)
+        optimized_bag=optimize_bow(bag)
+        training_data.append((bag, optimized_bag, phrase))
 
 epoch=0
 for i in range(epochs):
+    random.shuffle(training_data)
     for item in training_data:
-        phrase, tag = item
-        bag=build_bow(phrase, dictionary)
-        actual, hidden=forward_pass(bag)
-        backprop(phrase,actual,hidden,bag)
+        bag, optimized_bag, phrase=item
+        actual, hidden=forward_pass(optimized_bag, bag)
+        backprop(phrase,actual,hidden,bag,optimized_bag)
     epoch+=1
     print("Epoch: "+str(epoch))
     test="write a story about a duck"
     test_bag = build_bow(test,dictionary)
-    actual,_ = forward_pass(test_bag)
+    optimize_bag = optimize_bow(test_bag)
+    actual,_ = forward_pass(optimize_bag, test_bag)
     print(actual)
 
 format = {

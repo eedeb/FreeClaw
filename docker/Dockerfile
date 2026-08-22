@@ -1,7 +1,7 @@
 # FreeClaw — container image (used by the macOS installer)
 #
-# Mirrors what install.sh does natively on Linux: CPU-only PyTorch, classy-ai,
-# sentence-transformers without its dependency tree, then the web/agent libs.
+# Mirrors what install.sh does natively on Linux: the web/agent libs, then the
+# NLTK word table the intent classifier tokenises with.
 FROM python:3.12-slim
 
 # bash + coreutils are here for the agent's bash tool, not for the build.
@@ -26,16 +26,11 @@ WORKDIR /app
 
 COPY requirements.txt ./
 
-# The CPU index carries manylinux aarch64 wheels alongside x86_64, so one line
-# covers both. That is not just tidier: on arm64 (Apple Silicon, which is most
-# Macs now) plain PyPI resolves torch to a build depending on the whole CUDA
-# stack - nvidia-cublas, cudnn, nccl, triton, some 3GB of it - shipped for
-# Jetson-class boards and dead weight inside this container. --only-binary keeps
-# a failed resolve from quietly turning into a source build of torch.
-RUN pip install --no-cache-dir torch --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu \
- && pip install --no-cache-dir classy-ai \
- && pip install --no-cache-dir sentence_transformers --no-deps \
- && pip install --no-cache-dir -r requirements.txt
+# punkt_tab is baked in rather than fetched at runtime: models/run_model.py
+# asks for it on import, and a container that starts without network would
+# otherwise lose the classifier on every turn. It is a few MB.
+RUN pip install --no-cache-dir -r requirements.txt \
+ && python -c "import nltk; nltk.download('punkt_tab', quiet=True)"
 
 COPY Flask/ ./Flask/
 COPY src/ ./src/

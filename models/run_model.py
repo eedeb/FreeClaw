@@ -13,15 +13,29 @@ remove_punctuation = str.maketrans("", "", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 def sigmoid(x):
     return 1 / (1 + math.exp(-x))
 
-model=json.loads(open('model.json').read())
+# Weights load on first classify() and stay cached, so importing this module
+# costs nothing and the caller decides where model.json lives.
+_loaded_path=None
+dictionary=None
+tags=None
+hidden_layer=None
+hidden_bias=None
+output_layer=None
+output_bias=None
 
-
-dictionary=model["dictionary"]
-tags=model["tags"]
-hidden_layer=model["hidden_layer"]
-hidden_bias=model["hidden_bias"]
-output_layer=model["output_layer"]
-output_bias=model["output_bias"]
+def load_model(path):
+    global _loaded_path, dictionary, tags, hidden_layer, hidden_bias, output_layer, output_bias
+    if path==_loaded_path:
+        return
+    with open(path) as f:
+        model=json.load(f)
+    dictionary=model["dictionary"]
+    tags=model["tags"]
+    hidden_layer=model["hidden_layer"]
+    hidden_bias=model["hidden_bias"]
+    output_layer=model["output_layer"]
+    output_bias=model["output_bias"]
+    _loaded_path=path
 
 # Bag
 
@@ -72,7 +86,8 @@ def forward_pass(bag):
         output_output.append(output)
     return output_output, hidden_output
 
-def classify(phrase):
+def classify(phrase, path):
+    load_model(path)
     bag=build_bow(phrase,dictionary)
     output, hidden_output=forward_pass(bag)
     # output=[0.123, 0.456, 0.789, ...]
@@ -84,4 +99,4 @@ def classify(phrase):
         sorted_tags.append(tags[output_index])
     return sorted_tags, certainty
 
-print(classify("write a story about a duck"))
+#print(classify("write a story about a duck"))

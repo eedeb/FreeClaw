@@ -1,6 +1,4 @@
 # Web app + agent dependencies, synced by install.sh and update.sh.
-# torch, classy-ai, and sentence-transformers are installed separately by
-# install.sh (they need a CPU wheel index / --no-deps flags).
 flask
 itsdangerous
 # >=1.66 for client.responses, which a provider set to the Responses API needs
@@ -13,6 +11,14 @@ ddgs
 beautifulsoup4
 json-repair
 python-dotenv
+
+# Tokeniser for the local Classy intent classifier (models/run_model.py).
+# It used to arrive indirectly with the old torch-based classifier's dependency
+# tree; now that stack is gone it has to be requested outright, or run_model
+# fails to import and every turn dies before it reaches the model. The word
+# table it needs is a separate download — install.sh and the Dockerfile fetch
+# it, and run_model.py falls back to fetching it on first use.
+nltk
 
 # ── the shipped browser MCP server (src/mcp_client.py: BUILTIN_SERVERS) ──
 #

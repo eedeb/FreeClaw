@@ -250,32 +250,21 @@ _pip_install() {
     success "${label} installed"
 }
 
-# Same, minus -q. torch is the only download big enough (a few hundred MB, onto
-# an SD card, often over a slow link) that a quiet install is indistinguishable
-# from a hang, so let pip's progress bar through for that one.
-_pip_install_loud() {
-    local label="$1"
-    shift
-    info "Installing ${label}..."
-    venv/bin/pip install "$@"
-    success "${label} installed"
-}
-
-# The CPU index is right for every architecture, not just x86_64 - it carries
-# manylinux aarch64 wheels too. That matters more than it used to: PyPI's plain
-# aarch64 torch now pulls the entire CUDA stack (nvidia-cublas, cudnn, nccl,
-# triton - roughly 3GB) to serve Jetson-class boards, none of which a Raspberry
-# Pi can load.
-#
-# --only-binary is a guard, not a preference. Without it a failed resolve doesn't
-# error, it silently becomes a source build of torch, which needs more RAM than a
-# Pi has and grinds for hours before dying. If this does fail outright, the
-# machine is on 32-bit Raspberry Pi OS (uname -m reports armv7l, which has no
-# wheels anywhere) or on a Python newer than torch supports.
-_pip_install_loud "PyTorch (CPU)" torch --only-binary=:all: --index-url https://download.pytorch.org/whl/cpu
-_pip_install "classy-ai" classy-ai
-_pip_install "sentence-transformers" sentence_transformers --no-deps
 _pip_install "web & API libs" -r requirements.txt
+
+# The intent classifier (models/run_model.py) tokenises with NLTK, which needs
+# this word table at runtime. Fetched here so the first message doesn't stall on
+# a download, and so an install that later runs offline still classifies.
+#
+# Never fatal. run_model.py asks for the same table on import, so a machine that
+# can't reach the network now gets another chance later — and an optional
+# download must not take the whole install down with it.
+info "Downloading NLTK tokenizer data..."
+if venv/bin/python -c "import nltk; nltk.download('punkt_tab', quiet=True)" 2>/dev/null; then
+    success "NLTK tokenizer data installed"
+else
+    warn "Couldn't fetch NLTK data; Classy will retry on first use."
+fi
 
 # A system package rather than a wheel, and optional — see install_xvfb().
 install_xvfb
