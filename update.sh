@@ -226,6 +226,17 @@ git checkout origin/main -- requirements.txt 2>/dev/null || true
 # src/telemetry.py reports this, and the ff-only merge below is skipped when
 # the index is dirty — so refresh it explicitly rather than relying on that.
 git checkout origin/main -- VERSION 2>/dev/null || true
+# Same reasoning, and the reason Classy went missing on installs updating across
+# the switch to it: models/ holds run_model.py and the JSON weights that
+# src/agent.py imports at startup. Leaving it to the merge means that when the
+# merge is blocked, `git reset --soft` moves HEAD without touching the working
+# tree — so the files never land, and the next run reads LOCAL == REMOTE and
+# reports "Already up to date" forever while the service crash-loops on the
+# missing import.
+#
+# Overwrites local edits under models/, deliberately: everything there is
+# shipped (weights, intents, run_model.py, train.py), same contract as src/.
+git checkout origin/main -- models/ 2>/dev/null || true
 
 # Advance local HEAD to match origin/main so git log is correct next run
 git merge --ff-only origin/main 2>/dev/null || git reset --soft origin/main 2>/dev/null || true
