@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime
 
-import Classy
+import models.run_model as Classy
 import httpx
 from dotenv import dotenv_values, load_dotenv
 from json_repair import repair_json

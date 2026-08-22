@@ -45,7 +45,7 @@ for tag in tags:
 input_size=len(dictionary)
 hidden_size=16
 output_size=len(tags)
-learning_rate=0.001
+learning_rate=0.1
 epochs=100
 print("Input size: ", input_size)
 print("Hidden size: ", hidden_size)
@@ -186,13 +186,19 @@ def backprop(phrase, actual, hidden_output, bag):
         
         hidden_bias[hidden_index]+=learning_rate*hidden_delta
 
+# Prepare data
+training_data=[]
+for tag in patterns:
+    for phrase in tag:
+        training_data.append((phrase,tag))
+
 epoch=0
 for i in range(epochs):
-    for tag in patterns:
-        for phrase in tag:
-            bag=build_bow(phrase, dictionary)
-            actual, hidden=forward_pass(bag)
-            backprop(phrase,actual,hidden,bag)
+    for item in training_data:
+        phrase, tag = item
+        bag=build_bow(phrase, dictionary)
+        actual, hidden=forward_pass(bag)
+        backprop(phrase,actual,hidden,bag)
     epoch+=1
     print("Epoch: "+str(epoch))
     test="write a story about a duck"
