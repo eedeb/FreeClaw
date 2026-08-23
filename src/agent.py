@@ -1930,6 +1930,11 @@ def _build_catalogue(user):
     return {
         "tools": (build_file_tools() + build_context_tools() + build_search_tools()
                   + build_utility_tools() + build_time_tools() + mcp_tools),
+        # Kept separately as well as folded into "tools": the trimmed tool
+        # modes rebuild their list from the build_*() helpers, which know
+        # nothing about MCP, so without this a restricted turn would silently
+        # lose every MCP server the user has on — the browser included.
+        "mcp": mcp_tools,
         "registry": registry,
     }
 
@@ -1957,6 +1962,12 @@ def _catalogue(user):
 def tools_for(user):
     """The tools to offer `user`'s turn."""
     return _catalogue(user)["tools"]
+
+
+def mcp_tools_for(user):
+    """Just the MCP portion of `user`'s catalogue, for the trimmed tool modes
+    that build their own list out of the built-in helpers."""
+    return _catalogue(user)["mcp"]
 
 
 def registry_for(user):
@@ -2366,22 +2377,23 @@ _TAG_SETTINGS = {
     # permissive — settings are >= the (7, 1.0, 'all') fallback, so a false
     # positive costs tokens, never a capability. A gate here can only lose you
     # trimming, so they run ungated.
-    'Followup':  (12, 1.0, 'all',    0.0),
-    'Code':      ( 9, 0.2, 'all',    0.0),
-    'Reason':    ( 7, 0.2, 'all',    0.0),
-    'Compose':   ( 7, 1.0, 'all',    0.0),
-    'Imagine':   ( 7, 1.0, 'all',    0.0),
+    'Followup':  (12, 1.0, 'all',         0.0),
+    'Code':      ( 9, 0.2, 'all',         0.0),
+    'Reason':    ( 7, 0.2, 'all',         0.0),
+    'Compose':   ( 7, 1.0, 'all',         0.0),
+    'Imagine':   ( 7, 1.0, 'all',         0.0),
 
     # restrictive — these remove tools or narrow the window below the fallback.
     # Thresholds measured at 90% precision on the 630-message held-out block.
-    'Smalltalk': ( 4, 1.0, 'file',   0.68),
-    'Files':     ( 7, 0.4, 'file',   0.53),
-    'Memory':    ( 5, 0.5, 'file',   0.46),
-    'Control':   ( 2, 0.2, 'none',   0.41),
-    'Websearch': ( 5, 0.4, 'search', 0.38),
-    'System':    ( 5, 0.2, 'all',    0.36),
+    'Smalltalk': ( 4, 1.0, 'file',       0.68),
+    'Files':     ( 7, 0.4, 'file+mcp',   0.53),
+    'Memory':    ( 5, 0.5, 'file+mcp',   0.46),
+    'Control':   ( 2, 0.2, 'none',       0.41),
+    'Websearch': ( 5, 0.4, 'search+mcp', 0.38),
+    'System':    ( 5, 0.2, 'all',         0.36),
 }
-_DEFAULT_TAG_SETTINGS = (7, 1.0, 'all', 0.0)  # Coding, Writing, List, Suggest, Utility, ...
+_DEFAULT_TAG_SETTINGS = (7, 1.0, 'all', 0.0)  # any tag not listed, and any
+# listed tag whose classifier score fell below its threshold above.
 
 
 def _apply_depth_limit(turn_tools, sess):
@@ -2507,9 +2519,17 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         else:
             window_start = 1
         eco_messages = [agent_messages[0], *agent_messages[window_start:]]
+        # The '+mcp' modes keep the user's MCP servers on top of the trimmed
+        # built-in set. Without them a restricted turn drops every MCP tool,
+        # because these lists are rebuilt from the build_*() helpers and those
+        # only know about the built-ins — so a user whose browser lives behind
+        # an MCP server would lose it the moment a turn got trimmed, and the
+        # model would (correctly but uselessly) report that it can't browse.
+        # 'file' stays MCP-free for Smalltalk: greetings and jokes need nothing,
+        # and MCP tool definitions are the most expensive part of the payload.
         if tool_mode == 'none':
             check_tools = None
-        elif tool_mode == 'search':
+        elif tool_mode in ('search', 'search+mcp'):
             # Memory tools are here as well as in 'file' mode: a search turn
             # both needs to read memory (looking something up "near home" or
             # "for my sister" depends on a section the prompt only names) and
@@ -2519,11 +2539,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # build_time_tools() for why it can't be left out of one.
             check_tools = (build_search_tools() + build_context_tools()
                            + build_time_tools())
-        elif tool_mode == 'file':
-            # Memory tools ride along here too: these are the tags (About-user,
-            # Personal-question) most likely to turn up something worth
-            # remembering, and the system prompt tells the model to save it.
+            if tool_mode == 'search+mcp':
+                check_tools += mcp_tools_for(_tools_user())
+        elif tool_mode in ('file', 'file+mcp'):
+            # Memory tools ride along here too: these are the tags (Memory,
+            # Smalltalk) most likely to turn up something worth remembering,
+            # and the system prompt tells the model to save it.
             check_tools = build_file_tools() + build_context_tools() + build_time_tools()
+            if tool_mode == 'file+mcp':
+                check_tools += mcp_tools_for(_tools_user())
         check_tools = _apply_depth_limit(check_tools, sess)
         _pin_turn_prefix(window_start, check_tools)
     elif system_input:
