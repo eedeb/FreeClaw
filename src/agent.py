@@ -2374,23 +2374,21 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 # intents run colder. The system message at index 0 is always sent on top of
 # the recent slice.
 _TAG_SETTINGS = {
-    # permissive — settings are >= the (7, 1.0, 'all') fallback, so a false
-    # positive costs tokens, never a capability. A gate here can only lose you
-    # trimming, so they run ungated.
+    # permissive — settings >= the (7, 1.0, 'all') fallback; a gate can only
+    # cost you trimming here, never protect anything.
     'Followup':  (12, 1.0, 'all',         0.0),
     'Code':      ( 9, 0.2, 'all',         0.0),
     'Reason':    ( 7, 0.2, 'all',         0.0),
     'Compose':   ( 7, 1.0, 'all',         0.0),
     'Imagine':   ( 7, 1.0, 'all',         0.0),
 
-    # restrictive — these remove tools or narrow the window below the fallback.
-    # Thresholds measured at 90% precision on the 630-message held-out block.
-    'Smalltalk': ( 4, 1.0, 'file',       0.68),
-    'Files':     ( 7, 0.4, 'file+mcp',   0.53),
-    'Memory':    ( 5, 0.5, 'file+mcp',   0.46),
-    'Control':   ( 2, 0.2, 'none',       0.41),
-    'Websearch': ( 5, 0.4, 'search+mcp', 0.38),
-    'System':    ( 5, 0.2, 'all',         0.36),
+    # restrictive — measured at 90% precision on the 658-message held-out block
+    'Smalltalk': ( 4, 1.0, 'file',        0.63),
+    'System':    ( 5, 0.2, 'all',         0.57),
+    'Control':   ( 2, 0.2, 'none',        0.47),
+    'Websearch': ( 5, 0.4, 'search+mcp',  0.41),
+    'Memory':    ( 5, 0.5, 'file+mcp',    0.32),
+    'Files':     ( 7, 0.4, 'file+mcp',    0.27),
 }
 _DEFAULT_TAG_SETTINGS = (7, 1.0, 'all', 0.0)  # any tag not listed, and any
 # listed tag whose classifier score fell below its threshold above.
