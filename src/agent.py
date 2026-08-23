@@ -2362,17 +2362,23 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 # intents run colder. The system message at index 0 is always sent on top of
 # the recent slice.
 _TAG_SETTINGS = {
+    # permissive — settings are >= the (7, 1.0, 'all') fallback, so a false
+    # positive costs tokens, never a capability. A gate here can only lose you
+    # trimming, so they run ungated.
     'Followup':  (12, 1.0, 'all',    0.0),
-    'Code':      ( 9, 0.2, 'all',    0.5),
-    'Reason':    ( 7, 0.2, 'all',    0.7),
-    'Compose':   ( 7, 1.0, 'all',    0.7),
-    'Files':     ( 7, 0.4, 'file',   0.8),
-    'Websearch': ( 5, 0.4, 'search', 0.85),
-    'System':    ( 5, 0.2, 'all',    0.85),
-    'Memory':    ( 5, 0.5, 'file',   0.8),
-    'Smalltalk': ( 4, 1.0, 'file',   0.9),
-    'Control':   ( 2, 0.2, 'none',   0.9),
+    'Code':      ( 9, 0.2, 'all',    0.0),
+    'Reason':    ( 7, 0.2, 'all',    0.0),
+    'Compose':   ( 7, 1.0, 'all',    0.0),
     'Imagine':   ( 7, 1.0, 'all',    0.0),
+
+    # restrictive — these remove tools or narrow the window below the fallback.
+    # Thresholds measured at 90% precision on the 630-message held-out block.
+    'Smalltalk': ( 4, 1.0, 'file',   0.68),
+    'Files':     ( 7, 0.4, 'file',   0.53),
+    'Memory':    ( 5, 0.5, 'file',   0.46),
+    'Control':   ( 2, 0.2, 'none',   0.41),
+    'Websearch': ( 5, 0.4, 'search', 0.38),
+    'System':    ( 5, 0.2, 'all',    0.36),
 }
 _DEFAULT_TAG_SETTINGS = (7, 1.0, 'all', 0.0)  # Coding, Writing, List, Suggest, Utility, ...
 

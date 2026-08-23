@@ -51,7 +51,7 @@ input_size=len(dictionary)
 hidden_size=32
 output_size=len(tags)
 learning_rate=0.03
-epochs=20
+epochs=35
 print("Input size: ", input_size)
 print("Hidden size: ", hidden_size)
 print("Output size: ", output_size)
@@ -147,9 +147,9 @@ def backprop(phrase, actual, hidden_output, bag, optimized_bag):
     expected=[]
     for tag in patterns:
         if phrase in tag:
-            expected.append(1)
+            expected.append(0.9)
         else:
-            expected.append(0)
+            expected.append(0.1/(len(patterns)-1))
     # Expected out, [0,0,0,1,0,0,0,0, ...]
 
     # Find output deltas
