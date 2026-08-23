@@ -88,6 +88,11 @@ class Session:
         # ── per-turn state ──
         self.turn_usage = new_turn_usage()
         self.turn_prefix = {}
+        # Winning classifier tag for the turn in flight. Set once when the user
+        # message is classified and read back when the assistant message is
+        # built — which can be several tool hops later, in a recursive
+        # agent_stream call where the local `tag` is long out of scope.
+        self.turn_tag = None
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
 
@@ -125,6 +130,10 @@ class Session:
 
     def clear_turn_prefix(self):
         self.turn_prefix = {}
+        # Same lifecycle as the prefix: both belong to one user turn. Cleared
+        # after the assistant message that ends the turn has been appended, so
+        # that message still carries the tag.
+        self.turn_tag = None
 
     def note_new_section(self, name):
         """Remember a context.md section created mid-conversation so the next

@@ -887,13 +887,19 @@
     return parts.length ? ' · ' + parts.join(' · ') : '';
   }
 
-  function agentLabelText(provider, usage) {
-    return 'agent' + (provider ? ' · via ' + provider : '') + tokenLabel(usage);
+  // `intent` is the winning classifier tag for the turn (Smalltalk, Code, …).
+  // It replaces the literal 'agent' when we have one; turns that never got
+  // classified — sub-agents, system-initiated turns, history from before this
+  // shipped — fall back to 'agent'.
+  function agentLabelText(provider, usage, intent) {
+    return (intent || 'agent')
+         + (provider ? ' · via ' + provider : '')
+         + tokenLabel(usage);
   }
 
-  function updateLiveLabel(wrap, provider, usage) {
+  function updateLiveLabel(wrap, provider, usage, intent) {
     const lbl = wrap.querySelector('.msg-label');
-    if (lbl) lbl.textContent = agentLabelText(provider, usage);
+    if (lbl) lbl.textContent = agentLabelText(provider, usage, intent);
   }
 
   // ── Render a single user/agent text bubble ──────────────
@@ -915,7 +921,7 @@
     label.className = 'msg-label';
     const provider = opts && opts.provider;
     label.textContent = role === 'user' ? 'you'
-      : agentLabelText(provider, opts && opts.usage);
+      : agentLabelText(provider, opts && opts.usage, opts && opts.intent);
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
@@ -1192,7 +1198,8 @@
           : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
         if (text && text.trim()) {
           addMessage('agent', text, null,
-                     { countTokens: false, provider: msg.provider, usage: msg.usage });
+                     { countTokens: false, provider: msg.provider, usage: msg.usage,
+                       intent: msg.intent });
         }
       }
     }
@@ -1430,6 +1437,7 @@
     let liveWrap = null, liveBubble = null, liveText = '';
     let activeToolIndicator = null;
     let currentProvider = null;
+    let currentIntent = null;
     let activeApproval = null;
     let activeReasoning = null;
 
@@ -1491,7 +1499,13 @@
           let evt;
           try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
-          if (evt.type === 'provider') {
+          if (evt.type === 'intent') {
+            // Fires once per user turn, before the first token, so the label
+            // reads the tag from the moment the reply starts rendering.
+            currentIntent = evt.tag;
+            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null, currentIntent);
+
+          } else if (evt.type === 'provider') {
             // Fires once per LLM call — including every tool-call
             // continuation — so it also catches a mid-conversation fallback
             // switch, not just the provider used at the start of the turn.
@@ -1499,7 +1513,7 @@
             // A new request starts here, so any token counts on the label
             // belong to the previous one — clear them rather than leave a
             // stale number attached to a different call.
-            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null);
+            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null, currentIntent);
 
           } else if (evt.type === 'reasoning') {
             // Arrives ahead of any text, so it stands in for the thinking
@@ -1516,7 +1530,7 @@
               liveWrap.className = 'message agent';
               const label = document.createElement('div');
               label.className = 'msg-label';
-              label.textContent = agentLabelText(currentProvider, null);
+              label.textContent = agentLabelText(currentProvider, null, currentIntent);
               liveBubble = document.createElement('div');
               liveBubble.className = 'bubble';
               liveWrap.appendChild(label);
@@ -1597,7 +1611,7 @@
               scope: 'turn',
             };
             updateCount();
-            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, evt);
+            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, evt, currentIntent);
 
           } else if (evt.type === 'tool_result') {
             if (activeToolIndicator) {

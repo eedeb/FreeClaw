@@ -625,7 +625,8 @@ def _cache_breakpoint_messages(messages):
 # takes an `api`: a Responses provider *does* want its encrypted reasoning back,
 # so the stripping is skipped for those and applied for everyone else. Falling
 # back mid-turn therefore drops the blobs on its own, with no special case.
-_INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items")
+_INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items",
+                          "intent")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -2477,6 +2478,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         intent, certainty = Classy.classify(user_input, CLASSIFIER_PATH)
         tag = intent[0]
         print('Intent: ' + tag)
+        # Held on the session, not just locally: the assistant message that
+        # ends this turn may be built inside a recursive tool-hop call where
+        # `tag` is out of scope. Emitted straight away so the page can label
+        # the reply before the first token arrives.
+        sess.turn_tag = tag
+        yield {"type": "intent", "tag": tag}
 
         agent_messages.append({"role": "user", "content": user_input})
         agent_input = user_input
@@ -2713,6 +2720,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         assistant_msg = {
             "role": "assistant",
             "provider": provider,
+            # The turn's classifier tag, so the label survives a reload the
+            # same way `provider` does. Stripped before any request goes out
+            # (_INTERNAL_MESSAGE_KEYS).
+            "intent": sess.turn_tag,
             "tool_calls": [
                 {
                     "id": tc["id"],
@@ -2857,6 +2868,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     final_msg = {
         "role": "assistant",
         "provider": provider,
+        "intent": sess.turn_tag,
         "content": buffer,
     }
     if reasoning_buffer:
