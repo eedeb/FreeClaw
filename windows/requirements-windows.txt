@@ -1,0 +1,12 @@
+# Extra dependencies for the Windows tray app (windows/tray.py).
+#
+# Kept out of the top-level requirements.txt on purpose: nothing on Linux or
+# macOS/Docker imports them, and a tray icon library has no business being
+# pulled into a headless container image.
+
+# The notification-area icon, its menu, and Windows toast notifications.
+pystray
+
+# pystray needs a real image object for the icon; it does not read .ico by
+# itself. This is the only reason Pillow is here.
+pillow

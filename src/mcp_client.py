@@ -544,6 +544,11 @@ def _call_with_session(server, method, params, timeout=(6, 20)):
 _stdio_procs = {}                        # _sig(server) -> _StdioServer
 _stdio_registry_lock = threading.Lock()  # guards the dict, not the per-process I/O
 
+# See src/agent.py: NO_WINDOW. Under the Windows tray app every stdio server
+# would otherwise pop its own console window and leave it on screen for as long
+# as the server stayed connected. A no-op off Windows.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 # Generous enough for `npx` to fetch a package it hasn't cached yet, the
 # slowest thing that legitimately happens on a first connect.
 STDIO_STARTUP_TIMEOUT = 60
@@ -650,6 +655,7 @@ class _StdioServer:
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True,
                 bufsize=1,             # line buffered — newline-delimited JSON
+                creationflags=NO_WINDOW,   # no console window (see above)
                 # .env is already loaded into our own environment; `env` on top
                 # of it is how a builtin pins settings the user shouldn't have
                 # to know about (see BUILTIN_SERVERS).

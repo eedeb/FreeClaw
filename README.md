@@ -45,7 +45,40 @@ Your chats, uploads, `context.md`, logs, and `.env` are bind-mounted from the in
 
 One difference from the Linux install: the OpenAI-compatible API's on/off state is stored inside the container, so it resets to **off** after `./update-mac.sh` recreates it. Turn it back on with `/startapi` or the API chip on the homepage.
 
-> **Note:** each installer checks out only the files for its own platform — a Linux install has no `docker/` directory or `*-mac.sh` scripts, and a macOS install has no systemd scripts. Run the wrong one and it will tell you and point at the other.
+### Windows
+
+Runs natively — no WSL and no Docker Desktop. Download the installer from the
+[latest release](https://github.com/eedeb/FreeClaw/releases/latest) and run it.
+Nothing needs to be installed first; the installer brings its own Python.
+
+It will:
+1. Unpack FreeClaw and a bundled Python into `%LOCALAPPDATA%\FreeClaw` — no administrator rights, no UAC prompt
+2. Ask you to set a **password** for the web UI (no API keys collected here)
+3. Add **FreeClaw** to the notification area — the `^` chevron at the right of the taskbar — where a small supervisor keeps the server running and restarts it on demand, the job systemd does on Linux
+4. Optionally start with Windows, and optionally add a desktop shortcut
+5. Open **http://localhost:6767** when you click the icon
+
+**Click the tray icon to open FreeClaw.** Right-click it for Restart, the logs
+folder, and *Copy address for other devices* — the LAN address to open on your
+phone. That address needs a firewall rule, which the installer deliberately
+doesn't add because it would require administrator rights; the
+[Windows notes](windows/README.md#reaching-it-from-other-devices) have the
+one-line command.
+
+The build is unsigned, so SmartScreen shows *"Windows protected your PC"* on
+first run — **More info → Run anyway**.
+
+Uninstalling leaves your chats, `context.md`, `.env` and logs alone, and
+reinstalling merges into your existing `.env` rather than overwriting it.
+
+> Some of the wider port is still outstanding — most visibly the agent's bash
+> tool, which currently runs commands through `cmd.exe`. See
+> [windows/README.md](windows/README.md#not-done-yet) for the full list, and
+> for how to build the installer yourself.
+
+---
+
+> **Note:** each *script* installer checks out only the files for its own platform — a Linux install has no `docker/` directory or `*-mac.sh` scripts, and a macOS install has no systemd scripts. Run the wrong one and it will tell you and point at the other. The Windows installer is a prebuilt package rather than a checkout, so it isn't affected.
 
 ---
 
@@ -149,6 +182,13 @@ FreeClaw/
 ├── docker/                   # macOS install only
 │   ├── Dockerfile            # CPU-only PyTorch + the agent, mirroring what install.sh does natively
 │   └── docker-compose.yml    # Port 6767, restart policy, bind mounts for .env / static / logs
+├── windows/                  # Windows install only — see windows/README.md
+│   ├── tray.py               # Notification-area app; supervises the server, playing systemd's role
+│   ├── installer.iss         # Inno Setup script — per-user install, password page, no UAC
+│   ├── build.ps1             # Stages a bundled Python + deps, then compiles the installer
+│   ├── write_env.py          # Seeds .env at install time; merges, never overwrites
+│   ├── make_icon.py          # Generates freeclaw.ico (nine sizes) from the app's accent colour
+│   └── freeclaw.ico          # Tray, shortcut and installer icon
 ├── install.sh                # One-line installer      (Linux)
 ├── update.sh                 # Pull and apply updates  (Linux)
 ├── uninstall.sh              # Remove service + files  (Linux)
@@ -159,7 +199,7 @@ FreeClaw/
 └── .env                      # Password, providers, MCP servers, and other config (created during install)
 ```
 
-Only one platform's scripts are checked out at install time, so you'll see either the Linux set or the macOS set — not both.
+Only one platform's scripts are checked out at install time, so you'll see either the Linux set or the macOS set — not both. A Windows install is a prebuilt package rather than a checkout, and additionally carries its own `python\` directory.
 
 ---
 

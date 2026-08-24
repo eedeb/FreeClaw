@@ -1,0 +1,58 @@
+# Build the Windows installer.
+#
+# There is no way to produce FreeClaw-Setup-*.exe on Linux or macOS: Inno
+# Setup is Windows-only, and the bundled interpreter is the Windows embeddable
+# distribution. This workflow is therefore the reference build — run it from
+# the Actions tab, or push a v* tag to attach the installer to a release.
+
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # write, not read: the tagged path creates a GitHub release. The
+    # workflow_dispatch path never uses it.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        # No -PythonSha256 here on purpose: pinning it would mean editing this
+        # file on every Python patch release, and the download is already
+        # HTTPS from python.org. Pass it locally when building something you
+        # intend to sign and distribute.
+        run: .\windows\build.ps1 -PythonVersion 3.12.8
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # Unsigned. Windows SmartScreen will show "Windows protected your PC"
+      # the first time anyone runs this, until the build is signed with a
+      # code-signing certificate. See windows/README.md.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeClaw-Setup-${{ steps.version.outputs.version }}
+          path: dist/FreeClaw-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/FreeClaw-Setup-*.exe

@@ -1566,29 +1566,41 @@ def api_set_vision_model():
 
 # ── SERVER RESTART ───────────────────────────────────────────
 
+# Exit code the process uses to mean "put me back", as opposed to "I am done".
+#
+# systemd (Restart=always) and Docker (restart: unless-stopped) respawn on any
+# exit code, so for those two supervisors the value is arbitrary. The Windows
+# tray app (windows/tray.py) is the one that needs to tell the difference: it
+# also handles Quit, so an exit it cannot classify would either resurrect a
+# server the user just closed or fail to bring back one that asked to restart.
+RESTART_EXIT_CODE = 42
+
+
 @app.route('/api/restart', methods=['POST'])
 def api_restart():
     """Restart the server so config that isn't picked up live (SECRET_KEY,
     a newly-installed dependency, code pulled by update.sh) takes effect.
 
-    Mechanism: the process simply exits, and systemd — which runs FreeClaw
-    with Restart=always / RestartSec=5 (see install.sh) — brings it back up
-    within a few seconds. No sudo, no shelling out to systemctl. The
-    frontend polls until the server answers again, then reloads. If FreeClaw
-    is being run WITHOUT the systemd unit (e.g. a bare `python -m
-    Flask.main` during development), nothing restarts it and the process
-    just stops — the poll will time out with a clear message rather than
-    silently hang."""
+    Mechanism: the process simply exits with RESTART_EXIT_CODE, and whatever
+    is supervising it brings it back within a few seconds — systemd with
+    Restart=always / RestartSec=5 on Linux (see install.sh), Docker's restart
+    policy on macOS, the tray app on Windows. No sudo, no shelling out to
+    systemctl. The frontend polls until the server answers again, then
+    reloads. If FreeClaw is being run WITHOUT a supervisor (e.g. a bare
+    `python -m Flask.main` during development), nothing restarts it and the
+    process just stops — the poll will time out with a clear message rather
+    than silently hang."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
 
     def _exit_soon():
         # Give the HTTP response time to flush to the browser before the
-        # worker dies; os._exit skips atexit/cleanup so systemd sees a
+        # worker dies; os._exit skips atexit/cleanup so the supervisor sees a
         # clean process gone and restarts it immediately.
         time.sleep(0.7)
-        logger.info("Restart requested via /api/restart — exiting for systemd to respawn")
-        os._exit(0)
+        logger.info("Restart requested via /api/restart — exiting with %s for the "
+                    "supervisor to respawn", RESTART_EXIT_CODE)
+        os._exit(RESTART_EXIT_CODE)
 
     threading.Thread(target=_exit_soon, daemon=True).start()
     return jsonify({'ok': True})

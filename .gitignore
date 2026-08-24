@@ -41,3 +41,14 @@ browser-profiles/
 
 # OS cruft
 .DS_Store
+
+# Windows installer build (windows/build.ps1): the staged tree with its
+# bundled Python and downloaded wheels, the download cache, and the compiled
+# FreeClaw-Setup-*.exe. All regenerable, and hundreds of megabytes.
+build/
+dist/
+windows/icon-preview.png
+
+# Written by the Windows tray app at startup so the installer and uninstaller
+# can stop a running FreeClaw before touching its files (windows/tray.py).
+freeclaw.pid

@@ -50,6 +50,16 @@ def _sess():
     return sessions.current()
 
 
+# Windows: keep child processes from opening a console window of their own.
+#
+# The tray app (windows/tray.py) runs FreeClaw with no console at all, and on
+# Windows a console child spawned by a parent that has none gets a brand new
+# visible window. Without this flag a black cmd window would flash on screen
+# every single time the agent ran an approved bash command. Zero — and so a
+# no-op — everywhere except Windows.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _server_base_url():
     """Public base URL for links to files the agent creates: CUSTOM_DOMAIN if
     set, otherwise this machine's LAN IP on the app's port."""
@@ -2337,7 +2347,8 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            shell=True
+            shell=True,
+            creationflags=NO_WINDOW,
         )
         stdout, stderr = proc.communicate()
         print(stdout,stderr)
