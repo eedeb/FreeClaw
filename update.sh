@@ -167,6 +167,48 @@ ensure_nltk_data() {
     return 0
 }
 
+# ── Options ──────────────────────────────────
+
+# --no-service: do the update but never touch FreeClaw.service.
+#
+# For the "Update FreeClaw" button in Settings, which runs this script from
+# inside the running server. Two reasons that path cannot use the normal one:
+#
+#   * No sudo. The service runs as the installing user (User= in the unit
+#     install.sh writes), and `sudo systemctl` from a process with no tty
+#     fails outright rather than prompting — with `set -e`, that would abort
+#     the update at its first step.
+#   * Stopping the service would kill this script. systemd's default
+#     KillMode=control-group takes down everything in the unit's cgroup, and a
+#     script spawned by the server is in it — so `systemctl stop` would end the
+#     update mid-pull.
+#
+# So the server stays up for the whole update and restarts itself afterwards
+# through /api/restart, which exits with code 42 and lets systemd respawn it.
+# Nothing here needs the service to be down: git checkout and pip write files
+# that the running process has already imported, and nothing reads them again
+# until the restart.
+NO_SERVICE=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-service) NO_SERVICE=1 ;;
+        -h|--help)
+            echo "Usage: ./update.sh [--no-service]"
+            echo
+            echo "  --no-service  Update without stopping or starting"
+            echo "                FreeClaw.service. The caller is responsible for"
+            echo "                restarting FreeClaw afterwards. Used by the"
+            echo "                Update button in Settings."
+            exit 0
+            ;;
+        *)
+            error "Unknown option: $arg"
+            echo "Try: ./update.sh --help"
+            exit 1
+            ;;
+    esac
+done
+
 # ── Header ───────────────────────────────────
 
 echo ""
@@ -213,9 +255,13 @@ section_gap
 
 # ── Apply update ─────────────────────────────
 
-info "Stopping FreeClaw service..."
-sudo systemctl stop FreeClaw.service
-success "Service stopped"
+if [[ $NO_SERVICE -eq 1 ]]; then
+    info "Leaving FreeClaw running (--no-service); it restarts itself at the end"
+else
+    info "Stopping FreeClaw service..."
+    sudo systemctl stop FreeClaw.service
+    success "Service stopped"
+fi
 
 section_gap
 info "Pulling updates from origin/main..."
@@ -245,23 +291,24 @@ success "Source files updated"
 
 info "Restoring Flask/static/ (user files preserved)..."
 mkdir -p Flask/static
-# The Setup Wizard is the one tracked thing under static/, and it's a live user
-# folder — so never check it out over an existing copy, which would wipe the
-# conversation and context.md of anyone using it. It's also deletable from the
-# home page, and a delete has to stick: the marker records that this install
-# has already been given the wizard once, so an update never resurrects it.
-# Installs that predate the wizard have no marker and no folder, and get it on
-# their next update; everyone else is left exactly as they are.
-WIZARD_DIR="Flask/static/Setup Wizard"
-WIZARD_MARKER="Flask/.wizard_installed"
-if [[ -d "$WIZARD_DIR" ]]; then
-    touch "$WIZARD_MARKER"
-elif [[ ! -f "$WIZARD_MARKER" ]]; then
-    if git checkout origin/main -- "$WIZARD_DIR/" 2>/dev/null; then
-        touch "$WIZARD_MARKER"
-        info "Added the Setup Wizard user"
-    fi
-fi
+# The Setup Wizard is deliberately NOT checked out here, in either direction.
+#
+# It only exists to walk a brand-new install through first-time setup, and
+# anything running update.sh is by definition already set up — so an update has
+# no one to onboard. It used to hand the wizard to installs that predated it,
+# guarded by a marker file so a delete would stick; that is gone because the
+# case it served (installs older than the wizard) has long since passed, and the
+# marker only ever existed to stop the update resurrecting something the user
+# had thrown away.
+#
+# Checking it out over an existing copy would be worse still: it is a live user
+# folder, so that would wipe the conversation and context.md of anyone actually
+# mid-setup. Installs that have the wizard keep exactly what they have,
+# including any edits; installs without it stay without it.
+#
+# Flask/.wizard_installed is left alone rather than cleaned up — it is
+# gitignored, harmless, and removing it would mean a version that still checks
+# for it could re-add the wizard on a downgrade.
 success "Static directory intact"
 
 section_gap
@@ -281,9 +328,13 @@ section_gap
 
 # ── Restart ──────────────────────────────────
 
-info "Restarting FreeClaw..."
-sudo systemctl start FreeClaw.service
-success "FreeClaw is running"
+if [[ $NO_SERVICE -eq 1 ]]; then
+    info "Not restarting the service (--no-service) — the caller does that"
+else
+    info "Restarting FreeClaw..."
+    sudo systemctl start FreeClaw.service
+    success "FreeClaw is running"
+fi
 
 section_gap
 divider

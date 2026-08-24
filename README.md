@@ -390,7 +390,21 @@ If the endpoint is unreachable the failure is swallowed silently and start-up is
 
 ## Updating
 
-From your FreeClaw install directory — on Linux:
+**Settings → Update FreeClaw** does it from the browser on Linux and Windows. On
+Linux it runs `update.sh` and streams the output onto the page, then restarts
+the server; on Windows it hands off to the notification-area app, which fetches
+the current installer and runs it. A failed update changes nothing — the server
+is only restarted after the script finishes cleanly, so you keep the version
+that was working.
+
+The button is deliberately absent on the macOS/Docker install. FreeClaw runs
+*inside* the container there, and updating means rebuilding the image from
+outside it — the container has neither the git repo (`.git/` is excluded by
+`.dockerignore`) nor any route to the Docker daemon. Giving it one would mean
+mounting `docker.sock`, which hands root-equivalent control of the host to a
+container that also runs an agent with a shell tool.
+
+From the command line instead, in your FreeClaw install directory — on Linux:
 
 ```bash
 ./update.sh
@@ -403,6 +417,11 @@ On macOS:
 ```
 
 Both pull the latest `src/`, `Flask/templates/`, and `Flask/main.py` from `origin/main` and leave your `Flask/static/` data (context, uploads, generated pages) untouched. The Linux script syncs the virtualenv and restarts the systemd service; the macOS one rebuilds the image (the source is baked in at build time, so a rebuild is what makes new code take effect) and restarts the container.
+
+`./update.sh --no-service` is the same update without touching
+`FreeClaw.service` — what the Settings button uses, since it is running inside
+the very service the script would otherwise stop. The caller restarts FreeClaw
+afterwards.
 
 ---
 

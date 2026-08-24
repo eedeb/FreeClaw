@@ -94,8 +94,23 @@ back when it goes away. The exit code is the whole protocol.
 | Exit code | Meaning | Tray does |
 |---|---|---|
 | `42` | Settings → Restart | Restarts immediately |
+| `43` | Settings → Update FreeClaw | Downloads the installer and runs it |
 | `0` | Clean shutdown | Stays stopped |
 | anything else | Crash | Restarts with backoff, gives up after 5 and says so |
+
+`43` exists because the server cannot update itself here. There is no git
+checkout and no `update.sh`; the install is a packaged tree, and half its files
+are open in the process that would be replacing them. The supervisor is the one
+thing not being replaced, so it does the work: it fetches
+`FreeClaw-Setup.exe`, checks the download is actually an executable — the right
+size, and starting with `MZ` — and runs it. The installer stops FreeClaw
+through `freeclaw.pid`, which ends the tray too; it comes back because the
+installer relaunches it. A download that fails or arrives wrong is refused and
+the current version is restarted instead, so a bad update never leaves you with
+no FreeClaw.
+
+Set `FC_UPDATE_URL` to point that at a fork, a staging host or an internal
+mirror.
 
 It is a tray app rather than a real Windows service because a service runs in
 session 0, which has no desktop. FreeClaw's sign-in browser

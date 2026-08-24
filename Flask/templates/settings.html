@@ -148,6 +148,27 @@
     .restart-box p { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
     #restart-status { font-family: var(--mono); font-size: 11px; color: var(--accent-dim); margin-top: 10px; display: none; }
     #restart-status.show { display: block; }
+    #restart-status.err { color: var(--err); }
+
+    /* Update — same shell as the restart box, accented rather than warned:
+       this is the routine action, restarting is the blunt one. */
+    #update-section { display: none; }
+    #update-section.show { display: block; }
+    .update-box { border: 1px solid var(--border); border-left: 2px solid var(--accent); background: var(--surface); border-radius: var(--radius); padding: 15px; }
+    .update-box p { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
+    #update-status { font-family: var(--mono); font-size: 11px; color: var(--accent-dim); margin-top: 10px; display: none; }
+    #update-status.show { display: block; }
+    #update-status.err { color: var(--err); }
+    /* The update log. Fixed height and pinned to the bottom so a long pip run
+       does not push the rest of the page around while it scrolls. */
+    #update-log {
+      display: none; margin-top: 12px; padding: 10px 12px;
+      max-height: 260px; overflow-y: auto;
+      background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+      font-family: var(--mono); font-size: 10.5px; line-height: 1.65;
+      color: var(--muted); white-space: pre-wrap; word-break: break-word;
+    }
+    #update-log.show { display: block; }
 
     .sec-head .spacer { flex: 1; }
     button.small {
@@ -303,6 +324,21 @@
     <div id="env-fields"></div>
     <button id="env-save" class="primary">Save environment</button>
     <div id="env-msg" class="msg"></div>
+  </section>
+
+  <!-- ── UPDATE ── -->
+  <!-- Hidden until /api/update/info says this install can update itself. The
+       Docker install cannot: the app runs inside the container, the update is a
+       host-side image rebuild, and there is no button that could do it from in
+       here. -->
+  <section id="update-section">
+    <div class="sec-head"><h2>Update FreeClaw</h2></div>
+    <div class="update-box">
+      <p id="update-blurb">Checking how this copy of FreeClaw was installed…</p>
+      <button id="update-btn" class="ghost">Update now</button>
+      <div id="update-status"></div>
+      <div id="update-log"></div>
+    </div>
   </section>
 
   <!-- ── RESTART ── -->
@@ -933,7 +969,113 @@
       // may exit before it finishes replying. Treat it as "restarting".
     }
     status.textContent = 'Server restarting — waiting for it to come back…';
-    // Poll an always-public endpoint (/login) until the network resolves again.
+    // Shared with the update flow: poll /login until the supervisor has the
+    // server answering again, then reload.
+    waitForServer(btn, status, 40000);
+  });
+
+  // ── Update ──
+  //
+  // Two shapes, decided by the server (see /api/update in Flask/main.py):
+  //
+  //   script     Linux. update.sh runs server-side while this page polls
+  //              /api/update/log; on a clean finish the page restarts the
+  //              server itself. Nothing restarts on a failure, so a broken
+  //              update leaves the working version running.
+  //   installer  Windows. The server exits immediately and the tray app
+  //              fetches and runs the installer — there is no log to poll, and
+  //              the wait is minutes rather than seconds.
+  let updateKind = null;
+
+  async function loadUpdate() {
+    const section = $('update-section'), blurb = $('update-blurb');
+    try {
+      const res = await fetch('/api/update/info');
+      if (!res.ok) return;                       // not logged in; login redirect handles it
+      const info = await res.json();
+      if (!info.supported) return;               // stays hidden (Docker, or no git checkout)
+      updateKind = info.kind;
+      section.classList.add('show');
+      const version = info.version ? `You're on v${info.version}. ` : '';
+      blurb.textContent = updateKind === 'windows'
+        ? `${version}Downloads the latest installer and runs it. FreeClaw closes while it installs, then comes back — your chats, files and settings are left alone.`
+        : `${version}Pulls the latest code, syncs dependencies, then restarts the server. Your chats, files and .env are left alone.`;
+      if (info.running) startUpdatePoll(0);
+    } catch (_) { /* leave it hidden */ }
+  }
+
+  function updateSay(text, isErr) {
+    const s = $('update-status');
+    s.className = isErr ? 'show err' : 'show';
+    s.textContent = text;
+  }
+
+  function appendLog(lines) {
+    if (!lines.length) return;
+    const log = $('update-log');
+    log.classList.add('show');
+    // Pin to the bottom only if the user hasn't scrolled up to read something.
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    log.textContent += lines.join('\n') + '\n';
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+
+  function startUpdatePoll(offset) {
+    (function poll(off) {
+      setTimeout(async () => {
+        let d;
+        try {
+          const res = await fetch(`/api/update/log?offset=${off}`, { cache: 'no-store' });
+          d = await res.json();
+        } catch (_) { return poll(off); }        // transient; ask for the same index again
+        appendLog(d.lines || []);
+        if (!d.done) { updateSay('Updating…'); return poll(d.offset); }
+        if (d.ok) {
+          updateSay('Update applied — restarting the server…');
+          restartAndReload($('update-btn'), $('update-status'));
+        } else {
+          updateSay(d.error || 'The update failed. FreeClaw is still running the previous version.', true);
+          $('update-btn').disabled = false;
+        }
+      }, 1200);
+    })(offset);
+  }
+
+  $('update-btn').addEventListener('click', async () => {
+    const btn = $('update-btn');
+    const isWin = updateKind === 'windows';
+    const msg = isWin
+      ? 'Download the latest installer and run it now? FreeClaw will close while it installs.'
+      : 'Update FreeClaw now? It pulls the latest code and restarts the server.';
+    if (!confirm(msg)) return;
+    btn.disabled = true;
+    $('update-log').textContent = '';
+    updateSay(isWin ? 'Asking the tray app to run the installer…' : 'Starting the update…');
+    let data = {};
+    try {
+      const res = await fetch('/api/update', { method: 'POST' });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+    } catch (e) {
+      // On Windows the server exits almost immediately, so a dropped
+      // connection here is the expected case, not a failure.
+      if (!isWin) { updateSay(e.message, true); btn.disabled = false; return; }
+    }
+    if (isWin) {
+      updateSay('Installer starting. Follow the setup window — this page reloads once FreeClaw is back.');
+      waitForServer(btn, $('update-status'), 300000);
+      return;
+    }
+    startUpdatePoll(0);
+  });
+
+  // Shared with the Restart button: exit, then wait for the supervisor.
+  function restartAndReload(btn, status) {
+    fetch('/api/restart', { method: 'POST' }).catch(() => {});
+    waitForServer(btn, status, 40000);
+  }
+
+  function waitForServer(btn, status, timeoutMs) {
     const started = Date.now();
     (function poll() {
       setTimeout(async () => {
@@ -942,20 +1084,20 @@
           status.textContent = 'Back up — reloading…';
           location.reload();
         } catch (_) {
-          if (Date.now() - started > 40000) {
-            status.style.color = 'var(--err)';
-            status.textContent = "Server hasn't come back after 40s. If you're not running it under systemd, start it again manually.";
-            btn.disabled = false;
+          if (Date.now() - started > timeoutMs) {
+            status.className = 'show err';
+            status.textContent = `FreeClaw hasn't come back after ${Math.round(timeoutMs / 1000)}s. Check the logs, or start it again yourself.`;
+            if (btn) btn.disabled = false;
             return;
           }
           poll();
         }
       }, 1500);
     })();
-  });
+  }
 
   // Initial load
-  loadProviders().then(loadVisionModel); loadMcp(); loadBashApprovals(); loadEnv();
+  loadProviders().then(loadVisionModel); loadMcp(); loadBashApprovals(); loadEnv(); loadUpdate();
 </script>
 </body>
 </html>

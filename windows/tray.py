@@ -58,6 +58,28 @@ ICON_PATH = os.path.join(HERE, "freeclaw.ico")
 PORT = 6767
 RESTART_EXIT_CODE = 42
 
+# "Settings -> Update FreeClaw" (Flask/main.py: UPDATE_EXIT_CODE). The server
+# cannot update itself on Windows: there is no git checkout and no update.sh,
+# the install is a packaged tree, and half its files are open in the very
+# process that would be replacing them. So the server exits with this code and
+# the supervisor — which is not being replaced — fetches the installer and runs
+# it. The installer stops FreeClaw through freeclaw.pid (see installer.iss:
+# StopFreeClaw), which is what ends this tray process too; it comes back
+# because the installer relaunches it.
+UPDATE_EXIT_CODE = 43
+
+# Where the installer is published. Overridable so a fork, a staging host or an
+# air-gapped mirror does not need a code change.
+UPDATE_URL = os.environ.get(
+    "FC_UPDATE_URL", "https://freeclaw.eedeb.dev/FreeClaw-Setup.exe")
+
+# Refuse anything that is not a real installer. A truncated download, an error
+# page served with HTTP 200, or a captive-portal login page would otherwise be
+# handed to the user as an .exe to run. Both checks are cheap and both have
+# already caught a real failure: the download URL once served a 3KB HTML page.
+UPDATE_MIN_BYTES = 5 * 1024 * 1024
+UPDATE_TIMEOUT_SECONDS = 600
+
 # Restart storm guard. A server that dies on a bad .env would otherwise be
 # respawned forever, hammering the disk and hiding the real error behind
 # thousands of log lines.
@@ -90,6 +112,7 @@ RUN_VALUE = "FreeClaw"
 STATE_STARTING = "starting"
 STATE_RUNNING = "running"
 STATE_RESTARTING = "restarting"
+STATE_UPDATING = "updating"
 STATE_STOPPED = "stopped"
 STATE_FAILED = "failed"
 
@@ -97,6 +120,7 @@ STATE_LABELS = {
     STATE_STARTING: "FreeClaw — starting…",
     STATE_RUNNING: "FreeClaw — running",
     STATE_RESTARTING: "FreeClaw — restarting…",
+    STATE_UPDATING: "FreeClaw — updating…",
     STATE_STOPPED: "FreeClaw — stopped",
     STATE_FAILED: "FreeClaw — stopped (see logs)",
 }
@@ -300,6 +324,24 @@ class Server:
             if self._quitting.is_set():
                 return
 
+            if code == UPDATE_EXIT_CODE:
+                # Not a failure either, so the storm guard is reset for the
+                # same reason as a restart.
+                failures = 0
+                self._set_state(STATE_UPDATING)
+                if self._run_installer():
+                    # The installer is running and will stop this process on
+                    # its way through. Stop supervising: respawning the server
+                    # now would only put the old version back and hold its
+                    # files open while the installer tries to replace them.
+                    return
+                # Download or launch failed — say so and put the server back,
+                # because the alternative is a FreeClaw that vanished when the
+                # user clicked Update.
+                logger.error("update failed; restarting the current version")
+                self._set_state(STATE_RESTARTING)
+                continue
+
             if code == RESTART_EXIT_CODE or asked_for_restart:
                 # Deliberate. Not a failure, so it must not count toward the
                 # storm guard — otherwise five Settings saves in a row would
@@ -325,6 +367,61 @@ class Server:
             self._set_state(STATE_RESTARTING)
             if self._quitting.wait(delay):
                 return
+
+    def _run_installer(self):
+        """Download the current installer and launch it. True if it started.
+
+        Downloads to a temp file and only renames it into place once the size
+        and the PE signature check out, so a partial or wrong-content download
+        is never something the user can be handed to run.
+        """
+        try:
+            import tempfile
+            import urllib.request
+
+            logger.info("downloading the installer from %s", UPDATE_URL)
+            tmp_dir = tempfile.mkdtemp(prefix="freeclaw-update-")
+            partial = os.path.join(tmp_dir, "FreeClaw-Setup.exe.part")
+            final = os.path.join(tmp_dir, "FreeClaw-Setup.exe")
+
+            with urllib.request.urlopen(UPDATE_URL,
+                                        timeout=UPDATE_TIMEOUT_SECONDS) as resp:
+                with open(partial, "wb") as out:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+
+            size = os.path.getsize(partial)
+            if size < UPDATE_MIN_BYTES:
+                logger.error("downloaded %s bytes from %s — too small to be the "
+                             "installer, refusing to run it", size, UPDATE_URL)
+                return False
+            with open(partial, "rb") as f:
+                if f.read(2) != b"MZ":
+                    logger.error("%s did not return an executable (no MZ header) "
+                                 "— refusing to run it", UPDATE_URL)
+                    return False
+
+            os.replace(partial, final)
+            logger.info("installer downloaded (%s bytes), launching", size)
+
+            # No /VERYSILENT: the user clicked Update and should see the wizard,
+            # and a silent run would need a password argument on a reinstall
+            # that does not want one. Detached, because the installer is about
+            # to kill this process.
+            subprocess.Popen(
+                [final],
+                cwd=tmp_dir,
+                creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
+                               | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+                close_fds=True,
+            )
+            return True
+        except Exception:
+            logger.exception("couldn't download or start the installer")
+            return False
 
     # ── control ──
     def start(self):

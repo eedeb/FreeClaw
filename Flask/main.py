@@ -26,6 +26,7 @@ import re
 import time
 import threading
 import shutil
+import subprocess
 import functools
 from datetime import datetime
 
@@ -1604,6 +1605,235 @@ def api_restart():
 
     threading.Thread(target=_exit_soon, daemon=True).start()
     return jsonify({'ok': True})
+
+
+# ── UPDATE ───────────────────────────────────────────────────
+#
+# "Update FreeClaw" in Settings. What that can mean depends entirely on how
+# FreeClaw was installed, so install_kind() decides and the three paths share
+# almost nothing:
+#
+#   linux    A git checkout with a venv, supervised by systemd. update.sh is
+#            right there, so run it and restart afterwards.
+#   windows  A packaged tree with no git and no update script. The tray app is
+#            the supervisor and the only thing that can replace files that are
+#            currently in use, so the server exits with UPDATE_EXIT_CODE and
+#            windows/tray.py fetches and runs the installer.
+#   docker   Not supported, and the button is hidden. The app runs inside the
+#            container; the update is a host-side image rebuild
+#            (./update-mac.sh), and the container has neither the git repo
+#            (.dockerignore excludes .git/) nor any way to reach the Docker
+#            daemon. Reaching the host would mean mounting docker.sock, which
+#            hands root-equivalent control of the machine to a container that
+#            also runs an agent with a shell tool.
+
+# Exit code meaning "replace me, then start me again", as opposed to
+# RESTART_EXIT_CODE's "start me again". Only the Windows tray distinguishes
+# them; systemd and Docker respawn either way, which is exactly why neither of
+# them can be the thing that performs a Windows-style update.
+UPDATE_EXIT_CODE = 43
+
+# Where update.sh lives — repo root, one level up from Flask/.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_UPDATE_SCRIPT = os.path.join(_REPO_ROOT, "update.sh")
+
+
+def install_kind():
+    """Which kind of install this is: 'windows', 'docker', 'linux' or 'unknown'.
+
+    Windows first: a Windows container is not something FreeClaw ships, so
+    os.name settles it before the container check muddies things.
+
+    Docker is detected by /.dockerignore's counterpart — /.dockerenv, which the
+    daemon creates in every container — plus a cgroup check for the runtimes
+    that no longer write it (podman, and Docker on cgroup v2 in some configs).
+
+    'unknown' covers a native install that is not a git checkout — someone
+    running `python -m Flask.main` out of a tarball. Treated like docker: no
+    button, because update.sh either is not there or would not do anything
+    useful.
+    """
+    if os.name == "nt":
+        return "windows"
+    if os.path.exists("/.dockerenv"):
+        return "docker"
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8", errors="replace") as f:
+            if any(m in f.read() for m in ("docker", "containerd", "podman")):
+                return "docker"
+    except OSError:
+        pass
+    if os.path.isfile(_UPDATE_SCRIPT) and os.path.isdir(os.path.join(_REPO_ROOT, ".git")):
+        return "linux"
+    return "unknown"
+
+
+UPDATABLE = ("linux", "windows")
+
+# Progress for the run in flight. One update at a time, process-wide — it
+# rewrites the install, so two at once would be two git checkouts and two pips
+# racing over the same tree. `_update_lock` guards every field.
+_update_lock = threading.Lock()
+_update_state = {
+    "running": False,
+    "lines": [],      # captured stdout/stderr, oldest first
+    "done": False,
+    "ok": None,       # True/False once done
+    "error": None,
+}
+
+
+def _update_append(line):
+    with _update_lock:
+        _update_state["lines"].append(line)
+
+
+def _run_update_script():
+    """Run `update.sh --no-service` and record its output.
+
+    --no-service because this process is the thing systemd would be stopping:
+    see the long comment on the flag in update.sh. The restart is left to the
+    browser, which calls /api/restart once the log shows a clean finish — so a
+    failed update leaves the current version running rather than bouncing the
+    server into whatever half-applied state it produced.
+    """
+    try:
+        proc = subprocess.Popen(
+            ["bash", _UPDATE_SCRIPT, "--no-service"],
+            cwd=_REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # one interleaved stream, in real order
+            text=True,
+            bufsize=1,
+            env={**os.environ, "TERM": "dumb"},
+        )
+    except OSError as e:
+        logger.exception("Couldn't start update.sh")
+        with _update_lock:
+            _update_state.update(running=False, done=True, ok=False,
+                                 error=f"Couldn't start update.sh: {e}")
+        return
+
+    try:
+        for line in proc.stdout:
+            _update_append(_strip_ansi(line.rstrip("\n")))
+        code = proc.wait()
+    except Exception as e:
+        logger.exception("update.sh failed while running")
+        with _update_lock:
+            _update_state.update(running=False, done=True, ok=False,
+                                 error=str(e))
+        return
+
+    logger.info("update.sh finished with exit code %s", code)
+    with _update_lock:
+        _update_state.update(
+            running=False, done=True, ok=(code == 0),
+            error=None if code == 0 else f"update.sh exited with code {code}")
+
+
+# update.sh writes colour escapes unconditionally; they are meaningless in the
+# browser and would show up as literal "[38;5;154m".
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text):
+    return _ANSI_RE.sub("", text)
+
+
+@app.route('/api/update/info', methods=['GET'])
+def api_update_info():
+    """What the Settings page needs to decide whether to draw the button."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    kind = install_kind()
+    with _update_lock:
+        running = _update_state["running"]
+    return jsonify({
+        'kind': kind,
+        'supported': kind in UPDATABLE,
+        'version': _read_version(),
+        'running': running,
+    })
+
+
+def _read_version():
+    try:
+        with open(os.path.join(_REPO_ROOT, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+@app.route('/api/update', methods=['POST'])
+def api_update():
+    """Start an update. The response says which shape it took, because the two
+    supported platforms behave completely differently from here:
+
+      linux    202 + {'mode': 'script'} — poll /api/update/log, then restart.
+      windows  202 + {'mode': 'installer'} — the process is about to exit and
+               the tray takes over; there is no log to poll.
+    """
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    kind = install_kind()
+    if kind not in UPDATABLE:
+        return jsonify({'error': _unsupported_message(kind), 'kind': kind}), 501
+
+    if kind == "windows":
+        def _exit_soon():
+            time.sleep(0.7)   # let the response reach the browser first
+            logger.info("Update requested via /api/update — exiting with %s so "
+                        "the tray app can run the installer", UPDATE_EXIT_CODE)
+            os._exit(UPDATE_EXIT_CODE)
+        threading.Thread(target=_exit_soon, daemon=True).start()
+        return jsonify({'ok': True, 'mode': 'installer'}), 202
+
+    with _update_lock:
+        if _update_state["running"]:
+            return jsonify({'error': 'An update is already running.'}), 409
+        _update_state.update(running=True, lines=[], done=False, ok=None,
+                             error=None)
+
+    threading.Thread(target=_run_update_script, daemon=True,
+                     name="freeclaw-update").start()
+    return jsonify({'ok': True, 'mode': 'script'}), 202
+
+
+def _unsupported_message(kind):
+    if kind == "docker":
+        return ("This is the Docker install, which updates by rebuilding its "
+                "image from outside the container. Run ./update-mac.sh in your "
+                "FreeClaw folder on the host.")
+    return ("This install has no update script — it is not a git checkout. "
+            "Update it the same way you installed it.")
+
+
+@app.route('/api/update/log', methods=['GET'])
+def api_update_log():
+    """Lines produced so far, from `offset` onwards.
+
+    Polled rather than streamed: an update runs for minutes over a connection
+    that a restart is going to break anyway, and an offset makes a dropped poll
+    cost nothing — the next one asks for the same index again.
+    """
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    with _update_lock:
+        lines = _update_state["lines"][offset:]
+        return jsonify({
+            'lines': lines,
+            'offset': offset + len(lines),
+            'running': _update_state["running"],
+            'done': _update_state["done"],
+            'ok': _update_state["ok"],
+            'error': _update_state["error"],
+        })
 
 
 # ── PING SCHEDULER ───────────────────────────────────────────
