@@ -14,6 +14,54 @@ load_dotenv(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".en
 # Flask/main.py) — toggled here by /startapi and /stopapi.
 API_FLAG = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "Flask", ".api_enabled")
 
+
+def _prepare_windows_console():
+    """Make a Windows console able to render what this CLI prints.
+
+    Two separate problems, both silent-looking and both fatal to readability:
+
+    * ANSI. Every colour below is an escape sequence, and a console only
+      interprets those once ENABLE_VIRTUAL_TERMINAL_PROCESSING is on. Windows
+      Terminal sets it; conhost — still what you get from `cmd` in a lot of
+      places — does not, and prints `←[38;5;154m` in front of every line
+      instead. The flag is per-handle and sticks for the process.
+    * Encoding. The banner is box-drawing characters and the prompts use
+      `…`/`→`. Attached to a console Python handles those, but redirected to a
+      pipe or a file it falls back to the locale codepage, where they raise
+      UnicodeEncodeError and take the CLI down mid-print.
+
+    Best-effort throughout: an older console that refuses the flag should lose
+    the colours, not the CLI.
+    """
+    if os.name != "nt":
+        return
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        for handle_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+            handle = kernel32.GetStdHandle(handle_id)
+            if handle in (0, -1):
+                continue
+            mode = ctypes.c_uint32()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                continue  # redirected, not a console — nothing to switch on
+            kernel32.SetConsoleMode(
+                handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    except Exception:
+        pass
+
+
+_prepare_windows_console()
+
 print("\033[38;5;242m  loading FreeClaw…\033[0m", flush=True)
 
 

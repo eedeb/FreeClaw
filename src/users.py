@@ -13,11 +13,19 @@ import time
 import src.agent as agent
 import src.approvals as approvals
 import src.session as sessions
+from src.logging_setup import get_logger
 
 try:
     import fcntl
-except ImportError:  # non-POSIX; the lock degrades to the atomic rename alone
+except ImportError:  # not POSIX — Windows locks through msvcrt below instead
     fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # not Windows
+    msvcrt = None
+
+logger = get_logger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "..", "Flask", "static")
@@ -160,18 +168,97 @@ def _file_lock(path):
 
     The lock is taken on a sidecar rather than the file itself: the write
     replaces conversation.json by rename, so a lock held on the old inode would
-    stop guarding anything the moment the first writer finished.
+    stop guarding anything the moment the first writer finished. On Windows
+    the sidecar matters for a second reason — a locked file there can't be
+    replaced at all, so locking conversation.json itself would deadlock the
+    rename against the lock meant to protect it.
     """
-    if fcntl is None:
-        yield
+    if fcntl is None and msvcrt is None:
+        yield  # neither primitive: degrade to the atomic rename alone
         return
+
     lock_path = path + ".lock"
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    locked = False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            # Released by the os.close() below, as flock always has been.
+        else:
+            locked = _msvcrt_lock(fd, lock_path)
         yield
     finally:
+        # Only the msvcrt path needs an explicit release, and only if it got
+        # the lock in the first place — `locked` stays False on the fcntl path
+        # for exactly that reason.
+        if locked:
+            with contextlib.suppress(OSError):
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         os.close(fd)
+
+
+# Longest we'll wait for the other process to finish its write before giving up
+# and going ahead anyway. A conversation write is a read, a json.dump and a
+# rename — milliseconds. Anything past this is a crashed or suspended process
+# holding a lock nobody is going to release.
+_LOCK_TIMEOUT = 20
+
+
+def _msvcrt_lock(fd, lock_path):
+    """Take Windows' equivalent of flock(LOCK_EX) on `fd`. Returns whether it
+    was actually acquired.
+
+    msvcrt.locking() has no blocking-forever mode. Its one blocking flag,
+    LK_LOCK, gives up after about ten seconds and raises — and it retries on a
+    one-second cycle, so a lock released just after a poll costs most of a
+    second. LK_NBLCK in a loop of our own is both finer-grained and honest
+    about the timeout being ours.
+
+    Failing to acquire is not fatal — we log and proceed. The atomic rename in
+    _write_json_atomic still guarantees nobody reads a half-written file; what
+    is lost is only the guarantee that two simultaneous writers don't overwrite
+    each other, which is exactly where this degraded before the branch existed.
+    """
+    deadline = time.monotonic() + _LOCK_TIMEOUT
+    while True:
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            # One byte at offset 0 — the range is arbitrary as long as every
+            # process agrees on it, and the sidecar has no contents to guard.
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Gave up waiting for the lock on %s after %ds; writing "
+                    "anyway. A simultaneous write from another process could "
+                    "be lost.", lock_path, _LOCK_TIMEOUT)
+                return False
+            time.sleep(0.05)
+
+
+def _replace_with_retry(tmp, path, attempts=10, delay=0.05):
+    """os.replace(tmp, path), retried past a transient Windows PermissionError.
+
+    POSIX lets a file be renamed over while another process has it open.
+    Windows does not: a reader holding conversation.json — the ping scheduler,
+    a page refresh, an antivirus scanner deciding to inspect a file that just
+    changed — makes the replace fail with PermissionError until it lets go.
+
+    Those holds are momentary, so a short retry turns what would be a lost
+    turn into a barely measurable delay. The last attempt is left to raise: at
+    that point something is holding the file open indefinitely, and the caller
+    needs the error rather than a silently dropped conversation.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 def _write_json_atomic(path, data):
@@ -181,7 +268,9 @@ def _write_json_atomic(path, data):
     half-written, and anything reading it then (the other process, the ping
     scheduler, a page refresh) sees a corrupt conversation. Writing a temp file
     in the same directory and renaming it over the target is atomic on POSIX,
-    so a reader sees either the whole old file or the whole new one.
+    so a reader sees either the whole old file or the whole new one. Windows
+    makes the same guarantee for os.replace, with one extra failure mode — see
+    the retry loop.
     """
     directory = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".conv-", suffix=".tmp")
@@ -190,7 +279,7 @@ def _write_json_atomic(path, data):
             json.dump(data, f)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

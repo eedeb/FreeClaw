@@ -30,11 +30,11 @@ anything important is still the real containment story.
 
 import json
 import os
-import shlex
 import threading
 import uuid
 
 import src.session as sessions
+import src.shell as shell
 from src.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -91,7 +91,7 @@ def program_of(command):
     if any(tok in command for tok in _COMPOUND):
         return None
     try:
-        parts = shlex.split(command)
+        parts = shell.split_command(command)
     except ValueError:
         return None
     if not parts:

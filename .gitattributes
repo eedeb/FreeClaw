@@ -1,0 +1,20 @@
+# Windows batch files must keep CRLF line endings on checkout, on every
+# platform. cmd.exe reads a .cmd in the OEM codepage and mis-parses bare LF:
+# the `rem` lines stop being comments and it tries to run them as commands.
+# Without this, a clone on Linux/macOS — or a repo with core.autocrlf=input —
+# stages LF, windows/build.ps1 copies that straight into the installer, and
+# every `freeclaw` invocation prints a screenful of "is not recognized" before
+# it works.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# The Inno Setup script needs its UTF-8 BOM preserved — without one the
+# compiler reads the file as ANSI and the em dashes in the wizard's own text
+# render as mojibake. Treating it as binary keeps git from touching either the
+# BOM or the line endings.
+*.iss -text
+
+# Shell scripts must keep LF, including when checked out on Windows: the
+# install/update scripts are run by bash on Linux and macOS, which chokes on
+# a CRLF shebang.
+*.sh text eol=lf

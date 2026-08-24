@@ -55,7 +55,7 @@ It will:
 1. Unpack FreeClaw and a bundled Python into `%LOCALAPPDATA%\FreeClaw` — no administrator rights, no UAC prompt
 2. Ask you to set a **password** for the web UI (no API keys collected here)
 3. Add **FreeClaw** to the notification area — the `^` chevron at the right of the taskbar — where a small supervisor keeps the server running and restarts it on demand, the job systemd does on Linux
-4. Optionally start with Windows, and optionally add a desktop shortcut
+4. Optionally start with Windows, add a desktop shortcut, and put the `freeclaw` command on your PATH
 5. Open **http://localhost:6767** when you click the icon
 
 **Click the tray icon to open FreeClaw.** Right-click it for Restart, the logs
@@ -68,13 +68,18 @@ one-line command.
 The build is unsigned, so SmartScreen shows *"Windows protected your PC"* on
 first run — **More info → Run anyway**.
 
+To chat from a terminal instead, run `freeclaw` — the same CLI the Linux and
+macOS installs put on PATH.
+
 Uninstalling leaves your chats, `context.md`, `.env` and logs alone, and
 reinstalling merges into your existing `.env` rather than overwriting it.
 
-> Some of the wider port is still outstanding — most visibly the agent's bash
-> tool, which currently runs commands through `cmd.exe`. See
-> [windows/README.md](windows/README.md#not-done-yet) for the full list, and
-> for how to build the installer yourself.
+> The agent's bash tool runs commands through **Git Bash**, so install
+> [Git for Windows](https://git-scm.com/download/win) if you want it — without
+> it FreeClaw falls back to `cmd.exe`, where the `ls`/`grep`/`cat` the model
+> reaches for don't exist. Everything else works either way. See
+> [windows/README.md](windows/README.md) for the details and for how to build
+> the installer yourself.
 
 ---
 

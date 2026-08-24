@@ -33,7 +33,6 @@ import json
 import os
 import queue
 import re
-import shlex
 import subprocess
 import sys
 import threading
@@ -43,6 +42,7 @@ import uuid
 import requests
 from dotenv import dotenv_values
 
+import src.shell as shell
 from src.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -644,11 +644,20 @@ class _StdioServer:
         self._next_id = 0
 
         try:
-            argv = shlex.split(command)
+            argv = shell.split_command(command)
         except ValueError as e:
             raise StdioSpawnFailed(f"couldn't parse the command ({e})")
         if not argv:
             raise StdioSpawnFailed("the command is empty")
+
+        # `npx`, `uvx` and most other Node/Python launchers install on Windows
+        # as `.cmd` shims. Popen resolves argv[0] through CreateProcess, which
+        # applies no PATHEXT search, so a bare `npx` is simply not found —
+        # every npx-based MCP server would fail to start. shutil.which does
+        # apply PATHEXT, so resolving first is what makes them spawnable.
+        # No-op on POSIX and for the built-in browser server, which already
+        # names an absolute interpreter path.
+        argv[0] = shell.resolve_program(argv[0])
 
         try:
             self.proc = subprocess.Popen(

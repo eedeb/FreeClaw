@@ -21,6 +21,7 @@ import src.mcp_client as mcp_client
 import src.responses_api as responses_api
 import src.scraper as scraper
 import src.session as sessions
+import src.shell as shell
 from src.logging_setup import get_logger
 
 load_dotenv()
@@ -2342,14 +2343,25 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         if not bash_approved:
             logger.warning("Blocked an unapproved bash command: %.300r", command)
             return approvals.denial_message(approvals.DECISION_DENY)
-        proc = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            shell=True,
-            creationflags=NO_WINDOW,
-        )
+        # POSIX: the command line and shell=True, as always. Windows: argv for
+        # Git Bash, because shell=True there means cmd.exe. See shell.bash_argv
+        # for why this isn't `executable=`.
+        args, spawn_kwargs = shell.bash_argv(command)
+        try:
+            proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=NO_WINDOW,
+                **spawn_kwargs,
+            )
+        except OSError as e:
+            # Only reachable on Windows, where args[0] is a real path that can
+            # go missing — Git uninstalled since the interpreter started, say.
+            # shell=True can't get here, so POSIX behaviour is unchanged.
+            logger.exception("Couldn't start a shell for a bash command")
+            return f"Error: couldn't start a shell to run the command: {e}"
         stdout, stderr = proc.communicate()
         print(stdout,stderr)
         output = (stdout + "\n" + stderr).strip()

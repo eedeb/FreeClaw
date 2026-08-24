@@ -161,8 +161,17 @@ Get-ChildItem $Stage -Recurse -Directory -Filter "__pycache__" |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem $Stage -Recurse -File -Include "*.pyc", ".DS_Store" |
     Remove-Item -Force -ErrorAction SilentlyContinue
+# The `freeclaw` CLI shim goes in its own bin\ directory, because that is the
+# directory the installer puts on PATH — everything else under the install root
+# would come along with it, and putting python.exe and tray.py on a user's PATH
+# is not something an app should do behind their back.
+$binDir = Join-Path $Stage "bin"
+New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+Copy-Item (Join-Path $Here "freeclaw.cmd") -Destination $binDir -Force
+
 # The build's own inputs and previews aren't part of the app.
-foreach ($junk in @("build.ps1", "installer.iss", "icon-preview.png", "requirements-windows.txt")) {
+foreach ($junk in @("build.ps1", "installer.iss", "icon-preview.png",
+                    "requirements-windows.txt", "freeclaw.cmd")) {
     Remove-Item (Join-Path $Stage "windows\$junk") -Force -ErrorAction SilentlyContinue
 }
 # Belt and braces: none of these are in the copy list above, but a stray one
@@ -187,14 +196,20 @@ if ($SkipInstaller) {
 Step 7 "Compiling the installer"
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    # Where a non-admin install lands — `winget install JRSoftware.InnoSetup`
+    # without elevation puts it here, and neither of the paths above nor PATH
+    # will find it. Worth checking given the rest of this install story is
+    # built around not needing administrator rights.
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) {
     $cmd = Get-Command iscc -ErrorAction SilentlyContinue
     if ($cmd) { $iscc = $cmd.Source }
 }
 if (-not $iscc) {
-    throw "Inno Setup 6 not found. Install it with:  choco install innosetup -y"
+    throw ("Inno Setup 6 not found. Install it with:  " +
+           "winget install JRSoftware.InnoSetup   (or: choco install innosetup -y)")
 }
 Info "using $iscc"
 
