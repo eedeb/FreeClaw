@@ -1,11 +1,11 @@
 # FreeClaw on Windows
 
-A native install: no WSL, no Docker Desktop, no Python of your own. The
-installer drops a self-contained tree into `%LOCALAPPDATA%\FreeClaw` and adds
-a notification-area app that keeps the server running.
+A native install: no WSL, no Docker Desktop, no Python of your own.
+`install.ps1` drops a self-contained tree into `%LOCALAPPDATA%\FreeClaw` and
+adds a notification-area app that keeps the server running.
 
 ```
-FreeClaw-Setup-<version>.exe   →   %LOCALAPPDATA%\FreeClaw
+FreeClaw-<version>-win64.zip   →   %LOCALAPPDATA%\FreeClaw
                                      ├── python\        bundled interpreter + deps
                                      ├── Flask\ src\ models\
                                      ├── windows\tray.py
@@ -16,38 +16,66 @@ FreeClaw-Setup-<version>.exe   →   %LOCALAPPDATA%\FreeClaw
 
 ## Installing
 
-Run the installer. It asks for one thing — the password for the web UI — and
-takes about a minute. No administrator rights are needed at any point.
+### The one-liner
+
+```powershell
+irm https://freeclaw.eedeb.dev/install.ps1 | iex
+```
+
+The recommended route, for one reason above all: **there is no security
+prompt.** Mark of the Web is applied by the *browser*, so a build PowerShell
+fetches never carries it and never trips SmartScreen — otherwise the single
+biggest obstacle to an unsigned build, and one that reads to most people as
+"the download is broken" rather than "Windows is asking a question".
+
+It installs the same tree the `.exe` does, from the portable zip, and:
+
+- verifies the published SHA-256 before unpacking anything;
+- stops a running FreeClaw first, through `freeclaw.pid`, so it is never
+  replacing files that are in use;
+- generates a login password and prints it once. FreeClaw fails closed without
+  `FC_PASSWORD` — an unset value can never match what you type — so one is
+  invented rather than left blank. Pass `-Password` to choose your own;
+- adds `freeclaw` to PATH and a Start Menu shortcut, and starts it.
+
+Re-running it is the update path: `.env`, `Flask\static`, `logs` and
+`browser-profiles` are never overwritten, so chats, providers and saved logins
+survive. `-NoStart`, `-NoPath`, `-NoShortcut`, `-Autostart`, `-InstallDir` and
+`-ZipUrl` adjust the rest; piped through `iex` there is nowhere to put a
+parameter, so each also reads an environment variable (`FREECLAW_DIR`,
+`FREECLAW_PASSWORD`, and so on — see the header of
+[`install.ps1`](../install.ps1)).
+
+Removing it:
+
+```powershell
+irm https://freeclaw.eedeb.dev/uninstall.ps1 | iex
+```
+
+Your data stays unless you add `-Purge`. Shortcuts, the autostart entry and the
+PATH entry are only removed if they actually point at the install being
+removed — a second FreeClaw elsewhere is left alone.
 
 For the agent's bash tool, also install
 [Git for Windows](https://git-scm.com/download/win) if you don't already have
 it. *Platform differences* below has what it's used for and what happens
 without it; nothing else in FreeClaw depends on it.
 
-> **SmartScreen.** The build is unsigned, so the first run shows *"Windows
-> protected your PC"*. Click **More info → Run anyway**. Signing it needs a
-> code-signing certificate (~$300–400/year); until then this is expected.
-
 Afterwards FreeClaw appears in the notification area — the `^` chevron at the
 right-hand end of the taskbar. Drag it onto the taskbar itself to keep it
 visible.
 
-### Unattended
+### Coming from the old .exe installer
 
-There is no password page to type into, so the password has to be an argument.
-Setup refuses to continue without one rather than seeding an empty
-`FC_PASSWORD` and putting the web UI on the network behind nothing:
+Just run the one-liner. It installs into the same directory, keeps your `.env`
+and chats, and clears out the Add/Remove Programs entry and `unins000.exe` the
+old installer left behind — `uninstall.ps1` is the uninstaller from then on.
 
-```powershell
-.\FreeClaw-Setup-<version>.exe /VERYSILENT /PASSWORD=yourpassword
-```
-
-`/TELEMETRY=1` opts into the single install ping (default off — a script that
-never saw the checkbox hasn't opted in). `/TASKS=` chooses from `startupicon`,
-`desktopicon` and `addtopath`; passing the switch at all replaces the defaults,
-so `/TASKS=addtopath` means *only* the PATH entry. `/DIR=` installs somewhere
-other than `%LOCALAPPDATA%\FreeClaw`. On a reinstall the password argument can
-be left off — the existing `.env` is kept.
+The `.exe` is gone for the reason above: unsigned, it was met with *"Windows
+protected your PC"*, and a warning that hides its own Run button behind **More
+info** reads as a broken download rather than a question. Signing it would need
+a code-signing certificate; fetching it with PowerShell costs nothing and
+sidesteps the warning entirely.
 
 ## Using it
 
@@ -76,7 +104,7 @@ is the one to send to your phone.
 
 Windows Defender blocks inbound connections to port 6767 by default, so the
 LAN address won't work until you allow it. That needs administrator rights, so
-the installer doesn't do it. From an elevated PowerShell:
+the install doesn't do it. From an elevated PowerShell:
 
 ```powershell
 New-NetFirewallRule -DisplayName "FreeClaw" -Direction Inbound -LocalPort 6767 -Protocol TCP -Action Allow -Profile Private
@@ -94,20 +122,22 @@ back when it goes away. The exit code is the whole protocol.
 | Exit code | Meaning | Tray does |
 |---|---|---|
 | `42` | Settings → Restart | Restarts immediately |
-| `43` | Settings → Update FreeClaw | Downloads the installer and runs it |
+| `43` | Settings → Update FreeClaw | Runs install.ps1 again, then exits |
 | `0` | Clean shutdown | Stays stopped |
 | anything else | Crash | Restarts with backoff, gives up after 5 and says so |
 
 `43` exists because the server cannot update itself here. There is no git
 checkout and no `update.sh`; the install is a packaged tree, and half its files
 are open in the process that would be replacing them. The supervisor is the one
-thing not being replaced, so it does the work: it fetches
-`FreeClaw-Setup.exe`, checks the download is actually an executable — the right
-size, and starting with `MZ` — and runs it. The installer stops FreeClaw
-through `freeclaw.pid`, which ends the tray too; it comes back because the
-installer relaunches it. A download that fails or arrives wrong is refused and
-the current version is restarted instead, so a bad update never leaves you with
-no FreeClaw.
+thing not being replaced, so it starts `install.ps1` — the same script that
+installed FreeClaw — in a detached PowerShell and then quits, which removes
+`freeclaw.pid` and releases every file. The updater verifies its download,
+replaces the program files, and starts a fresh tray at the end.
+
+Detached, and in its own process group, for a specific reason: the updater
+stops a running FreeClaw with `taskkill /T`, which walks the process tree. A
+child of the tray would be inside that tree and would be killed halfway through
+replacing the install.
 
 Set `FC_UPDATE_URL` to point that at a fork, a staging host or an internal
 mirror.
@@ -137,21 +167,22 @@ delete it by hand if you want it gone.
 Reinstalling over an existing install is likewise safe: `.env` is merged, not
 overwritten, so your password, providers and MCP servers survive.
 
-## Building the installer
+## Building the package
 
-Needs a Windows machine with [Inno Setup 6.3+](https://jrsoftware.org/isdl.php)
-(`choco install innosetup -y`). Everything else is downloaded by the script.
+Needs a Windows machine and nothing else — the bundled Python, its
+dependencies and the NLTK table are all downloaded by the script.
 
 ```powershell
 .\windows\build.ps1
 ```
 
-The result lands in `dist\FreeClaw-Setup-<version>.exe`. To stage the tree
-without compiling an installer — useful for running the tray straight out of
-the build directory:
+The result is `dist\FreeClaw-<version>-win64.zip`, with a `.sha256` beside it.
+Publish both: `install.ps1` reads the checksum before unpacking anything and
+refuses a download that does not match. To stage the tree without packing it —
+useful for running the tray straight out of the build directory:
 
 ```powershell
-.\windows\build.ps1 -SkipInstaller
+.\windows\build.ps1 -SkipZip
 ```
 
 Pass `-PythonSha256 <hash>` (from python.org's download page) for a build you

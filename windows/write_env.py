@@ -1,9 +1,11 @@
 """Seed .env during a Windows install — the job install.sh does on Linux.
 
-Called by the Inno Setup installer (windows/installer.iss) after the files are
-in place. Kept in Python rather than in the installer's Pascal script for two
-reasons: SECRET_KEY needs a real CSPRNG, which Pascal's Random() is not, and
-merge-don't-clobber is fiddly enough that it deserves to be testable.
+Called by install.ps1 once the files are in place. Kept in Python rather than
+written inline in PowerShell for two reasons: SECRET_KEY and the generated
+password need a real CSPRNG, and Windows PowerShell 5.1 runs on a .NET where
+the modern crypto helpers are missing and fail by returning zeroes rather than
+by throwing. Merge-don't-clobber is also fiddly enough to deserve being
+testable on its own.
 
 The merge rule is the important part. On an upgrade, .env is not a file the
 installer created — by then it holds the user's providers, their MCP servers,
@@ -12,6 +14,7 @@ therefore written only if it is *absent*, and nothing is ever removed.
 
 Usage:
     python write_env.py --env <path> [--password-file <path>] [--telemetry 0|1]
+    python write_env.py --env <path> --generate-password [--telemetry 0|1]
 """
 
 import argparse
@@ -51,10 +54,30 @@ def read_password_file(path):
             os.remove(path)
 
 
+# Ambiguous glyphs removed: this gets read off a terminal and typed into a
+# browser, and l/I/1 and O/0 are where that goes wrong. 16 characters of the
+# remaining 57 is ~93 bits, far past anything that matters for a LAN login.
+_PASSWORD_ALPHABET = ("abcdefghijkmnopqrstuvwxyz"
+                      "ABCDEFGHJKLMNPQRSTUVWXYZ"
+                      "23456789")
+
+
+def generate_password(length=16):
+    """A strong login password, from the same CSPRNG as SECRET_KEY.
+
+    Here rather than in install.ps1 because PowerShell got this wrong in a way
+    that was silent: RandomNumberGenerator.Fill() does not exist on the .NET
+    Framework behind Windows PowerShell 5.1, so the buffer stayed zeroed and
+    every install got the same password. Python's secrets module is available
+    wherever this script runs at all.
+    """
+    return "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(length))
+
+
 def seed(env_path, password=None, telemetry=None):
     """Append whichever of the three startup keys .env is missing.
 
-    Returns the list of keys written, so the installer log says what happened.
+    Returns the list of keys written, so the caller can report what happened.
     """
     existing = read_keys(env_path)
     additions = []
@@ -95,16 +118,25 @@ def main(argv=None):
     parser.add_argument("--password-file",
                         help="file holding the login password; deleted after reading")
     parser.add_argument("--telemetry", choices=("0", "1"))
+    parser.add_argument("--generate-password", action="store_true",
+                        help="invent a password if .env has none, and print it")
     args = parser.parse_args(argv)
 
     password = None
     if args.password_file and os.path.exists(args.password_file):
         password = read_password_file(args.password_file) or None
+    elif args.generate_password:
+        password = generate_password()
 
     telemetry = None if args.telemetry is None else args.telemetry == "1"
 
     written = seed(args.env, password=password, telemetry=telemetry)
-    # Never echo the values — this output goes to the installer's log.
+
+    # A generated password is the one value worth echoing: nobody chose it, so
+    # if it is not shown here there is no way back into the web UI. Everything
+    # else stays unprinted — a password given explicitly is already known.
+    if args.generate_password and "FC_PASSWORD" in written:
+        print("FC_PASSWORD=" + password)
     print("wrote: " + (", ".join(written) if written else "nothing (all keys present)"))
     return 0
 

@@ -62,23 +62,16 @@ RESTART_EXIT_CODE = 42
 # cannot update itself on Windows: there is no git checkout and no update.sh,
 # the install is a packaged tree, and half its files are open in the very
 # process that would be replacing them. So the server exits with this code and
-# the supervisor — which is not being replaced — fetches the installer and runs
-# it. The installer stops FreeClaw through freeclaw.pid (see installer.iss:
-# StopFreeClaw), which is what ends this tray process too; it comes back
-# because the installer relaunches it.
+# the supervisor — which is not being replaced — runs install.ps1, the same
+# script that installed FreeClaw in the first place. Re-running it is the
+# documented update path: it verifies the download, replaces the program files
+# and leaves .env, chats and logs alone.
 UPDATE_EXIT_CODE = 43
 
-# Where the installer is published. Overridable so a fork, a staging host or an
+# Where install.ps1 is published. Overridable so a fork, a staging host or an
 # air-gapped mirror does not need a code change.
 UPDATE_URL = os.environ.get(
-    "FC_UPDATE_URL", "https://freeclaw.eedeb.dev/FreeClaw-Setup.exe")
-
-# Refuse anything that is not a real installer. A truncated download, an error
-# page served with HTTP 200, or a captive-portal login page would otherwise be
-# handed to the user as an .exe to run. Both checks are cheap and both have
-# already caught a real failure: the download URL once served a 3KB HTML page.
-UPDATE_MIN_BYTES = 5 * 1024 * 1024
-UPDATE_TIMEOUT_SECONDS = 600
+    "FC_UPDATE_URL", "https://freeclaw.eedeb.dev/install.ps1")
 
 # Restart storm guard. A server that dies on a bad .env would otherwise be
 # respawned forever, hammering the disk and hiding the real error behind
@@ -223,6 +216,10 @@ class Server:
         self._thread = None
         self.state = STATE_STOPPED
         self.on_state_change = on_state_change
+        # Set by Tray. Called once the updater is running, to take this tray
+        # down: the update replaces the files this process runs from, and the
+        # new one is started by install.ps1 at the end.
+        self.on_update_handoff = None
 
     # ── state ──
     def _set_state(self, state):
@@ -329,16 +326,19 @@ class Server:
                 # same reason as a restart.
                 failures = 0
                 self._set_state(STATE_UPDATING)
-                if self._run_installer():
-                    # The installer is running and will stop this process on
-                    # its way through. Stop supervising: respawning the server
-                    # now would only put the old version back and hold its
-                    # files open while the installer tries to replace them.
+                if self._run_updater():
+                    # Hand over completely. The updater replaces the files this
+                    # process is running from and starts a fresh tray at the
+                    # end, so this one has to go — supervising through an
+                    # update would only put the old server back and hold its
+                    # files open while they are being replaced.
+                    if self.on_update_handoff:
+                        self.on_update_handoff()
                     return
-                # Download or launch failed — say so and put the server back,
-                # because the alternative is a FreeClaw that vanished when the
-                # user clicked Update.
-                logger.error("update failed; restarting the current version")
+                # Launching the updater failed — say so and put the server
+                # back, because the alternative is a FreeClaw that vanished
+                # when the user clicked Update.
+                logger.error("update failed to start; restarting the current version")
                 self._set_state(STATE_RESTARTING)
                 continue
 
@@ -368,59 +368,42 @@ class Server:
             if self._quitting.wait(delay):
                 return
 
-    def _run_installer(self):
-        """Download the current installer and launch it. True if it started.
+    def _run_updater(self):
+        """Start install.ps1 in a detached PowerShell. True if it launched.
 
-        Downloads to a temp file and only renames it into place once the size
-        and the PE signature check out, so a partial or wrong-content download
-        is never something the user can be handed to run.
+        True means "the updater is running", not "the update worked" — the
+        script outlives this process by design, so there is nothing left here
+        to report its result to. It writes its own log; failures leave the
+        current install untouched because it only replaces files once the
+        download has passed its checksum.
+
+        Detached, and in a new process group, for one specific reason: the
+        updater stops the running FreeClaw with `taskkill /T`, which walks the
+        process tree. A child of this process would be inside that tree and
+        would be killed halfway through replacing the install.
         """
         try:
-            import tempfile
-            import urllib.request
-
-            logger.info("downloading the installer from %s", UPDATE_URL)
-            tmp_dir = tempfile.mkdtemp(prefix="freeclaw-update-")
-            partial = os.path.join(tmp_dir, "FreeClaw-Setup.exe.part")
-            final = os.path.join(tmp_dir, "FreeClaw-Setup.exe")
-
-            with urllib.request.urlopen(UPDATE_URL,
-                                        timeout=UPDATE_TIMEOUT_SECONDS) as resp:
-                with open(partial, "wb") as out:
-                    while True:
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-
-            size = os.path.getsize(partial)
-            if size < UPDATE_MIN_BYTES:
-                logger.error("downloaded %s bytes from %s — too small to be the "
-                             "installer, refusing to run it", size, UPDATE_URL)
-                return False
-            with open(partial, "rb") as f:
-                if f.read(2) != b"MZ":
-                    logger.error("%s did not return an executable (no MZ header) "
-                                 "— refusing to run it", UPDATE_URL)
-                    return False
-
-            os.replace(partial, final)
-            logger.info("installer downloaded (%s bytes), launching", size)
-
-            # No /VERYSILENT: the user clicked Update and should see the wizard,
-            # and a silent run would need a password argument on a reinstall
-            # that does not want one. Detached, because the installer is about
-            # to kill this process.
+            command = "irm '{}' | iex".format(UPDATE_URL)
+            logger.info("starting the updater: %s", UPDATE_URL)
             subprocess.Popen(
-                [final],
-                cwd=tmp_dir,
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-WindowStyle", "Hidden", "-Command", command],
+                cwd=os.environ.get("TEMP", APP_DIR),
                 creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
-                               | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+                               | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                               | NO_WINDOW),
                 close_fds=True,
+                # Update this install, wherever it happens to live, rather than
+                # install.ps1's default location. Piped through `iex` there is
+                # no way to pass a parameter, so the script reads these.
+                env={**os.environ,
+                     "FREECLAW_DIR": APP_DIR,
+                     "FREECLAW_NO_SHORTCUT": "1",
+                     "FREECLAW_NO_PATH": "1"},
             )
             return True
         except Exception:
-            logger.exception("couldn't download or start the installer")
+            logger.exception("couldn't start the updater")
             return False
 
     # ── control ──
@@ -569,6 +552,7 @@ def open_folder(path):
 class Tray:
     def __init__(self):
         self.server = Server(on_state_change=self._refresh)
+        self.server.on_update_handoff = self._on_update_handoff
         self.icon = pystray.Icon(
             "freeclaw",
             Image.open(ICON_PATH),
@@ -641,6 +625,19 @@ class Tray:
 
     def _on_quit(self, *_):
         logger.info("quit requested from the tray menu")
+        self.server.stop()
+        self.icon.stop()
+
+    def _on_update_handoff(self):
+        """The updater is running; get out of its way.
+
+        Same shutdown as Quit, and deliberately so: main() removes
+        freeclaw.pid on the way out, which is exactly what the updater's
+        "stop the running FreeClaw" step looks for. Leaving it behind would
+        have install.ps1 taskkill a PID that is either gone or, worse,
+        recycled.
+        """
+        logger.info("handing over to the updater and exiting")
         self.server.stop()
         self.icon.stop()
 

@@ -1,11 +1,17 @@
 <#
 .SYNOPSIS
-    Build FreeClaw-Setup-<version>.exe — the Windows installer.
+    Build FreeClaw-<version>-win64.zip — the Windows package.
 
 .DESCRIPTION
-    Assembles a self-contained tree under build\stage and hands it to Inno
-    Setup. The tree carries its own Python, so the installed app depends on
-    nothing already being on the machine.
+    Assembles a self-contained tree under build\stage and zips it. The tree
+    carries its own Python, so the installed app depends on nothing already
+    being on the machine.
+
+    This zip is what install.ps1 downloads. There is no .exe installer any
+    more: an unsigned one is met by SmartScreen with "Windows protected your
+    PC", where Run is hidden behind More info, and most people read that as
+    a broken download. Mark of the Web is applied by the *browser*, so a
+    package PowerShell fetches never carries it and never triggers it.
 
     Why the *embeddable* Python distribution and not PyInstaller: FreeClaw
     shells out to `sys.executable -m ...` in two places that matter —
@@ -21,21 +27,21 @@
 .PARAMETER PythonSha256
     Optional expected SHA-256 of the embeddable zip, from python.org's
     download page. Supply it in CI so a compromised or truncated mirror can't
-    quietly end up inside a signed installer.
+    quietly end up inside a published package.
 
-.PARAMETER SkipInstaller
-    Stage everything but don't run Inno Setup. Useful for inspecting the tree
-    or for testing the tray app straight out of build\stage.
+.PARAMETER SkipZip
+    Stage everything but don't pack the zip. Useful for inspecting the tree
+    or for running the tray straight out of build\stage.
 
 .EXAMPLE
     pwsh -File windows\build.ps1
-    pwsh -File windows\build.ps1 -PythonVersion 3.12.8 -SkipInstaller
+    pwsh -File windows\build.ps1 -PythonVersion 3.12.8 -SkipZip
 #>
 [CmdletBinding()]
 param(
     [string]$PythonVersion = "3.12.8",
     [string]$PythonSha256,
-    [switch]$SkipInstaller
+    [switch]$SkipZip
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,7 +59,7 @@ function Info($text)     { Write-Host "    $text" -ForegroundColor DarkGray }
 function Ok($text)       { Write-Host "    $text" -ForegroundColor Green }
 
 $Version = (Get-Content (Join-Path $Root "VERSION") -Raw).Trim()
-Write-Host "FreeClaw $Version — Windows installer build" -ForegroundColor White
+Write-Host "FreeClaw $Version — Windows package build" -ForegroundColor White
 
 # ── 1. workspace ─────────────────────────────────────────────
 Step 1 "Preparing the staging tree"
@@ -147,7 +153,7 @@ foreach ($file in @("VERSION", "requirements.txt", "README.md", "LICENSE")) {
 }
 # Flask\static\ is where every user's chats, uploads and context.md live, so
 # on a developer's own machine it is full of their conversations. Only the
-# shipped "Setup Wizard" sample belongs in an installer — everything else here
+# shipped "Setup Wizard" sample belongs in the package — everything else here
 # would be packaging personal data and handing it to whoever installs the exe.
 $stageStatic = Join-Path $Stage "Flask\static"
 if (Test-Path $stageStatic) {
@@ -162,21 +168,27 @@ Get-ChildItem $Stage -Recurse -Directory -Filter "__pycache__" |
 Get-ChildItem $Stage -Recurse -File -Include "*.pyc", ".DS_Store" |
     Remove-Item -Force -ErrorAction SilentlyContinue
 # The `freeclaw` CLI shim goes in its own bin\ directory, because that is the
-# directory the installer puts on PATH — everything else under the install root
+# directory install.ps1 puts on PATH — everything else under the install root
 # would come along with it, and putting python.exe and tray.py on a user's PATH
 # is not something an app should do behind their back.
 $binDir = Join-Path $Stage "bin"
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 Copy-Item (Join-Path $Here "freeclaw.cmd") -Destination $binDir -Force
+# Starts the tray without a console window, from wherever the install ended
+# up. The Start Menu shortcut points at pythonw.exe directly — install.ps1
+# knows the absolute path — but this is what makes `freeclaw-tray` work as a
+# command.
+Copy-Item (Join-Path $Here "freeclaw-tray.cmd") -Destination $binDir -Force
 
 # The build's own inputs and previews aren't part of the app.
-foreach ($junk in @("build.ps1", "installer.iss", "icon-preview.png",
-                    "requirements-windows.txt", "freeclaw.cmd")) {
+foreach ($junk in @("build.ps1", "icon-preview.png",
+                    "requirements-windows.txt", "freeclaw.cmd",
+                    "freeclaw-tray.cmd")) {
     Remove-Item (Join-Path $Stage "windows\$junk") -Force -ErrorAction SilentlyContinue
 }
 # Belt and braces: none of these are in the copy list above, but a stray one
 # in the staging tree would ship someone's password or signed-in browser
-# sessions inside the installer.
+# sessions inside the package.
 foreach ($secret in @(".env", "freeclaw.pid", "browser-profiles", "Flask\.secret_key")) {
     Remove-Item (Join-Path $Stage $secret) -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -185,38 +197,53 @@ foreach ($secret in @(".env", "freeclaw.pid", "browser-profiles", "Flask\.secret
 New-Item -ItemType Directory -Path (Join-Path $Stage "logs") -Force | Out-Null
 Ok "staged $((Get-ChildItem $Stage -Recurse -File).Count) files"
 
-# ── 7. installer ─────────────────────────────────────────────
-if ($SkipInstaller) {
-    Step 7 "Skipping Inno Setup (-SkipInstaller)"
+# ── 7. package ──────────────────────────────────────────
+if ($SkipZip) {
+    Step 7 "Skipping the zip (-SkipZip)"
     Write-Host "`nStaged tree: $Stage" -ForegroundColor White
     Write-Host "Try it with:  $PyDir\pythonw.exe $Stage\windows\tray.py" -ForegroundColor White
     exit 0
 }
+Step 7 "Packing the package zip"
+# The only artifact. install.ps1 downloads this, checks it against the
+# .sha256 written beside it, and unpacks it — no installer to run, and
+# nothing for SmartScreen to object to.
+$Zip = Join-Path $Dist "FreeClaw-$Version-win64.zip"
+if (Test-Path $Zip) { Remove-Item $Zip -Force }
 
-Step 7 "Compiling the installer"
-$iscc = @(
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-    # Where a non-admin install lands — `winget install JRSoftware.InnoSetup`
-    # without elevation puts it here, and neither of the paths above nor PATH
-    # will find it. Worth checking given the rest of this install story is
-    # built around not needing administrator rights.
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $iscc) {
-    $cmd = Get-Command iscc -ErrorAction SilentlyContinue
-    if ($cmd) { $iscc = $cmd.Source }
-}
-if (-not $iscc) {
-    throw ("Inno Setup 6 not found. Install it with:  " +
-           "winget install JRSoftware.InnoSetup   (or: choco install innosetup -y)")
-}
-Info "using $iscc"
+# An empty .env, in the zip only.
+#
+# A placeholder so the package always contains a .env as a *file*. Tools that
+# mirror or repackage this tree decide file-versus-directory by what they find
+# in it, and one that invents a directory named .env leaves write_env.py
+# failing with PermissionError and the install with no password.
+#
+# Empty, and only empty: install.ps1 skips it entirely when the install being
+# upgraded already has one, so this is a placeholder that says "a file lives
+# here", never a config that could overwrite somebody's password, providers
+# and MCP servers.
+$StageEnv = Join-Path $Stage ".env"
+New-Item -ItemType File -Path $StageEnv -Force | Out-Null
 
-& $iscc "/DAppVersion=$Version" "/DStageDir=$Stage" "/DOutputDir=$Dist" `
-        (Join-Path $Here "installer.iss")
-if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $Stage, $Zip,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $false)   # no wrapper folder: install.ps1 unpacks straight into the tree
+Remove-Item $StageEnv -Force   # keep the staged tree free of config
+$zipSize = [math]::Round((Get-Item $Zip).Length / 1MB, 1)
+$zipHash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLower()
+Ok "dist\FreeClaw-$Version-win64.zip ($zipSize MB)"
+Info "sha256 $zipHash"
+# Published next to the zip. install.ps1 fetches it before unpacking anything
+# and refuses a download whose hash does not match.
+Set-Content -Path "$Zip.sha256" -Value "$zipHash  FreeClaw-$Version-win64.zip" `
+            -Encoding ascii
 
-$setup = Join-Path $Dist "FreeClaw-Setup-$Version.exe"
-$size = [math]::Round((Get-Item $setup).Length / 1MB, 1)
-Write-Host "`nBuilt $setup ($size MB)" -ForegroundColor Green
+Write-Host ""
+Write-Host "Built $Zip ($zipSize MB)" -ForegroundColor Green
+Write-Host "  sha256 $zipHash" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "Publish both files on the release: install.ps1 reads the .sha256" -ForegroundColor DarkGray
+Write-Host "next to the zip and refuses a download that does not match." -ForegroundColor DarkGray
+Write-Host ""

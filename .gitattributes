@@ -8,6 +8,12 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 
+# PowerShell scripts keep CRLF too. install.ps1 and uninstall.ps1 are also
+# deliberately pure ASCII: they are fetched and run with `irm ... | iex`, which
+# decodes the raw bytes, and a BOM or a stray non-ASCII character in that path
+# is a parse error rather than a rendering glitch.
+*.ps1 text eol=crlf
+
 # The Inno Setup script needs its UTF-8 BOM preserved — without one the
 # compiler reads the file as ANSI and the em dashes in the wizard's own text
 # render as mojibake. Treating it as binary keeps git from touching either the

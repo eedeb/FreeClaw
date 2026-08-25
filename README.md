@@ -47,49 +47,62 @@ One difference from the Linux install: the OpenAI-compatible API's on/off state 
 
 ### Windows
 
-Runs natively — no WSL and no Docker Desktop. Download the installer from the
-[latest release](https://github.com/eedeb/FreeClaw/releases/latest) and run it.
-Nothing needs to be installed first; the installer brings its own Python.
+Runs natively — no WSL and no Docker Desktop. In PowerShell:
+
+```powershell
+irm https://freeclaw.eedeb.dev/install.ps1 | iex
+```
+
+Nothing needs to be installed first; it brings its own Python. It generates
+your web UI password and prints it, adds the `freeclaw` command and a Start
+Menu shortcut, and starts FreeClaw when it's done.
+
+**No security warning, and that's the point.** Mark of the Web is applied by
+the *browser*, so a build fetched this way never carries it and never trips
+SmartScreen. Downloading the `.exe` in a browser does: because the build is
+unsigned you get *"Windows protected your PC"* with **Run anyway** hidden
+behind **More info**, which reads to most people as a broken download.
+
+Re-run the same line to update — your chats, files and settings are left alone.
+To remove it, `irm https://freeclaw.eedeb.dev/uninstall.ps1 | iex` (add
+`-Purge` to take your data with it).
 
 It will:
 1. Unpack FreeClaw and a bundled Python into `%LOCALAPPDATA%\FreeClaw` — no administrator rights, no UAC prompt
-2. Ask you to set a **password** for the web UI (no API keys collected here)
+2. Generate a **password** for the web UI and print it (no API keys collected here)
 3. Add **FreeClaw** to the notification area — the `^` chevron at the right of the taskbar — where a small supervisor keeps the server running and restarts it on demand, the job systemd does on Linux
-4. Optionally start with Windows, add a desktop shortcut, and put the `freeclaw` command on your PATH
-5. Open **http://localhost:6767** when you click the icon
+4. Put the `freeclaw` command on your PATH and add a Start Menu shortcut
+5. Start FreeClaw and point you at **http://localhost:6767**
 
 **Click the tray icon to open FreeClaw.** Right-click it for Restart, the logs
 folder, and *Copy address for other devices* — the LAN address to open on your
-phone. That address needs a firewall rule, which the installer deliberately
+phone. That address needs a firewall rule, which the install deliberately
 doesn't add because it would require administrator rights; the
 [Windows notes](windows/README.md#reaching-it-from-other-devices) have the
 one-line command.
-
-The build is unsigned, so SmartScreen shows *"Windows protected your PC"* on
-first run — **More info → Run anyway**.
 
 To chat from a terminal instead, run `freeclaw` — the same CLI the Linux and
 macOS installs put on PATH.
 
 Uninstalling leaves your chats, `context.md`, `.env` and logs alone, and
-reinstalling merges into your existing `.env` rather than overwriting it.
+re-installing merges into your existing `.env` rather than overwriting it.
 
 > The agent's bash tool runs commands through **Git Bash**, so install
 > [Git for Windows](https://git-scm.com/download/win) if you want it — without
 > it FreeClaw falls back to `cmd.exe`, where the `ls`/`grep`/`cat` the model
 > reaches for don't exist. Everything else works either way. See
 > [windows/README.md](windows/README.md) for the details and for how to build
-> the installer yourself.
+> the package yourself.
 
 ---
 
-> **Note:** each *script* installer checks out only the files for its own platform — a Linux install has no `docker/` directory or `*-mac.sh` scripts, and a macOS install has no systemd scripts. Run the wrong one and it will tell you and point at the other. The Windows installer is a prebuilt package rather than a checkout, so it isn't affected.
+> **Note:** each *script* installer checks out only the files for its own platform — a Linux install has no `docker/` directory or `*-mac.sh` scripts, and a macOS install has no systemd scripts. Run the wrong one and it will tell you and point at the other. Windows installs a prebuilt package rather than a checkout, so it isn't affected.
 
 ---
 
 ## Using FreeClaw
 
-Once installed, open the URL printed by the installer — something like `http://192.168.x.x:6767`. You'll be asked for the password you set during install, then dropped into the FreeClaw chat UI:
+Once installed, open the URL the installer printed — something like `http://192.168.x.x:6767`. You'll be asked for the password you set (or, on Windows, the one it generated for you), then dropped into the FreeClaw chat UI:
 
 - Type a message and press **Enter** to send (Shift+Enter for a newline)
 - Agent responses are rendered with full markdown — code blocks, lists, bold, links, etc.
@@ -189,11 +202,12 @@ FreeClaw/
 │   └── docker-compose.yml    # Port 6767, restart policy, bind mounts for .env / static / logs
 ├── windows/                  # Windows install only — see windows/README.md
 │   ├── tray.py               # Notification-area app; supervises the server, playing systemd's role
-│   ├── installer.iss         # Inno Setup script — per-user install, password page, no UAC
-│   ├── build.ps1             # Stages a bundled Python + deps, then compiles the installer
+│   ├── build.ps1             # Stages a bundled Python + deps, then packs the zip
 │   ├── write_env.py          # Seeds .env at install time; merges, never overwrites
 │   ├── make_icon.py          # Generates freeclaw.ico (nine sizes) from the app's accent colour
-│   └── freeclaw.ico          # Tray, shortcut and installer icon
+│   └── freeclaw.ico          # Tray and shortcut icon
+├── install.ps1               # One-line installer      (Windows)
+├── uninstall.ps1             # Uninstaller             (Windows)
 ├── install.sh                # One-line installer      (Linux)
 ├── update.sh                 # Pull and apply updates  (Linux)
 ├── uninstall.sh              # Remove service + files  (Linux)
@@ -349,7 +363,7 @@ Settings live in a `.env` file in the project root, created for you during insta
 | Variable | Required | Purpose |
 |---|---|---|
 | `FC_PASSWORD` | Yes | Password for the web UI login screen |
-| `SECRET_KEY` | Yes | Flask session secret (auto-generated by the installer) |
+| `SECRET_KEY` | Yes | Flask session secret (auto-generated at install time) |
 | `PROVIDER_NAMES` / `PROVIDER_URLS` / `PROVIDER_KEYS` / `PROVIDER_MODELS` / `PROVIDER_ENABLED` | Yes | Your LLM provider(s) — managed entirely from **Settings → Providers**; the agent has nothing to call until at least one exists here |
 | `VISION_PROVIDER` | No | Name of the configured provider (from **Settings → Providers**) used to describe uploaded images — pick it in **Settings → Vision Model** |
 | `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` / `MCP_TRANSPORTS` / `MCP_COMMANDS` | No | Connected MCP servers — managed from **Settings → MCP Servers**. `MCP_TRANSPORTS` is `http` or `stdio` per entry (missing = `http`); `MCP_COMMANDS` holds the command line for stdio ones. `MCP_ENABLED` is the default a user inherits until they switch a server on or off for themselves |
@@ -362,7 +376,7 @@ Settings live in a `.env` file in the project root, created for you during insta
 
 ## Telemetry
 
-**Off by default.** The installer asks once, the default answer is no, and if you say no nothing is ever sent.
+**Off by default.** The installer asks once (and never asks on Windows, where it simply stays off), the default answer is no, and if you say no nothing is ever sent.
 
 If you say yes, FreeClaw sends **one** HTTP request, the first time it starts, containing exactly four fields:
 
@@ -393,7 +407,7 @@ If the endpoint is unreachable the failure is swallowed silently and start-up is
 **Settings → Update FreeClaw** does it from the browser on Linux and Windows. On
 Linux it runs `update.sh` and streams the output onto the page, then restarts
 the server; on Windows it hands off to the notification-area app, which fetches
-the current installer and runs it. A failed update changes nothing — the server
+`install.ps1` again. A failed update changes nothing — the server
 is only restarted after the script finishes cleanly, so you keep the version
 that was working.
 
