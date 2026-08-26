@@ -5,14 +5,20 @@ A native install: no WSL, no Docker Desktop, no Python of your own.
 adds a notification-area app that keeps the server running.
 
 ```
-FreeClaw-<version>-win64.zip   →   %LOCALAPPDATA%\FreeClaw
-                                     ├── python\        bundled interpreter + deps
-                                     ├── Flask\ src\ models\
-                                     ├── windows\tray.py
-                                     ├── bin\freeclaw.cmd   CLI shim, put on PATH
-                                     ├── logs\
-                                     └── .env           written on first install
+github.com/eedeb/FreeClaw   →   %LOCALAPPDATA%\FreeClaw
+                                  ├── python\        private interpreter + deps
+                                  ├── Flask\ src\ models\   the clone
+                                  ├── windows\tray.py
+                                  ├── bin\freeclaw.cmd   CLI shim, put on PATH
+                                  ├── logs\
+                                  ├── .env               written on first install
+                                  └── .freeclaw-install  marks this as an install
 ```
+
+The install *is* a shallow clone of the repo, with a private Python beside it.
+Nothing is published or hosted for it to work: the source comes from GitHub and
+the interpreter from python.org, so there is no release to cut and no artifact
+to upload.
 
 ## Installing
 
@@ -28,9 +34,16 @@ fetches never carries it and never trips SmartScreen — otherwise the single
 biggest obstacle to an unsigned build, and one that reads to most people as
 "the download is broken" rather than "Windows is asking a question".
 
-It installs the same tree the `.exe` does, from the portable zip, and:
+**Git is the one prerequisite** — `winget install --id Git.Git -e` if you
+haven't got it. FreeClaw's bash tool wants Git for Windows anyway.
 
-- verifies the published SHA-256 before unpacking anything;
+What it does:
+
+- clones the repo into `%LOCALAPPDATA%\FreeClaw`;
+- downloads the embeddable Python from python.org into `python\` and installs
+  the dependencies there. Private to the install, never added to PATH, and it
+  does not touch any Python you already have — the same role install.sh's
+  virtualenv plays on Linux;
 - stops a running FreeClaw first, through `freeclaw.pid`, so it is never
   replacing files that are in use;
 - generates a login password and prints it once. FreeClaw fails closed without
@@ -38,19 +51,27 @@ It installs the same tree the `.exe` does, from the portable zip, and:
   invented rather than left blank. Pass `-Password` to choose your own;
 - adds `freeclaw` to PATH and a Start Menu shortcut, and starts it.
 
-Re-running it is the update path: `.env`, `Flask\static`, `logs` and
-`browser-profiles` are never overwritten, so chats, providers and saved logins
-survive. `-NoStart`, `-NoPath`, `-NoShortcut`, `-Autostart`, `-InstallDir` and
-`-ZipUrl` adjust the rest; piped through `iex` there is nowhere to put a
-parameter, so each also reads an environment variable (`FREECLAW_DIR`,
-`FREECLAW_PASSWORD`, and so on — see the header of
-[`install.ps1`](../install.ps1)).
+A first install takes a few minutes, nearly all of it pip. Re-running it is the
+update path and takes seconds: the clone is refreshed path by path (never
+`Flask\static`, which is where the chats are) and Python is reused.
+
+`-NoStart`, `-NoPath`, `-NoShortcut`, `-Autostart`, `-InstallDir` and `-Branch`
+adjust the rest; piped through `iex` there is nowhere to put a parameter, so
+each also reads an environment variable (`FREECLAW_DIR`, `FREECLAW_PASSWORD`,
+and so on — see the header of [`install.ps1`](../install.ps1)).
 
 Removing it:
 
 ```powershell
-irm https://freeclaw.eedeb.dev/uninstall.ps1 | iex
+& "$env:LOCALAPPDATA\FreeClaw\uninstall.ps1"
 ```
+
+`uninstall.ps1` ships inside the install rather than on the website — only
+`install.ps1` is hosted — so removing FreeClaw needs no network at all, and
+running the copy inside an install defaults to removing *that* install
+whatever directory it is in. If an install is too broken to run its own copy,
+`irm https://raw.githubusercontent.com/eedeb/FreeClaw/main/uninstall.ps1 | iex`
+fetches it from the repo.
 
 Your data stays unless you add `-Purge`. Shortcuts, the autostart entry and the
 PATH entry are only removed if they actually point at the install being
@@ -167,47 +188,15 @@ delete it by hand if you want it gone.
 Reinstalling over an existing install is likewise safe: `.env` is merged, not
 overwritten, so your password, providers and MCP servers survive.
 
-## Building the package
+## Releasing
 
-Needs a Windows machine and nothing else — the bundled Python, its
-dependencies and the NLTK table are all downloaded by the script.
+There is nothing to release. `install.ps1` clones whatever is on `main`, so a
+push *is* the release — the next person to run the one-liner, and everyone who
+re-runs it to update, gets it.
 
-```powershell
-.\windows\build.ps1
-```
-
-The result is `dist\FreeClaw-<version>-win64.zip`, with a `.sha256` beside it.
-Publish both: `install.ps1` reads the checksum before unpacking anything and
-refuses a download that does not match. To stage the tree without packing it —
-useful for running the tray straight out of the build directory:
-
-```powershell
-.\windows\build.ps1 -SkipZip
-```
-
-Pass `-PythonSha256 <hash>` (from python.org's download page) for a build you
-intend to sign, so a bad mirror can't end up inside it.
-
-CI builds the same thing: `.github/workflows/build-windows.yml`, on manual
-dispatch or a `v*` tag.
-
-### Why embeddable Python and not PyInstaller
-
-FreeClaw shells out to `sys.executable -m …` in two places that matter —
-`src/mcp_client.py` spawns the built-in browser MCP server that way, and
-`src/browser_setup.py` drives playwright with it. Frozen into a PyInstaller
-executable, `sys.executable` is `FreeClaw.exe` and both calls become nonsense.
-Bundling a real `python.exe` keeps them working with no changes.
-
-### Regenerating the icon
-
-`windows/freeclaw.ico` is generated, not drawn. It is nine sizes of a
-three-talon mark in the app's own accent lime (`#c8f04a`), with fatter talons
-below 24px so it survives the notification area.
-
-```
-python windows\make_icon.py
-```
+The only hosted file is `install.ps1` itself, at
+`https://freeclaw.eedeb.dev/install.ps1`. Update that when the installer
+changes; nothing else needs uploading, tagging or publishing.
 
 ## The CLI
 

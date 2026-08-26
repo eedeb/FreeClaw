@@ -53,9 +53,11 @@ Runs natively — no WSL and no Docker Desktop. In PowerShell:
 irm https://freeclaw.eedeb.dev/install.ps1 | iex
 ```
 
-Nothing needs to be installed first; it brings its own Python. It generates
-your web UI password and prints it, adds the `freeclaw` command and a Start
-Menu shortcut, and starts FreeClaw when it's done.
+It clones the repo into `%LOCALAPPDATA%\FreeClaw` and puts a private Python
+beside it, so it needs only [Git](https://git-scm.com/download/win)
+(`winget install --id Git.Git -e`) — which FreeClaw's bash tool wants anyway.
+It generates your web UI password and prints it, adds the `freeclaw` command
+and a Start Menu shortcut, and starts FreeClaw when it's done.
 
 **No security warning, and that's the point.** Mark of the Web is applied by
 the *browser*, so a build fetched this way never carries it and never trips
@@ -64,11 +66,17 @@ unsigned you get *"Windows protected your PC"* with **Run anyway** hidden
 behind **More info**, which reads to most people as a broken download.
 
 Re-run the same line to update — your chats, files and settings are left alone.
-To remove it, `irm https://freeclaw.eedeb.dev/uninstall.ps1 | iex` (add
-`-Purge` to take your data with it).
+Updating takes seconds — the clone is refreshed and Python reused. To remove
+it, run the uninstaller that came with the install:
+
+```powershell
+& "$env:LOCALAPPDATA\FreeClaw\uninstall.ps1"
+```
+
+Your data stays unless you add `-Purge`.
 
 It will:
-1. Unpack FreeClaw and a bundled Python into `%LOCALAPPDATA%\FreeClaw` — no administrator rights, no UAC prompt
+1. Clone FreeClaw into `%LOCALAPPDATA%\FreeClaw` and install a private Python for it — no administrator rights, no UAC prompt
 2. Generate a **password** for the web UI and print it (no API keys collected here)
 3. Add **FreeClaw** to the notification area — the `^` chevron at the right of the taskbar — where a small supervisor keeps the server running and restarts it on demand, the job systemd does on Linux
 4. Put the `freeclaw` command on your PATH and add a Start Menu shortcut
@@ -91,8 +99,7 @@ re-installing merges into your existing `.env` rather than overwriting it.
 > [Git for Windows](https://git-scm.com/download/win) if you want it — without
 > it FreeClaw falls back to `cmd.exe`, where the `ls`/`grep`/`cat` the model
 > reaches for don't exist. Everything else works either way. See
-> [windows/README.md](windows/README.md) for the details and for how to build
-> the package yourself.
+> [windows/README.md](windows/README.md) for the details.
 
 ---
 
@@ -202,11 +209,10 @@ FreeClaw/
 │   └── docker-compose.yml    # Port 6767, restart policy, bind mounts for .env / static / logs
 ├── windows/                  # Windows install only — see windows/README.md
 │   ├── tray.py               # Notification-area app; supervises the server, playing systemd's role
-│   ├── build.ps1             # Stages a bundled Python + deps, then packs the zip
 │   ├── write_env.py          # Seeds .env at install time; merges, never overwrites
 │   ├── make_icon.py          # Generates freeclaw.ico (nine sizes) from the app's accent colour
 │   └── freeclaw.ico          # Tray and shortcut icon
-├── install.ps1               # One-line installer      (Windows)
+├── install.ps1               # One-line installer      (Windows, clones this repo)
 ├── uninstall.ps1             # Uninstaller             (Windows)
 ├── install.sh                # One-line installer      (Linux)
 ├── update.sh                 # Pull and apply updates  (Linux)

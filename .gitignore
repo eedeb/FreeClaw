@@ -52,3 +52,8 @@ windows/icon-preview.png
 # Written by the Windows tray app at startup so the installer and uninstaller
 # can stop a running FreeClaw before touching its files (windows/tray.py).
 freeclaw.pid
+
+# Written by install.ps1 into a Windows install to mark it as one. An install
+# is a clone of this repo, so without a marker uninstall.ps1 cannot tell an
+# install from somebody's working tree - and must never delete the latter.
+.freeclaw-install

@@ -3,7 +3,16 @@
     FreeClaw - Windows uninstaller. The counterpart of uninstall.sh.
 
 .DESCRIPTION
-    irm https://freeclaw.eedeb.dev/uninstall.ps1 | iex
+    A copy of this script is installed alongside FreeClaw, so the usual way to
+    run it is from the install itself - no network, and it defaults to
+    removing the install it is sitting in:
+
+        & "$env:LOCALAPPDATA\FreeClaw\uninstall.ps1"
+
+    Only install.ps1 is published on the website. If the install is too broken
+    to run its own copy, fetch this one from the repo:
+
+        irm https://raw.githubusercontent.com/eedeb/FreeClaw/main/uninstall.ps1 | iex
 
     Stops FreeClaw, removes the shortcut, the autostart entry and the PATH
     entry, and deletes the program files.
@@ -14,7 +23,8 @@
     them gone.
 
 .PARAMETER InstallDir
-    Where FreeClaw lives. Default: %LOCALAPPDATA%\FreeClaw.
+    Where FreeClaw lives. Defaults to the directory this script is in when
+    that is an install, and to %LOCALAPPDATA%\FreeClaw otherwise.
 
 .PARAMETER Purge
     Also delete .env, Flask\static, logs and browser-profiles. Irreversible.
@@ -50,7 +60,33 @@ function Env-Flag($switch, $name) {
 $InstallDir = Env-Or $InstallDir "FREECLAW_DIR"
 $Purge      = Env-Flag $Purge "FREECLAW_PURGE"
 $Yes        = Env-Flag $Yes   "FREECLAW_YES"
-if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA "FreeClaw" }
+
+if (-not $InstallDir) {
+    # A copy of this script ships inside every install, so if it is sitting in
+    # one, that is the install to remove - whatever directory it happens to be
+    # in. Someone who installed to D:\Apps\FreeClaw should not have to say so.
+    # $PSScriptRoot is empty when the script is piped through `iex`, which is
+    # what falls through to the default location.
+    #
+    # One explicit marker, written by install.ps1 and gitignored, rather than
+    # guessing from the contents.
+    #
+    # Guessing does not work here. An install *is* a clone of the repo, so it
+    # has .git and install.ps1 exactly like a developer's checkout does - and
+    # uninstalling a checkout, deleting src\ and Flask\ out of somebody's
+    # working tree, would be a spectacular own goal. Guessing from the app
+    # files fails the other way too: after a non-purge uninstall they are gone,
+    # which is precisely the moment someone re-runs this with -Purge.
+    #
+    # .freeclaw-install survives a non-purge uninstall and is removed only by
+    # a purge, so it is true exactly when this directory is an install with
+    # anything left in it.
+    if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot ".freeclaw-install"))) {
+        $InstallDir = $PSScriptRoot
+    } else {
+        $InstallDir = Join-Path $env:LOCALAPPDATA "FreeClaw"
+    }
+}
 
 function Step($text) { Write-Host ""; Write-Host "  $text" -ForegroundColor Cyan }
 function Info($text) { Write-Host "     $text" -ForegroundColor DarkGray }
@@ -153,13 +189,32 @@ if ($current) {
 
 # -- files ----------------------------------------------------
 Step "Removing files"
-$userData = @(".env", "Flask\static", "logs", "browser-profiles")
+# uninstall.ps1 is kept alongside the data it left behind: without it there is
+# nothing in the directory that can finish the job, and `-Purge` later would
+# mean fetching the script again. It is also, on a normal run, the file this
+# very process is executing - deleting that mid-run aborts the script, which is
+# how an uninstall that had actually worked came to exit 255 with no summary.
+$userData = @(".env", "Flask\static", "logs", "browser-profiles", "uninstall.ps1",
+              ".freeclaw-install")
 
 if ($Purge) {
-    Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-    if (Test-Path $InstallDir) {
-        Die "Couldn't fully delete $InstallDir - something still has a file open. Try again after signing out."
+    # Everything except this script first, so a genuine problem (a file still
+    # open, a permissions issue) is reported rather than hidden behind the
+    # self-delete below.
+    foreach ($item in Get-ChildItem $InstallDir -Force) {
+        if ($item.Name -eq "uninstall.ps1") { continue }   # deletes itself last
+        Remove-Item $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
+    $left = @(Get-ChildItem $InstallDir -Force | Where-Object { $_.Name -ne "uninstall.ps1" })
+    if ($left.Count) {
+        Die ("Couldn't fully delete $InstallDir - " +
+             "$($left.Count) item(s) left, something still has a file open. " +
+             "Try again after signing out.")
+    }
+    # A running script cannot delete itself. Hand the last step to a detached
+    # cmd that waits for this process to exit first.
+    $cmd = 'timeout /t 2 /nobreak >nul & rmdir /s /q "' + $InstallDir + '"'
+    Start-Process cmd.exe -ArgumentList '/c', $cmd -WindowStyle Hidden | Out-Null
     Ok "everything removed"
 } else {
     foreach ($item in Get-ChildItem $InstallDir -Force) {
@@ -185,6 +240,7 @@ if (-not $Purge) {
     Write-Host "  Your data is still in:" -ForegroundColor DarkGray
     Write-Host "    $InstallDir"
     Write-Host ""
-    Write-Host "  Delete that folder to remove it, or re-run with -Purge." -ForegroundColor DarkGray
+    Write-Host "  Delete that folder to remove it, or finish the job with:" -ForegroundColor DarkGray
+    Write-Host "    & `"$InstallDir\uninstall.ps1`" -Purge"
 }
 Write-Host ""
