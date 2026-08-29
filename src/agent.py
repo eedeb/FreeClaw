@@ -6,7 +6,7 @@ import socket
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import models.run_model as Classy
 import httpx
@@ -1482,6 +1482,77 @@ def parse_ping_time(stamp):
     return parsed
 
 
+# Recurring pings. The interval is written as a "[daily]" marker on the end of
+# the timestamp field — "2026-08-30 08:00 [daily] - <action>" — so it lands
+# inside what partition(" - ") already treats as the stamp, and an action
+# containing " - " still can't be mistaken for one. A line with no marker is a
+# one-shot, which is every ping written before this existed.
+PING_REPEATS = {
+    "hourly": timedelta(hours=1),
+    "daily": timedelta(days=1),
+    "weekly": timedelta(weeks=1),
+}
+_PING_REPEAT_RE = re.compile(r"\s*\[([A-Za-z]+)\]\s*$")
+
+
+def split_ping_stamp(stamp):
+    """Split a ping's timestamp field into (time text, repeat or None).
+
+    A marker that isn't a known interval is left on the time text, where
+    parse_ping_time will reject it and the scheduler will log the skip. That
+    beats stripping it and firing once: a typo'd '[dialy]' would then look
+    like it worked while silently dropping the recurrence."""
+    if not stamp:
+        return stamp, None
+    m = _PING_REPEAT_RE.search(stamp)
+    if not m:
+        return stamp, None
+    repeat = m.group(1).lower()
+    if repeat not in PING_REPEATS:
+        return stamp, None
+    return stamp[:m.start()], repeat
+
+
+def format_ping_line(when, repeat, action):
+    """Build one ping.md line. `when` may be a datetime or the model's own
+    timestamp text, which is kept verbatim — parse_ping_time already accepted
+    it, and rewriting it would only churn the file."""
+    stamp = when.strftime(PING_TIME_FORMAT) if isinstance(when, datetime) else str(when).strip()
+    if repeat:
+        stamp = f"{stamp} [{repeat}]"
+    return f"{stamp} - {action}"
+
+
+def next_ping_time(when, repeat, now=None):
+    """The next occurrence of a repeating ping, strictly after `now`.
+
+    Steps in whole intervals from the scheduled time rather than from `now`,
+    so a daily 08:00 ping stays at 08:00 even when the delivery ran late. A
+    run of missed intervals (server asleep, machine off) collapses into the
+    next future one instead of firing a backlog. Returns None if `repeat`
+    isn't a known interval."""
+    step = PING_REPEATS.get(repeat)
+    if step is None:
+        return None
+    if now is None:
+        now = datetime.now()
+    nxt = when + step
+    if nxt <= now:
+        nxt += step * ((now - nxt) // step + 1)
+    return nxt
+
+
+def sort_ping_lines(lines):
+    """ping.md, soonest first, so the next scheduled event is always the first
+    line. A line whose timestamp doesn't parse sorts to the bottom keeping its
+    relative order, rather than being dropped."""
+    def key(line):
+        stamp, _, _ = line.partition(" - ")
+        parsed = parse_ping_time(split_ping_stamp(stamp)[0])
+        return (1, datetime.max) if parsed is None else (0, parsed)
+    return sorted(lines, key=key)
+
+
 def build_context_tools():
     """Memory, one section at a time. Your system prompt carries only the About
     and Preferences sections and the list of header names, so these are how the
@@ -1597,12 +1668,13 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "add_ping",
-                "description": "Schedules a reminder or future action; the action text arrives as a prompt when it fires.",
+                "description": "Schedules a reminder or future action; the action text arrives as a prompt when it fires. Optionally repeats hourly, daily, or weekly.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "date_time": { "type": "string", "description": "Absolute, as 'YYYY-MM-DD HH:MM'. Today's date is in your prompt; any time of day needs get_time first — never guess it." },
+                        "date_time": { "type": "string", "description": "Absolute, as 'YYYY-MM-DD HH:MM'. Today's date is in your prompt; any time of day needs get_time first — never guess it. For a repeat this is the first occurrence." },
                         "action": { "type": "string", "description": "An instruction to yourself, e.g. 'Remind them to take their medication.'" },
+                        "repeat": { "type": "string", "enum": ["hourly", "daily", "weekly"], "description": "Optional. Repeats from date_time at this interval until they ask you to stop. Omit unless they asked for something recurring — most pings are one-off." },
                     },
                     "required": ["date_time", "action"]
                 }
@@ -2286,8 +2358,16 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         filename = "ping.md"
         date_time = (args_dict.get('date_time') or '').strip()
         action = (args_dict.get('action') or '').strip()
+        repeat = (args_dict.get('repeat') or '').strip().lower() or None
         if not action:
             return "Error: an action is required — nothing was scheduled."
+        # Same reasoning as the timestamp check below: refuse an interval the
+        # scheduler doesn't know rather than writing a marker that would never
+        # recur, or that parse_ping_time would choke on for good.
+        if repeat is not None and repeat not in PING_REPEATS:
+            return (f"Error: '{repeat}' isn't a repeat interval — nothing was "
+                    f"scheduled. Use {', '.join(PING_REPEATS)}, or omit it "
+                    f"for a one-off.")
         # Refuse a timestamp the scheduler can't parse, rather than writing a
         # line that would sit in ping.md forever and never fire. parse_ping_time
         # is the same parser the scheduler uses, so what's accepted here is
@@ -2297,23 +2377,20 @@ def _run_tool(command_name, args_dict, bash_approved=False):
                     f"scheduled. Use 'YYYY-MM-DD HH:MM' (call get_time first for "
                     f"anything relative like 'in 20 minutes').")
         with open(static_dir+filename, "a", encoding="utf-8") as f:
-            f.write(f"{date_time} - {action}\n")
+            f.write(format_ping_line(date_time, repeat, action) + "\n")
 
         # Re-sort ping.md on every update so the next scheduled event is
-        # always the first line and the furthest-out event is the last.
-        # Each entry is "YYYY-MM-DD HH:MM - <action>"; sort by the parsed
-        # timestamp. Any line whose timestamp doesn't parse is kept in its
-        # existing order at the bottom rather than dropped.
+        # always the first line and the furthest-out event is the last. The
+        # scheduler sorts the same way when it rewrites a fired repeat, so
+        # the file stays ordered however it was last touched.
         with open(static_dir+filename, "r", encoding="utf-8") as f:
-            entries = [line for line in f.read().splitlines() if line.strip()]
+            entries = sort_ping_lines(
+                [line for line in f.read().splitlines() if line.strip()])
 
-        def _ping_sort_key(line):
-            parsed = parse_ping_time(line.split(" - ", 1)[0])
-            return (1, datetime.max) if parsed is None else (0, parsed)
-
-        entries.sort(key=_ping_sort_key)
         with open(static_dir+filename, "w", encoding="utf-8") as f:
             f.write("\n".join(entries) + "\n" if entries else "")
+        if repeat:
+            return f"Ping added successfully, repeating {repeat}."
         return "Ping added successfully."
     if command_name == 'create_page':
         filename, error = _filename_arg(args_dict)

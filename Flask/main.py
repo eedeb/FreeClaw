@@ -1841,9 +1841,11 @@ def api_update_log():
 # One daemon thread wakes every PING_POLL_SECONDS and delivers any pings
 # whose time has arrived. Each user's pings live in their own ping.md (written
 # by the agent's add_ping tool), one per line as "YYYY-MM-DD HH:MM - <action>",
-# kept sorted soonest-first. Delivering a ping runs a normal agent turn for
-# that user with the action text as the prompt, then saves the conversation —
-# so the exchange is already there the next time they open their chat.
+# kept sorted soonest-first. A recurring ping carries its interval in the
+# timestamp field — "YYYY-MM-DD HH:MM [daily] - <action>" — and is rescheduled
+# instead of consumed. Delivering a ping runs a normal agent turn for that
+# user with the action text as the prompt, then saves the conversation — so
+# the exchange is already there the next time they open their chat.
 
 PING_POLL_SECONDS = 30
 _ping_scheduler_started = False
@@ -1851,10 +1853,11 @@ _ping_scheduler_start_lock = threading.Lock()
 
 
 def _pop_due_pings(name, now):
-    """Read this user's ping.md, remove every entry whose time is <= now, and
+    """Read this user's ping.md, take out every entry whose time is <= now, and
     return those due entries as (timestamp, action) pairs. Future entries —
     and any line whose timestamp genuinely can't be parsed — are written back
-    untouched.
+    untouched. A due entry carrying a repeat interval is written back at its
+    next occurrence rather than dropped.
 
     We compare with <= (not ==) so a ping still fires if the exact minute's
     poll was missed (server busy, asleep, or only just restarted): any overdue
@@ -1872,17 +1875,30 @@ def _pop_due_pings(name, now):
     due, remaining = [], []
     for ln in lines:
         stamp, _, action = ln.partition(" - ")
-        when = agent.parse_ping_time(stamp)
+        time_text, repeat = agent.split_ping_stamp(stamp)
+        when = agent.parse_ping_time(time_text)
         if when is None:
             # Keep it (we can't know when it's meant to fire) but make the
             # skip visible — this is exactly the failure that hid before.
             logger.warning("Skipping unparseable ping for user=%s: %r", name, ln)
             remaining.append(ln)
         elif when <= now:
-            due.append((stamp.strip(), action.strip()))
+            due.append((time_text.strip(), action.strip()))
+            if repeat:
+                # Rescheduled here, before delivery, so a turn that throws
+                # can't quietly end the recurrence — the next occurrence is
+                # already on disk by the time the agent runs. Missed
+                # intervals collapse into one, so a machine that was off for
+                # a week fires an hourly ping once, not 168 times.
+                nxt = agent.next_ping_time(when, repeat, now)
+                remaining.append(
+                    agent.format_ping_line(nxt, repeat, action.strip()))
         else:
             remaining.append(ln)
-    if due:  # only rewrite when we actually removed something
+    if due:  # only rewrite when we actually took something out
+        # Sort before opening the file, not after: "w" truncates on open, so
+        # anything that throws in here would take the remaining pings with it.
+        remaining = agent.sort_ping_lines(remaining)
         with open(path, "w", encoding="utf-8") as f:
             f.write(("\n".join(remaining) + "\n") if remaining else "")
     return due
