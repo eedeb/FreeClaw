@@ -16,7 +16,7 @@ from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
     user_ping_path, list_users, user_exists, create_user,
     load_conversation, save_conversation, derive_title, ensure_conversation,
-    activate_session,
+    activate_session, read_user_context, write_user_context,
 )
 from src.logging_setup import get_logger
 import atexit
@@ -274,6 +274,42 @@ def api_delete_user(name):
         if session.get('current_user') == name:
             session.pop('current_user', None)
     return jsonify({'ok': True})
+
+
+@app.route('/api/users/<name>/context', methods=['GET', 'PUT'])
+def api_user_context(name):
+    """Read or replace a user's context.md — the agent's long-term memory.
+
+    The file is the agent's own to edit (add_context, edit_file), so this is
+    for what those can't do: seeding a persona at setup, or showing someone
+    their memory to edit outside a conversation. Without it the only way in is
+    a file write, which is the one thing that ties a client to the machine
+    FreeClaw runs on.
+
+    A PUT takes effect on the conversation already running. The system message
+    holds a snapshot of context.md taken at the last reset, so a write alone
+    wouldn't be seen until the next one — the reason a client that wrote the
+    file directly had to select the user and reset afterwards."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = safe_username(name)
+    if not name or not user_exists(name):
+        return jsonify({'error': 'No such user'}), 404
+    if request.method == 'GET':
+        return jsonify({'user': name, 'context': read_user_context(name)})
+    data = request.get_json(silent=True) or {}
+    content = data.get('context')
+    if not isinstance(content, str):
+        return jsonify({'error': "Send JSON with a 'context' string."}), 400
+    try:
+        with _session_lock(name):
+            write_user_context(name, content)
+            activate_session(name)
+            if agent.refresh_context():
+                save_conversation(name, agent.get_messages())
+    except Exception as e:
+        return _log_and_error(e)
+    return jsonify({'ok': True, 'user': name})
 
 
 @app.route('/api/conversation', methods=['GET'])
@@ -1126,14 +1162,16 @@ def api_update_settings():
 
 # ── MCP SERVERS (env-backed parallel lists) ──────────────────
 
-# Characters that would break the single-quote-wrapped JSON we store in .env,
-# or python-dotenv's parsing. Rejected on input so the round-trip is safe.
+# Characters that would break the single-quote-wrapped JSON we store in .env.
+# Rejected on input so the round-trip is safe.
 _MCP_BAD_CHARS = ("'", '"', '\n', '\r')
 
 # A stdio command legitimately needs quoting for paths with spaces, and a
 # double quote survives our .env encoding intact (json.dumps escapes it, and
-# python-dotenv doesn't reinterpret escapes inside a single-quoted value). A
-# single quote would terminate that value, so it's still out.
+# the file is read back verbatim — mcp_client.read_env_values, which exists
+# because python-dotenv *does* reinterpret escapes inside a single-quoted
+# value and so mangled every Windows path). A single quote would terminate the
+# value, so it's still out.
 _MCP_BAD_COMMAND_CHARS = ("'", '\n', '\r')
 
 

@@ -261,8 +261,8 @@ def _replace_with_retry(tmp, path, attempts=10, delay=0.05):
             time.sleep(delay)
 
 
-def _write_json_atomic(path, data):
-    """Replace `path` with `data` in one step.
+def _write_atomic(path, text, prefix=".tmp-"):
+    """Replace `path` with `text` in one step.
 
     Writing in place leaves a window where the file on disk is truncated or
     half-written, and anything reading it then (the other process, the ping
@@ -273,10 +273,10 @@ def _write_json_atomic(path, data):
     the retry loop.
     """
     directory = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".conv-", suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+            f.write(text)
             f.flush()
             os.fsync(f.fileno())
         _replace_with_retry(tmp, path)
@@ -284,6 +284,32 @@ def _write_json_atomic(path, data):
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def _write_json_atomic(path, data):
+    """`data` as JSON, replacing `path` in one step (see _write_atomic)."""
+    _write_atomic(path, json.dumps(data), prefix=".conv-")
+
+
+def read_user_context(name):
+    """This user's context.md — their long-term memory — or "" if they have
+    none yet."""
+    try:
+        with open(user_context_path(name), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def write_user_context(name, content):
+    """Replace this user's context.md.
+
+    Atomic, because the agent's own tools read the same file mid-turn and a
+    half-written memory is worse than a stale one. Note that the conversation
+    holds a *snapshot* of this file, taken at its last reset — a caller that
+    wants the change to reach the running conversation has to say so; see
+    agent.refresh_context()."""
+    _write_atomic(user_context_path(name), content, prefix=".ctx-")
 
 
 def save_conversation(name, messages, title=None):

@@ -40,7 +40,6 @@ import time
 import uuid
 
 import requests
-from dotenv import dotenv_values
 
 import src.shell as shell
 from src.logging_setup import get_logger
@@ -161,6 +160,35 @@ def for_user(server, user):
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "FreeClaw", "version": "1.0"}
+
+# Ceiling on one image's base64, ~7MB — comfortably above a full-screen
+# screenshot (a 1280px-wide JPEG is around 90KB) and below the request size a
+# provider will take.
+MAX_IMAGE_B64 = 7_000_000
+
+
+class ToolText(str):
+    """A tool result's text, with any images the tool returned carried
+    alongside it as `data:` URLs.
+
+    A `str` subclass rather than a (text, images) pair because a tool result is
+    a string everywhere else in FreeClaw: it's returned through the thirty-odd
+    exits of agent._run_tool, streamed to the page as a `tool_result` event,
+    and stored as a message's `content`. Subclassing leaves every one of those
+    working unchanged and lets the one place that cares —
+    agent._append_tool_response — pick the images up. Anything that builds a
+    new string from it (an f-string, a slice) drops them, which is the right
+    default: the text no longer describes the same result."""
+
+    # Class-level default so the attribute is always there, including on an
+    # instance str machinery built without going through __new__.
+    images = ()
+
+    def __new__(cls, text, images=()):
+        obj = super().__new__(cls, text)
+        obj.images = tuple(images)
+        return obj
+
 
 # tools/list results cached by _sig(server) so rebuilding the agent's tool
 # list (which can happen on every conversation reset) doesn't re-hit every
@@ -303,16 +331,68 @@ def _apply_user_prefs(servers, user):
 
 # ── .env storage (read + serialize) ──────────────────────────
 
+def read_env_values(path=ENV_PATH):
+    """`.env` read as literal text: {KEY: value} with one layer of wrapping
+    quotes removed and nothing else interpreted.
+
+    Deliberately *not* `dotenv_values()`, and this is the whole reason the
+    function exists. Inside a quoted value python-dotenv unescapes backslash
+    sequences, so a Windows command that `json.dumps` correctly wrote as
+    `C:\\\\Users\\\\…` reads back as `C:\\Users\\…` — no longer valid JSON, so
+    `parse_env_list` below returned [] for the *entire* list. One Windows path
+    anywhere in MCP_COMMANDS therefore made every stdio server disappear on
+    read, builtins included, while the add that put it there still reported
+    success from its in-memory copy.
+
+    The file on disk is already valid JSON, so reading it verbatim is both the
+    fix and the smaller behaviour. This understands exactly the one-line
+    `KEY=value` shape `_write_env` produces; the rest of what dotenv does
+    (interpolation, multi-line values, escapes) has never applied to the keys
+    read through here, all of which we write ourselves.
+
+    Public because agent.py's provider lists are stored the same way and are
+    parsed through the same pair of functions."""
+    values = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return values
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if not key:
+            continue
+        value = value.strip()
+        # Same one layer dotenv strips — and, unlike dotenv, that's all.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
 def parse_env_list(raw):
     """One of the single-quote-wrapped JSON lists we persist in .env, parsed
     back into a Python list — or [] for anything missing or malformed. Public
     because agent.py stores its provider lists the exact same way and shares
-    this parser rather than keeping a copy."""
+    this parser rather than keeping a copy.
+
+    Feed it values from `read_env_values()`, not `dotenv_values()` — see there
+    for what the difference costs."""
     if not raw:
         return []
     try:
         val = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
+        # Logged rather than swallowed silently: returning [] here drops every
+        # entry in the list at once, which is invisible from the outside — the
+        # symptom is servers that were configured simply not being there.
+        logger.warning("Ignoring a malformed .env list (%.120r)", raw)
         return []
     return val if isinstance(val, list) else []
 
@@ -338,7 +418,7 @@ def read_servers(user=None):
     everyone's default."""
     if not os.path.exists(ENV_PATH):
         return _apply_user_prefs(_merge_builtins([]), user)
-    env = dotenv_values(ENV_PATH)
+    env = read_env_values(ENV_PATH)
     names = parse_env_list(env.get(NAMES_KEY))
     urls = parse_env_list(env.get(URLS_KEY))
     tokens = parse_env_list(env.get(TOKENS_KEY))
@@ -392,10 +472,14 @@ def _merge_builtins(servers):
 def servers_to_env(servers):
     """Turn a list of server dicts into the `{ENV_KEY: value}` mapping to
     persist. Values are single-quote-wrapped JSON so brackets and the inner
-    double quotes survive a round-trip through python-dotenv untouched.
+    double quotes survive the trip through `.env` intact.
     (Callers validate that no field contains a single quote or newline — a
     double quote is fine, which is what lets a stdio command quote a path
-    with spaces in it.)"""
+    with spaces in it.)
+
+    What comes back out has to be read with `read_env_values()`: JSON escapes
+    every backslash in a Windows path, and python-dotenv would unescape them
+    again on the way back in."""
     return {
         NAMES_KEY: "'" + json.dumps([s.get("name", "") for s in servers]) + "'",
         URLS_KEY: "'" + json.dumps([s.get("url", "") for s in servers]) + "'",
@@ -871,7 +955,8 @@ def list_tools(server, use_cache=True):
 
 
 def call_tool(server, tool_name, arguments):
-    """Invoke `tool_name` on `server` and return its result as plain text.
+    """Invoke `tool_name` on `server` and return its result as text — a
+    ToolText, if the tool returned images along with it.
 
     How long the call may block is decided per call — see _read_timeout_for."""
     read_timeout = _read_timeout_for(tool_name, arguments)
@@ -897,9 +982,31 @@ def call_tool(server, tool_name, arguments):
     return _stringify_result(msg.get("result") or {})
 
 
+def _image_data_url(block):
+    """A `data:` URL for one MCP image block, or None if there's nothing
+    usable in it. Oversized images are refused rather than truncated: the
+    payload is resent on every request for as long as it stays in the
+    conversation, so one enormous screenshot would be paid for many times."""
+    data = block.get("data") or ""
+    if not data or len(data) > MAX_IMAGE_B64:
+        if data:
+            logger.info("Dropping a %d-byte MCP image — over the %d-byte limit",
+                        len(data), MAX_IMAGE_B64)
+        return None
+    mime = block.get("mimeType") or "image/png"
+    return f"data:{mime};base64,{data}"
+
+
 def _stringify_result(result):
-    """Flatten an MCP tools/call result into text the LLM can read."""
+    """Flatten an MCP tools/call result into text the LLM can read, as a
+    ToolText carrying any images the tool returned alongside it.
+
+    Images used to be flattened to "[image content omitted]" like every other
+    non-text block, which meant a screenshot tool could be called but never
+    seen. They're kept here and turned into image content on the request in
+    agent.py; see ToolText for why they ride on a string."""
     parts = []
+    images = []
     for block in result.get("content", []) or []:
         btype = block.get("type")
         if btype == "text":
@@ -907,14 +1014,27 @@ def _stringify_result(result):
         elif btype == "resource":
             res = block.get("resource", {}) or {}
             parts.append(res.get("text") or res.get("uri", ""))
+        elif btype == "image":
+            url = _image_data_url(block)
+            if url:
+                images.append(url)
+            elif block.get("data"):
+                parts.append("[image too large to include]")
+            else:
+                parts.append("[image content omitted]")
         else:
             parts.append(f"[{btype} content omitted]")
     text = "\n".join(p for p in parts if p)
     if not text and result.get("structuredContent") is not None:
         text = json.dumps(result["structuredContent"])
     if result.get("isError"):
-        return "Tool reported an error: " + (text or "unknown error")
-    return text or "Tool returned no content."
+        return ToolText("Tool reported an error: " + (text or "unknown error"), images)
+    if not text:
+        # An image and nothing else is a complete answer — say so rather than
+        # reporting the call as empty.
+        text = (f"Returned {len(images)} image(s)." if images
+                else "Tool returned no content.")
+    return ToolText(text, images)
 
 
 def clear_cache():

@@ -186,7 +186,10 @@ def read_providers():
     fallback for that case."""
     if not os.path.exists(_ENV_PATH):
         return []
-    env = dotenv_values(_ENV_PATH)
+    # Read as literal text rather than through dotenv_values — see
+    # mcp_client.read_env_values for what dotenv does to a value holding
+    # backslashes, and why one such entry would empty this whole list.
+    env = mcp_client.read_env_values(_ENV_PATH)
     names = mcp_client.parse_env_list(env.get(_PROVIDER_NAMES_KEY))
     urls = mcp_client.parse_env_list(env.get(_PROVIDER_URLS_KEY))
     keys = mcp_client.parse_env_list(env.get(_PROVIDER_KEYS_KEY))
@@ -636,19 +639,29 @@ def _cache_breakpoint_messages(messages):
 # takes an `api`: a Responses provider *does* want its encrypted reasoning back,
 # so the stripping is skipped for those and applied for everyone else. Falling
 # back mid-turn therefore drops the blobs on its own, with no special case.
+#
+# "images" is a tool result's images, held on the message they came back with
+# and expanded into a user message of image_url parts by _prepare_kwargs. The
+# key itself must never go over the wire — the wire shape is the expansion.
 _INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items",
-                          "intent")
+                          "intent", "images")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
-#   "usage" — stream_options.include_usage, so a streamed response reports its
-#             token counts (it carries none otherwise).
-#   "cache" — cache_control breakpoints on the system message and the last user
-#             message, for the models that need them (_WANTS_CACHE_BREAKPOINT).
-# Both are sent optimistically. A provider that 400s with them on is retried
+#   "usage"  — stream_options.include_usage, so a streamed response reports its
+#              token counts (it carries none otherwise).
+#   "cache"  — cache_control breakpoints on the system message and the last user
+#              message, for the models that need them (_WANTS_CACHE_BREAKPOINT).
+#   "images" — the images a tool returned, sent as image content rather than
+#              described in a line of text. Plenty of models are text-only, and
+#              they say so by refusing the request.
+# All are sent optimistically. A provider that 400s with them on is retried
 # once without, and then never asked again — so an endpoint that doesn't
 # understand them costs one wasted request ever, nothing needs configuring, and
-# no working call is lost to a field the user didn't know about.
+# no working call is lost to a field the user didn't know about. The verdict is
+# one flag for the lot: a provider that refused any of them is asked for none,
+# which costs a text-only model its usage figures and is the trade the single
+# retry buys.
 _unsupported_extras = set()   # {provider_name, ...} — see forget_provider_capabilities
 
 
@@ -817,9 +830,58 @@ def _usage_summary(usage):
             "completion_tokens": completion or 0}
 
 
-def _prepare_kwargs(kwargs, model_override, extra_body, api="chat"):
+# Said instead of showing an image, wherever one can't be sent. Without it a
+# tool result reads as though the model had seen the screenshot it's describing.
+_IMAGE_UNAVAILABLE_NOTE = "\n(An image came back with this result, but it can't be shown to this model.)"
+
+
+def _with_tool_images(messages):
+    """`messages` with each tool result's images following it as user content.
+
+    An image can't ride on the tool message itself — OpenAI-compatible
+    endpoints take text there and nothing else — so it goes in the one shape
+    every vision-capable chat endpoint accepts: an ordinary user message of
+    image_url parts, immediately after the result it belongs to. The tool
+    message keeps its text, so the pairing survives even for a provider that
+    ignores the image.
+
+    Returns `messages` untouched when nothing carries an image, so the caller
+    doesn't build a second copy of every request for the usual case."""
+    if not any(m.get("images") for m in messages):
+        return messages
+    out = []
+    for m in messages:
+        out.append(m)
+        images = m.get("images") or ()
+        if not images:
+            continue
+        label = f"Image returned by {m.get('name') or 'the tool'}:"
+        out.append({"role": "user", "content": [
+            {"type": "text", "text": label},
+            *({"type": "image_url", "image_url": {"url": url}} for url in images),
+        ]})
+    return out
+
+
+def _without_tool_images(messages):
+    """`messages` with each attached image replaced by a line saying it isn't
+    being shown — for a provider that has refused images, and for the retry
+    that establishes it has. Same rule as above: `messages` back untouched when
+    there's nothing to say it about."""
+    if not any(m.get("images") for m in messages):
+        return messages
+    return [{**m, "content": str(m.get("content") or "") + _IMAGE_UNAVAILABLE_NOTE}
+            if m.get("images") else m for m in messages]
+
+
+def _prepare_kwargs(kwargs, model_override, extra_body, api="chat", images=False):
     """The request as this provider needs to receive it, before any of the
-    optional extras are layered on."""
+    optional extras are layered on.
+
+    `images` says whether images a tool returned are sent as image content or
+    noted in text instead — see _with_tool_images. It's off here and switched
+    on in _create_completion for the providers worth trying it on, so the
+    version without them is always available to retry with."""
     call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
     if extra_body:
         call_kwargs = {**call_kwargs, "extra_body": extra_body}
@@ -827,19 +889,25 @@ def _prepare_kwargs(kwargs, model_override, extra_body, api="chat"):
     # semantics null means the same as omitting the key, but Google's
     # Gemini shim 400s on any optional field sent as JSON null.
     call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
-    # A "responses" provider keeps its internal message keys: the translation
-    # rebuilds the payload item by item from the fields it recognises, so
-    # nothing can leak through it anyway — and it needs `reasoning_items`,
-    # which stripping here would throw away before it ever got there.
-    if "messages" in call_kwargs and api != "responses":
-        # Our assistant messages carry non-standard bookkeeping keys (which
-        # provider answered, what it reported for token usage) — strip them
-        # before they go over the wire; some providers 400 on unrecognized
-        # message fields.
-        call_kwargs = {**call_kwargs, "messages": [
-            {k: v for k, v in m.items() if k not in _INTERNAL_MESSAGE_KEYS}
-            for m in call_kwargs["messages"]
-        ]}
+    if "messages" in call_kwargs:
+        messages = (_with_tool_images(call_kwargs["messages"]) if images
+                    else _without_tool_images(call_kwargs["messages"]))
+        # A "responses" provider keeps its internal message keys: the
+        # translation rebuilds the payload item by item from the fields it
+        # recognises, so nothing can leak through it anyway — and it needs
+        # `reasoning_items`, which stripping here would throw away before it
+        # ever got there.
+        if api != "responses":
+            # Our assistant messages carry non-standard bookkeeping keys (which
+            # provider answered, what it reported for token usage) — strip them
+            # before they go over the wire; some providers 400 on unrecognized
+            # message fields.
+            messages = [
+                {k: v for k, v in m.items() if k not in _INTERNAL_MESSAGE_KEYS}
+                for m in messages
+            ]
+        if messages is not call_kwargs["messages"]:
+            call_kwargs = {**call_kwargs, "messages": messages}
     return call_kwargs
 
 
@@ -857,14 +925,23 @@ def _create_completion(**kwargs):
     amount of waiting achieves."""
     global _last_provider
     failures = []
+    # The image-carrying variant is built only when there's an image to carry
+    # and only for the providers that could take one — a Responses provider
+    # can't (see _prepare_kwargs), and every other request is the same object
+    # it always was.
+    has_images = any(m.get("images") for m in (kwargs.get("messages") or []))
     prepared = [
-        (name, base_url, key, _prepare_kwargs(kwargs, model_override, extra_body, api), api)
+        (name, base_url, key,
+         _prepare_kwargs(kwargs, model_override, extra_body, api),
+         (_prepare_kwargs(kwargs, model_override, extra_body, api, images=True)
+          if has_images and api != "responses" else None),
+         api)
         for name, base_url, key, model_override, extra_body, api in _active_providers()
         if key and key != "None"
     ]
 
     def sidelined():
-        return {name: reason for name, _, _, ck, _ in prepared
+        return {name: reason for name, _, _, ck, _, _ in prepared
                 if (reason := _cooldown_reason(name, ck))}
 
     # Honour what the providers asked for — unless that would sit out every one
@@ -904,7 +981,7 @@ def _create_completion(**kwargs):
         # in the meantime comes back into play too.
         waiting = sidelined()
 
-    for name, base_url, key, plain_kwargs, api in prepared:
+    for name, base_url, key, plain_kwargs, image_kwargs, api in prepared:
         if name in waiting:
             reason, explanation = waiting[name]
             logger.info("Skipping provider '%s': %s", name, explanation)
@@ -913,13 +990,21 @@ def _create_completion(**kwargs):
 
         call_kwargs = plain_kwargs
         applied = []
-        # The optional extras are chat-completions fields: stream_options, and
-        # the cache_control breakpoints. The Responses translation has its own
-        # shape for both, so for those providers there's nothing to add here
-        # and nothing to retry without.
+        # The optional extras are chat-completions fields: stream_options, the
+        # cache_control breakpoints, and any image a tool returned. The
+        # Responses translation has its own shape for all three, so for those
+        # providers there's nothing to add here and nothing to retry without.
         if api != "responses" and name not in _unsupported_extras:
+            if image_kwargs is not None:
+                call_kwargs = image_kwargs
             call_kwargs, applied = _apply_optional_extras(call_kwargs, call_kwargs.get("model"))
+            if image_kwargs is not None:
+                applied.insert(0, "images")
 
+        # What actually went over the wire, for the size bookkeeping below: an
+        # image is heavy enough that recording a refusal against the wrong
+        # variant would set this provider's ceiling at a size it never refused.
+        sent_kwargs = call_kwargs
         try:
             c = _client_for(name, key, base_url)
             try:
@@ -939,6 +1024,7 @@ def _create_completion(**kwargs):
                     raise
                 logger.info("Provider '%s' rejected a request with %s applied — "
                             "retrying without", name, "/".join(applied))
+                sent_kwargs = plain_kwargs
                 result = _send(c, api, plain_kwargs)
                 # Only now is it established that the extras were the problem.
                 _unsupported_extras.add(name)
@@ -952,7 +1038,7 @@ def _create_completion(**kwargs):
         except Exception as e:
             reason = _classify_error(e)
             failures.append((name, reason, str(e)))
-            _note_provider_failure(name, e, plain_kwargs)
+            _note_provider_failure(name, e, sent_kwargs)
             # Full traceback + request shape (never message content, which
             # may hold user data) — the short strings above are all that
             # ever reach the frontend or the model, so this is the only
@@ -1347,6 +1433,40 @@ def _refresh_volatile():
     stable = _stable_prefix(messages[0].get("content", ""))
     messages[0]["content"] = (stable + _VOLATILE_HEADER + _now_line()
                               + _new_sections_line() + "\n")
+
+
+def refresh_context():
+    """Re-read context.md into the running conversation's system message,
+    keeping the conversation itself.
+
+    reset() is otherwise the only thing that reads the file into the prompt
+    (see _refresh_volatile for why the snapshot is deliberately fixed), so an
+    edit made from outside the turn — the context endpoint, a hand-edited
+    file — wouldn't reach the model until the conversation was thrown away.
+    This is the snapshot half of a reset with the history left alone.
+
+    Returns False when there's no system message to refresh, i.e. a session
+    with no conversation loaded, where there's nothing to do — the next reset()
+    reads the file anyway. Caller saves: this touches the in-memory
+    conversation only."""
+    sess = _sess()
+    messages = sess.messages
+    if not messages or messages[0].get("role") != "system":
+        return False
+    # Puts a conversation saved by an older build into the current layout
+    # first, so the split below finds the snapshot where it now lives.
+    _refresh_volatile()
+    # The fresh snapshot names every section, so the running tally of ones
+    # added since the last one starts over with it — same as reset().
+    sess.new_sections.clear()
+    instructions = (messages[0].get("content", "").partition(_VOLATILE_HEADER)[0]
+                    .partition(_CTX_HEADER)[0].rstrip())
+    messages[0]["content"] = (instructions + _context_block()
+                              + _VOLATILE_HEADER + _now_line() + "\n")
+    # Every request of a turn re-sends a pinned prefix that starts at this
+    # message, and it no longer says what it said when it was pinned.
+    _clear_turn_prefix()
+    return True
 
 
 def reset(tts=False, refresh=True, subagent=False):
@@ -2534,17 +2654,49 @@ def _window_start(messages, recent):
     return start
 
 
+# How many of a conversation's most recent tool images stay attached. Every one
+# still attached is re-sent in full on every request for the rest of the
+# conversation, so a browsing session that took twenty screenshots would carry
+# all twenty forever. Older ones are dropped and their text left in place — the
+# model keeps the account of what happened, just not the pixels.
+_MAX_HISTORY_IMAGES = 2
+
+
+def _prune_history_images(messages):
+    """Drop every attached image but the most recent _MAX_HISTORY_IMAGES."""
+    kept = 0
+    for m in reversed(messages):
+        if not m.get("images"):
+            continue
+        kept += 1
+        if kept > _MAX_HISTORY_IMAGES:
+            m.pop("images", None)
+
+
 def _append_tool_response(call_id, name, content):
     """Record one tool call's response in the conversation. Every tool_call id
     an assistant message declares must end up answered by exactly one of these
     (see _heal_history), which is why the same shape is appended from four
-    different places in agent_stream."""
-    _sess().messages.append({
+    different places in agent_stream.
+
+    An MCP tool that returned images hands them over on the result string
+    (mcp_client.ToolText); they're stored under "images" — an internal key,
+    stripped from the message and turned into image content on the request by
+    _prepare_kwargs, since the `tool` role itself takes text only."""
+    message = {
         "role": "tool",
         "tool_call_id": call_id,
         "name": name,
-        "content": content,
-    })
+        # str(), so a ToolText is stored as the plain string it prints as.
+        "content": str(content),
+    }
+    images = getattr(content, "images", ())
+    messages = _sess().messages
+    if images:
+        message["images"] = list(images)
+    messages.append(message)
+    if images:
+        _prune_history_images(messages)
 
 
 def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None):
