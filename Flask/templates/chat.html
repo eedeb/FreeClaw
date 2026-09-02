@@ -1515,6 +1515,16 @@
             // stale number attached to a different call.
             if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null, currentIntent);
 
+          } else if (evt.type === 'retry') {
+            // A provider's stream broke before it produced anything, and the
+            // turn is being handed to the next one. Any thinking on screen
+            // belongs to that abandoned answer — remove it outright rather
+            // than leave it above a reply it has nothing to do with. (Nothing
+            // else can be up: the server only retries when no text and no tool
+            // call made it out.)
+            if (activeReasoning) { activeReasoning.wrap.remove(); activeReasoning = null; }
+            if (!thinking.parentNode) thinking = addThinking();
+
           } else if (evt.type === 'reasoning') {
             // Arrives ahead of any text, so it stands in for the thinking
             // dots — the same "working on it" signal, with the work shown.

@@ -911,11 +911,16 @@ def _prepare_kwargs(kwargs, model_override, extra_body, api="chat", images=False
     return call_kwargs
 
 
-def _create_completion(**kwargs):
+def _create_completion(exclude=(), **kwargs):
     """Try each configured provider in the order _active_providers() returns
     them — first entry first, every call — and return (response_or_stream,
     provider_name) from the first that works. Raises AllProvidersFailedError
     if none do.
+
+    `exclude` names providers to leave out of this call entirely — used when a
+    provider has already been tried for this very request and can't be the
+    answer to it (its stream broke mid-response), so the chain has to move on
+    rather than hand the same request back to the endpoint that just dropped it.
 
     A provider that failed on a previous call is skipped without a round-trip
     until its cooldown lapses, and each failure in a row doubles that cooldown,
@@ -937,7 +942,7 @@ def _create_completion(**kwargs):
           if has_images and api != "responses" else None),
          api)
         for name, base_url, key, model_override, extra_body, api in _active_providers()
-        if key and key != "None"
+        if key and key != "None" and name not in exclude
     ]
 
     def sidelined():
@@ -2860,91 +2865,141 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         logger.error("All providers failed for this turn: %s", e.failures)
         raise Exception(_user_facing_error(e.failures))
 
-    # Tell the frontend which provider is about to answer. This fires once
-    # per _create_completion call, and every tool-call continuation is its
-    # own recursive agent_stream() -> _create_completion() call (see the
-    # `yield from agent_stream(...)` below), so a fallback mid-conversation
-    # (or even mid a single tool round-trip) surfaces here too, not just at
-    # the very start of the turn.
-    sess.turn_usage["requests"] += 1
-    yield {"type": "provider", "name": provider}
+    # Providers whose stream broke mid-response on this request. The
+    # cooldowns _create_completion keeps can't sideline these on their own:
+    # the request itself succeeded, so the provider looked healthy right up
+    # until its body fell apart.
+    dead_streams = []
 
-    # Consume the stream, forwarding text chunks to the caller in real
-    # time and reassembling any tool calls (which always arrive as
-    # incremental argument-string fragments when streamed).
-    buffer = ""
-    reasoning_buffer = ""
-    reasoning_items = []
-    tool_calls_acc = {}
-    usage_seen = None
-    try:
-        for chunk in stream:
-            # Stop pressed: abandon the rest of the provider's response. What
-            # already streamed is kept — it's on screen, and dropping it would
-            # desync the saved conversation from what the user saw.
-            if cancellation.is_stopped():
-                logger.info("Stop requested — abandoning the stream from '%s'", provider)
-                break
-            # The usage block arrives on its own final chunk (only when
-            # stream_options.include_usage was sent — see _create_completion),
-            # and that chunk has an empty choices list, so it has to be read
-            # before the choices guard below skips it.
-            chunk_usage = _usage_summary(getattr(chunk, "usage", None))
-            if chunk_usage:
-                usage_seen = chunk_usage
-            # Encrypted reasoning from a Responses provider, riding on that
-            # same final chunk. Opaque to us — kept only to hand straight back
-            # on the next request of this turn, so the model isn't made to
-            # re-derive its plan at every tool hop.
-            chunk_items = getattr(chunk, "reasoning_items", None)
-            if chunk_items:
-                reasoning_items = chunk_items
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta is None:
-                continue
-            if getattr(delta, "content", None):
-                buffer += delta.content
-                yield {"type": "token", "text": delta.content}
-            # Reasoning models stream their thinking on a field of its own,
-            # never inside `content` — `reasoning` on Groq's and Cerebras'
-            # gpt-oss, `reasoning_content` on DeepSeek and its shims. A
-            # provider that doesn't reason simply never sets either.
-            reasoning_delta = (getattr(delta, "reasoning", None)
-                               or getattr(delta, "reasoning_content", None))
-            if reasoning_delta:
-                reasoning_buffer += reasoning_delta
-                yield {"type": "reasoning", "text": reasoning_delta}
-            if getattr(delta, "tool_calls", None):
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tool_calls_acc:
-                        tool_calls_acc[idx] = {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
-                    if tc_delta.id:
-                        tool_calls_acc[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
-    except Exception as e:
-        # A provider's own stream can break mid-response — confirmed on
-        # NVIDIA: a malformed SSE event with no JSON body, which the
-        # openai SDK doesn't guard against and raises JSONDecodeError
-        # straight out of chunk iteration. This is a different failure
-        # mode from the one _create_completion guards: that only covers
-        # the initial request, not the body actually arriving afterward.
-        # Log it fully, but keep whatever partial content/tool-call we
-        # already have instead of losing it outright — that matters most
-        # when a tool call already completed and only the follow-up reply
-        # got cut off.
-        logger.exception(
-            "Stream from provider '%s' broke mid-response: %d chars buffered, %d tool call(s) in progress",
-            provider, len(buffer), len(tool_calls_acc),
-        )
-        if not buffer and not tool_calls_acc:
-            buffer = f"(No response — the connection to {provider} was interrupted before anything came back. Please try again.)"
+    while True:
+        # Tell the frontend which provider is about to answer. This fires once
+        # per _create_completion call, and every tool-call continuation is its
+        # own recursive agent_stream() -> _create_completion() call (see the
+        # `yield from agent_stream(...)` below), so a fallback mid-conversation
+        # (or even mid a single tool round-trip) surfaces here too, not just at
+        # the very start of the turn.
+        sess.turn_usage["requests"] += 1
+        yield {"type": "provider", "name": provider}
+
+        # Consume the stream, forwarding text chunks to the caller in real
+        # time and reassembling any tool calls (which always arrive as
+        # incremental argument-string fragments when streamed).
+        buffer = ""
+        reasoning_buffer = ""
+        reasoning_items = []
+        tool_calls_acc = {}
+        usage_seen = None
+        stream_error = None
+        try:
+            for chunk in stream:
+                # Stop pressed: abandon the rest of the provider's response. What
+                # already streamed is kept — it's on screen, and dropping it would
+                # desync the saved conversation from what the user saw.
+                if cancellation.is_stopped():
+                    logger.info("Stop requested — abandoning the stream from '%s'", provider)
+                    break
+                # The usage block arrives on its own final chunk (only when
+                # stream_options.include_usage was sent — see _create_completion),
+                # and that chunk has an empty choices list, so it has to be read
+                # before the choices guard below skips it.
+                chunk_usage = _usage_summary(getattr(chunk, "usage", None))
+                if chunk_usage:
+                    usage_seen = chunk_usage
+                # Encrypted reasoning from a Responses provider, riding on that
+                # same final chunk. Opaque to us — kept only to hand straight back
+                # on the next request of this turn, so the model isn't made to
+                # re-derive its plan at every tool hop.
+                chunk_items = getattr(chunk, "reasoning_items", None)
+                if chunk_items:
+                    reasoning_items = chunk_items
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+                if getattr(delta, "content", None):
+                    buffer += delta.content
+                    yield {"type": "token", "text": delta.content}
+                # Reasoning models stream their thinking on a field of its own,
+                # never inside `content` — `reasoning` on Groq's and Cerebras'
+                # gpt-oss, `reasoning_content` on DeepSeek and its shims. A
+                # provider that doesn't reason simply never sets either.
+                reasoning_delta = (getattr(delta, "reasoning", None)
+                                   or getattr(delta, "reasoning_content", None))
+                if reasoning_delta:
+                    reasoning_buffer += reasoning_delta
+                    yield {"type": "reasoning", "text": reasoning_delta}
+                if getattr(delta, "tool_calls", None):
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+                        if tc_delta.id:
+                            tool_calls_acc[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+        except Exception as e:
+            # A provider's own stream can break mid-response — confirmed on
+            # NVIDIA: a malformed SSE event with no JSON body, which the
+            # openai SDK doesn't guard against and raises JSONDecodeError
+            # straight out of chunk iteration. This is a different failure
+            # mode from the one _create_completion guards: that only covers
+            # the initial request, not the body actually arriving afterward,
+            # so the fallback chain never sees it. Log it fully and let the
+            # bottom of the loop decide between keeping what already streamed
+            # and re-asking the next provider.
+            stream_error = e
+            logger.exception(
+                "Stream from provider '%s' broke mid-response: %d chars buffered, %d tool call(s) in progress",
+                provider, len(buffer), len(tool_calls_acc),
+            )
+
+        # Whatever already reached the user is kept rather than thrown away:
+        # partial text is on screen, and a tool call that finished streaming
+        # is work that still has to be answered. Only a break that produced
+        # nothing at all is worth handing to the next provider — re-asking
+        # then costs a request and duplicates nothing.
+        if (stream_error is None or buffer or tool_calls_acc
+                or cancellation.is_stopped()):
+            break
+
+        # _create_completion counted this provider a success the moment the
+        # request came back, before a single chunk of the body arrived — put
+        # that right, so its backoff reflects what actually happened.
+        dead_streams.append(provider)
+        _note_provider_failure(provider, stream_error,
+                               {"messages": eco_messages, "tools": check_tools})
+        # Any thinking that streamed belonged to an answer that never came —
+        # have the frontend drop it before the replacement provider starts, and
+        # drop it here too so it can't be saved onto whatever answers instead.
+        yield {"type": "retry", "provider": provider}
+        reasoning_buffer = ""
+        reasoning_items = []
+        try:
+            stream, provider = _create_completion(
+                model=model,
+                messages=eco_messages,
+                temperature=temp,
+                tools=check_tools,
+                top_p=1,
+                stream=True,
+                exclude=dead_streams,
+            )
+        except AllProvidersFailedError as e:
+            # Nothing left to fall through to. Say so in the reply rather than
+            # raising: the turn is salvageable on a retry, and an error here
+            # would read as though the request never got out at all.
+            logger.error("No provider left after %s broke mid-stream: %s",
+                         ", ".join(dead_streams), e.failures)
+            buffer = (f"(No response — the connection to {dead_streams[-1]} was "
+                      "interrupted before anything came back, and no other "
+                      "provider could take over. Please try again.)")
+            break
+        logger.info("Retrying this request on '%s' after '%s' broke mid-stream",
+                    provider, dead_streams[-1])
 
     if usage_seen:
         # The provider's own count of what this request cost — the only exact
