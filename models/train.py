@@ -50,8 +50,8 @@ for tag in tags:
 input_size=len(dictionary)
 hidden_size=32
 output_size=len(tags)
-learning_rate=0.03
-epochs=35
+learning_rate=0.10
+epochs=60
 print("Input size: ", input_size)
 print("Hidden size: ", hidden_size)
 print("Output size: ", output_size)
@@ -111,10 +111,10 @@ def forward_pass(optimized_bag, bag):
         #neuron=[0.123, 0.456, ...]
         output=0
 
-
+        scale = 1 / math.sqrt(len(optimized_bag)) if optimized_bag else 1.0
         for item_index in optimized_bag:
             # for float in previous layer
-            output+=1*neuron[item_index]
+            output+=scale*neuron[item_index]
 
 
         output+=hidden_bias[neuron_index]
@@ -192,9 +192,14 @@ def backprop(phrase, actual, hidden_output, bag, optimized_bag):
         # For each number 
         hidden_delta=hidden_deltas[hidden_index
                                    ]
+        # The input to each of these weights is `scale`, not 1 (see forward_pass),
+        # so the gradient carries the same factor. Leaving this at *1 trains the
+        # hidden layer with an effective learning rate that varies with message
+        # length -- longest messages get the biggest steps, which is backwards.
+        scale = 1 / math.sqrt(len(optimized_bag)) if optimized_bag else 1.0
         for value_index in optimized_bag:
             # For each value from the hidden layer/number of connects in each neuron
-            hidden_layer[hidden_index][value_index]+=learning_rate*hidden_delta*1
+            hidden_layer[hidden_index][value_index]+=learning_rate*hidden_delta*scale
         
         hidden_bias[hidden_index]+=learning_rate*hidden_delta
 

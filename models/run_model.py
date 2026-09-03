@@ -72,10 +72,14 @@ def forward_pass(optimized_bag, bag):
         #neuron=[0.123, 0.456, ...]
         output=0
 
-
+        # Scaled by 1/sqrt(active tokens), matching train.py. Without this a long
+        # message piles 30+ weights into one sum while training only ever saw ~6,
+        # so the accumulated noise from stopwords and rare words outvotes the two
+        # or three words that actually carry the intent.
+        scale = 1 / math.sqrt(len(optimized_bag)) if optimized_bag else 1.0
         for item_index in optimized_bag:
             # for float in previous layer
-            output+=1*neuron[item_index]
+            output+=scale*neuron[item_index]
 
 
         output+=hidden_bias[neuron_index]
