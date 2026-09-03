@@ -2610,7 +2610,7 @@ _TAG_SETTINGS = {
     # restrictive — measured at 90% precision on the 658-message held-out block
     'Smalltalk': ( 4, 1.0, 'file',        0.63),
     'System':    ( 5, 0.2, 'all',         0.57),
-    'Control':   ( 2, 0.2, 'none',        0.47),
+    'Control':   ( 2, 0.2, 'file',        0.47),
     'Websearch': ( 5, 0.4, 'search+mcp',  0.41),
     'Memory':    ( 5, 0.5, 'file+mcp',    0.32),
     'Files':     ( 7, 0.4, 'file+mcp',    0.27),
