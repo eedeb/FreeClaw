@@ -891,9 +891,18 @@
   // It replaces the literal 'agent' when we have one; turns that never got
   // classified — sub-agents, system-initiated turns, history from before this
   // shipped — fall back to 'agent'.
-  function agentLabelText(provider, usage, intent) {
+  //
+  // `sourced` marks a reply that actually ran a search before answering. Only
+  // shown when true, so its *absence* is the signal worth reading: a reply
+  // naming outlets, reports or dates without it took them from the model's
+  // weights, and an invented citation is indistinguishable from a real one in
+  // the text alone. Not available while the turn is still streaming (nothing
+  // knows yet whether it will search) — it appears when the 'done' event
+  // re-renders the thread from the saved conversation.
+  function agentLabelText(provider, usage, intent, sourced) {
     return (intent || 'agent')
          + (provider ? ' · via ' + provider : '')
+         + (sourced ? ' · sourced' : '')
          + tokenLabel(usage);
   }
 
@@ -921,7 +930,8 @@
     label.className = 'msg-label';
     const provider = opts && opts.provider;
     label.textContent = role === 'user' ? 'you'
-      : agentLabelText(provider, opts && opts.usage, opts && opts.intent);
+      : agentLabelText(provider, opts && opts.usage, opts && opts.intent,
+                       opts && opts.sourced);
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
@@ -1199,7 +1209,7 @@
         if (text && text.trim()) {
           addMessage('agent', text, null,
                      { countTokens: false, provider: msg.provider, usage: msg.usage,
-                       intent: msg.intent });
+                       intent: msg.intent, sourced: msg.sourced });
         }
       }
     }

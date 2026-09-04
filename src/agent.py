@@ -644,7 +644,7 @@ def _cache_breakpoint_messages(messages):
 # and expanded into a user message of image_url parts by _prepare_kwargs. The
 # key itself must never go over the wire — the wire shape is the expansion.
 _INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items",
-                          "intent", "images")
+                          "intent", "sourced", "images")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -1270,6 +1270,31 @@ def _new_sections_line():
             + ", ".join(new_sections))
 
 
+def _live_context_block():
+    """What add_context saved during this conversation, for the volatile tail.
+
+    context.md reaches the prompt as a snapshot taken at reset() — that is what
+    lets it sit in the cached prefix (see _refresh_volatile). The cost is that
+    the model can write a fact down and then be unable to read it back: the
+    save doesn't reach its own prompt until the next conversation, and once the
+    message that prompted the save scrolls out of the turn's history window,
+    the fact is gone from its view entirely. Memory the model cannot consult is
+    not memory, and this is the loop that closes it.
+
+    Only what was written *this* conversation, not the whole file — the file is
+    summarised down to a table of contents on purpose, and echoing all of it
+    back here would undo that. Everything else is still a search_context away.
+
+    Below _VOLATILE_HEADER for the same reason the clock is: above it is the
+    byte-identical prefix a provider's cache depends on, and this changes."""
+    writes = _sess().context_writes
+    if not writes:
+        return ""
+    lines = "".join(f"\n- [{h}] {e}" for h, e in writes)
+    return ("\nSaved to context.md this conversation — treat as current, and "
+            "correct an entry (edit_file) rather than contradicting it:" + lines)
+
+
 def _context_path():
     return _sess().static_dir + "context.md"
 
@@ -1437,7 +1462,8 @@ def _refresh_volatile():
         return
     stable = _stable_prefix(messages[0].get("content", ""))
     messages[0]["content"] = (stable + _VOLATILE_HEADER + _now_line()
-                              + _new_sections_line() + "\n")
+                              + _new_sections_line() + _live_context_block()
+                              + "\n")
 
 
 def refresh_context():
@@ -1466,8 +1492,13 @@ def refresh_context():
     sess.new_sections.clear()
     instructions = (messages[0].get("content", "").partition(_VOLATILE_HEADER)[0]
                     .partition(_CTX_HEADER)[0].rstrip())
+    # context_writes deliberately survives this, unlike new_sections above:
+    # a fresh snapshot of the file already contains those saves, but the
+    # snapshot is a table of contents — the entries themselves still only
+    # reach the model through the echo below.
     messages[0]["content"] = (instructions + _context_block()
-                              + _VOLATILE_HEADER + _now_line() + "\n")
+                              + _VOLATILE_HEADER + _now_line()
+                              + _live_context_block() + "\n")
     # Every request of a turn re-sends a pinned prefix that starts at this
     # message, and it no longer says what it said when it was pinned.
     _clear_turn_prefix()
@@ -1502,6 +1533,9 @@ def reset(tts=False, refresh=True, subagent=False):
     # The fresh snapshot below lists every section, so the running tally of
     # ones added mid-conversation starts over with it.
     sess.new_sections.clear()
+    # The echo belongs to the conversation being thrown away; the saves
+    # themselves are in context.md, and the fresh snapshot below picks them up.
+    sess.clear_context_writes()
     # Create the file if it's missing so the model's first edit_file/create_file
     # lands somewhere; _context_block() reads it back below. Uses the same
     # headed template new users get, so a context.md that was deleted (or
@@ -1523,14 +1557,28 @@ Answer directly: no preamble, no filler, no restating the question. Match depth 
 simple questions get simple answers. Use your tools to act rather than describing what could be
 done, and verify anything important before relying on it.
 
+Anything that moves — prices, results, standings, schedules, availability, who holds a role, what
+someone's situation is now — is stale in your weights. Judge that by the answer, not the question:
+a short casual message often turns on today's facts. Search first when it does.
+Never name a source, outlet, headline, byline or date you did not get back from a tool on this
+turn. No citation is better than an invented one, which is worse than a plain "I'm not certain"
+because it can't be told apart from a real one.
+
 context.md is your long-term memory, filed under headers. Below are its About and Preferences
 sections plus the names of the other sections — never read the file itself with a tool. Call
 search_context to open a section whenever one looks relevant.
-Save only what would change how you help this user weeks from now: who they are, standing
-preferences, ongoing projects and work, the people in their life, decisions, corrections you
-were given. When something qualifies, add_context immediately and silently. Do not save chit-chat,
-one-off requests, the details or results of the task you are doing, anything you can look up
-again, or anything already in memory — a cluttered file buries the facts that matter.
+Save what would change how you help this user weeks from now: who they are, standing preferences,
+the people in their life, decisions, corrections you were given.
+Save the state of work in progress too, under its own header — what they have chosen or acquired,
+the constraints they set once, where a multi-step task has got to. You are shown only the last few
+messages and older ones drop out with no sign they were there, so anything you did not write down
+is gone. Write it as it happens, not at the end.
+When something qualifies, add_context immediately and silently. Keep it true: when a saved line
+stops being accurate, edit_file it — a stale entry is worse than none, because you will act on it.
+Do not save chit-chat, one-off requests, anything you can look up again, or anything already
+saved — a cluttered file buries the facts that matter.
+Everything you save this conversation is listed back to you below the marker. Read it before
+advising anything; contradicting it means you failed to keep it current.
 
 Scheduled events live in ping.md.
 
@@ -1892,6 +1940,21 @@ def build_search_tools():
             }
         }
     ]
+
+
+# Tools whose output is an outside source. A reply that names an outlet, a
+# journalist, a report or a date should have run one of these; one that didn't
+# is quoting its own weights in the register of a citation, which is the
+# failure mode worth being able to find after the fact — a fabricated source
+# reads more convincingly than the claim it is attached to, and nothing in the
+# transcript distinguishes it from a real one. Stamped onto the finished reply
+# (see final_msg) so the log can be audited for exactly that shape.
+_SOURCE_TOOL_NAMES = frozenset({"web_search", "search", "read_web"})
+
+
+def _turn_sourced():
+    """Whether this turn consulted an outside source before answering."""
+    return any(name in _SOURCE_TOOL_NAMES for name in _sess().turn_tool_names)
 
 
 def build_utility_tools():
@@ -2264,10 +2327,15 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     # Read once, up front: every file tool below resolves against the calling
     # conversation's own folder, and pinning it here means one dispatch can't
     # straddle two folders if the Session were repointed mid-call.
-    static_dir = _sess().static_dir
+    sess = _sess()
+    static_dir = sess.static_dir
+    # Recorded before dispatch, not after: a tool that raises still ran, and
+    # "did this turn consult a source" is a question about what was attempted.
+    sess.note_tool_used(command_name)
     parameter = (args_dict.get('query') or args_dict.get('site') or args_dict.get('url')
                  or args_dict.get('command') or args_dict.get('filename')
-                 or args_dict.get('header') or args_dict.get('contents') or None)
+                 or args_dict.get('header') or args_dict.get('key')
+                 or args_dict.get('contents') or None)
     print(f"Agent called tool: {command_name}" + (f" — {parameter}" if parameter else ""))
 
     # 'search' was this tool's name until it was renamed for being the bare
@@ -2335,6 +2403,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         lines.append(entry)
         sections[idx] = (name, lines)
         _write_context(_render_context(preamble, sections))
+        # Echoed back into every later turn's prompt (see _live_context_block),
+        # because the file itself is only re-read at reset — without this the
+        # model can't consult what it just saved.
+        sess.note_context_write(name, entry)
         return f"Saved under '{name}'." + (" (new section)" if created else "")
 
     if command_name == 'add_header':
@@ -2598,10 +2670,27 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 # intents get a small context window and a trimmed toolset; precision-flavored
 # intents run colder. The system message at index 0 is always sent on top of
 # the recent slice.
+#
+# The windows are deliberately tight and stay that way. A wide floor across
+# every tag is the blunt fix for a turn that couldn't see far enough back, and
+# it makes every cheap turn pay for the expensive one's mistake — Smalltalk
+# genuinely needs four messages. What a turn can see is instead handled where
+# the problem actually is: the tag has to be right (so a stateful mid-task turn
+# lands on Followup's 12 rather than Smalltalk's 4), and anything that must
+# outlive *any* window goes into context.md, which is re-read into the prompt
+# every turn regardless of the tag (see _live_context_block).
+#
+# Temperature: everything that answers a question of fact, ranks options, or
+# gives a recommendation runs cold. Followup in particular used to sit at 1.0,
+# and Followup is the tag most of a long task's substantive turns land on — so
+# the same question asked twice could come back with a different ordering and
+# nothing behind the change. High temperature is worth paying for prose and
+# ideas (Compose, Imagine, Smalltalk keep it); it is a straight loss on "which
+# of these is better".
 _TAG_SETTINGS = {
     # permissive — settings >= the (7, 1.0, 'all') fallback; a gate can only
     # cost you trimming here, never protect anything.
-    'Followup':  (12, 1.0, 'all',         0.0),
+    'Followup':  (12, 0.4, 'all',         0.0),
     'Code':      ( 9, 0.2, 'all',         0.0),
     'Reason':    ( 7, 0.2, 'all',         0.0),
     'Compose':   ( 7, 1.0, 'all',         0.0),
@@ -2612,10 +2701,10 @@ _TAG_SETTINGS = {
     'System':    ( 5, 0.2, 'all',         0.57),
     'Control':   ( 2, 0.2, 'file',        0.47),
     'Websearch': ( 5, 0.4, 'search+mcp',  0.41),
-    'Memory':    ( 5, 0.5, 'file+mcp',    0.32),
+    'Memory':    ( 5, 0.3, 'file+mcp',    0.32),
     'Files':     ( 7, 0.4, 'file+mcp',    0.27),
 }
-_DEFAULT_TAG_SETTINGS = (7, 1.0, 'all', 0.0)  # any tag not listed, and any
+_DEFAULT_TAG_SETTINGS = (7, 0.4, 'all', 0.0)  # any tag not listed, and any
 # listed tag whose classifier score fell below its threshold above.
 
 
@@ -2764,9 +2853,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # Unlisted tags carry a 0.0 threshold, which never fires — they are
         # already on these values.
         if certainty[0] <= min_certainty:
-            recent = 7
-            temp = 1.0
-            tool_mode='all'
+            recent, temp, tool_mode, _ = _DEFAULT_TAG_SETTINGS
         # Normalised to an index either way (1 is "everything after the system
         # message"), so there's a single number to pin for the continuations.
         if len(agent_messages) > recent + 2:
@@ -2800,8 +2887,22 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # Memory tools ride along here too: these are the tags (Memory,
             # Smalltalk) most likely to turn up something worth remembering,
             # and the system prompt tells the model to save it.
-            check_tools = build_file_tools() + build_context_tools() + build_time_tools()
+            #
+            check_tools = (build_file_tools() + build_context_tools()
+                           + build_time_tools())
             if tool_mode == 'file+mcp':
+                # Search rides along in '+mcp' only — i.e. for Memory and
+                # Files, not Smalltalk and Control. Those two are the tags
+                # that carry real subject matter, and a Memory-tagged message
+                # is very often a statement of fact wrapped around a question
+                # about it ("I've switched to the Tuesday class, is that one
+                # still full?"): the classifier reads the statement, which is
+                # the half that doesn't need a source. Withholding search there
+                # doesn't make the model decline — it makes it answer from
+                # stale weights in the confident register a search would have
+                # earned. Smalltalk and Control genuinely need nothing, and
+                # stay as cheap as they were.
+                check_tools += build_search_tools()
                 check_tools += mcp_tools_for(_tools_user())
         check_tools = _apply_depth_limit(check_tools, sess)
         _pin_turn_prefix(window_start, check_tools)
@@ -3198,6 +3299,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         "role": "assistant",
         "provider": provider,
         "intent": sess.turn_tag,
+        # Whether this answer was backed by a search or came out of the model.
+        # Internal, like `intent` — stripped before any request goes out
+        # (_INTERNAL_MESSAGE_KEYS) — and kept so a reply that cites sources can
+        # be checked against whether it actually looked any up.
+        "sourced": _turn_sourced(),
         "content": buffer,
     }
     if reasoning_buffer:

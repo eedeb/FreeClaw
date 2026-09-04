@@ -1,3 +1,4 @@
+import copy
 import json
 from time import sleep
 import nltk
@@ -234,6 +235,22 @@ for tag_index, tag in enumerate(eval_patterns):
 
 
 
+# Best weights seen so far, by eval accuracy, and the epoch they came from.
+#
+# The loop used to keep whatever the last epoch happened to produce. Eval
+# accuracy swings by ~10 patterns between adjacent late epochs while the
+# average is flat, so "epoch 60" is a coin flip worth about 1.5% — enough to
+# make two runs of the *same* corpus look like a real difference and send you
+# chasing a regression that isn't there. Keeping the best snapshot removes that
+# noise from every comparison, and costs one deepcopy on improvement.
+#
+# Note this makes the eval block a validation set rather than a held-out one:
+# it now influences which weights ship, so its number is mildly optimistic.
+# Judge a corpus change on messages that are in neither block.
+best_eval=-1
+best_epoch=0
+best_weights=None
+
 epoch=0
 for i in range(epochs):
     random.shuffle(training_data)
@@ -259,6 +276,11 @@ for i in range(epochs):
 
     
     epoch+=1
+    if eval_correct>best_eval:
+        best_eval=eval_correct
+        best_epoch=epoch
+        best_weights=copy.deepcopy((hidden_layer, hidden_bias,
+                                    output_layer, output_bias))
     print("Epoch: "+str(epoch))
     print("Loss: "+str(epoch_loss/len(training_data)))
     print("Correct: "+str(correct))
@@ -266,6 +288,11 @@ for i in range(epochs):
     print("Eval Correct: "+str(eval_correct))
 
 
+# Ship the best epoch, not the last one — see best_eval above.
+if best_weights is not None:
+    hidden_layer, hidden_bias, output_layer, output_bias = best_weights
+print("Saving epoch %d: %d/%d eval (last epoch was %d)"
+      % (best_epoch, best_eval, len(eval_data), eval_correct))
 
 format = {
     "dictionary": dictionary,

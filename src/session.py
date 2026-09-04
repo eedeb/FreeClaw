@@ -18,8 +18,10 @@ and a nested run just binds a different Session for the duration.
     messages                 the conversation itself
     static_dir               which user's files/ and context.md the tools see
     new_sections             context.md headers created during this conversation
+    context_writes           what add_context saved, echoed back every turn
     turn_usage               token tally for the turn in flight
     turn_prefix              pinned history window + tool set for the turn
+    turn_tool_names          which tools the turn in flight actually ran
     consecutive_tool_calls   } the runaway-tool throttle's run,
     last_tool_name           } counted within a turn
     approval_user            } who bash approvals are checked against,
@@ -80,6 +82,23 @@ class Session:
         self.static_dir = static_dir or DEFAULT_STATIC_DIR
         self.new_sections = []
 
+        # Everything add_context saved during this conversation, newest last,
+        # as (header, entry) pairs.
+        #
+        # context.md itself reaches the prompt as a snapshot taken at reset(),
+        # so without this a fact the model saves mid-conversation is invisible
+        # to it for the rest of that conversation — it writes the roster down
+        # and then, once the message scrolls out of the recent-history window,
+        # has no way to read it back. new_sections was a partial patch on the
+        # same hole: it carries the *names* of sections created, so the model
+        # knows to go looking. This carries what was actually written, so it
+        # doesn't have to.
+        #
+        # Rendered into the volatile tail of the system message, which is
+        # rebuilt every turn, so these survive regardless of how tight the
+        # turn's history window is.
+        self.context_writes = []
+
         # How many sub-agents deep this conversation is. 0 for a user's own
         # conversation; a child spawned by agent.spawn_subagent gets parent + 1.
         # agent.MAX_SUBAGENT_DEPTH is what stops that recursing without end.
@@ -95,6 +114,11 @@ class Session:
         self.turn_tag = None
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
+        # Every tool this turn ran, in order. Distinct from last_tool_name
+        # (which is only the throttle's one-deep run): this is the whole
+        # turn's record, and it's what lets the finished reply be stamped
+        # with whether it consulted a source or answered from weights alone.
+        self.turn_tool_names = []
 
         # Both default to the safe answer, so a turn that never called
         # approvals.begin_turn() gets refusals rather than unattended
@@ -121,9 +145,18 @@ class Session:
 
     def reset_tool_run(self):
         """Clear the consecutive-tool-call run, so a new request gets its full
-        allowance regardless of how the last one ended."""
+        allowance regardless of how the last one ended. Also starts the turn's
+        tool record over — both are per-turn, and tool continuations
+        deliberately don't call this, so a turn's hops accumulate into one
+        record the same way its token tally does."""
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
+        self.turn_tool_names = []
+
+    def note_tool_used(self, name):
+        """Record that this turn ran `name`."""
+        if name:
+            self.turn_tool_names.append(name)
 
     def pin_turn_prefix(self, start, turn_tools):
         self.turn_prefix = {"start": start, "tools": turn_tools}
@@ -140,6 +173,38 @@ class Session:
         turn's prompt mentions it. No-op for one already listed."""
         if name and name not in self.new_sections:
             self.new_sections.append(name)
+
+    # ── context.md written this conversation ─────────────────
+
+    # How many saved entries are echoed back into the prompt. Re-sent on every
+    # request for the rest of the conversation, so it's capped — but generously,
+    # because the whole point is that a long task can keep writing things down
+    # and still see all of them. Past the cap the oldest is dropped: it is
+    # still in context.md, and search_context can fetch it back.
+    MAX_ECHOED_WRITES = 25
+
+    def note_context_write(self, header, entry):
+        """Record one add_context save so the rest of the conversation can see
+        it without re-reading the file."""
+        if not header or not entry:
+            return
+        # add_context turns a one-liner into a list item before it lands in the
+        # file; the echo renders its own bullet, so strip that one back off.
+        entry = " ".join(entry.split()).lstrip("-*").strip()
+        if not entry:
+            return
+        # A correction supersedes what it corrects rather than sitting next to
+        # it: two entries under one header where the later contradicts the
+        # earlier is exactly the shape that produces confidently stale advice.
+        # Only an exact repeat is deduped here — anything cleverer would be
+        # guessing at which of two different lines is meant to win.
+        self.context_writes = [(h, e) for h, e in self.context_writes
+                               if not (h == header and e == entry)]
+        self.context_writes.append((header, entry))
+        del self.context_writes[:-self.MAX_ECHOED_WRITES]
+
+    def clear_context_writes(self):
+        self.context_writes = []
 
 
 # ── which Session is current ─────────────────────────────────
