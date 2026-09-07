@@ -1970,7 +1970,12 @@ def _fire_due_pings():
                     activate_session(name)
                     # Injected as a normal user turn ("physically entered"),
                     # so the model acts on it and the bubble shows in the UI.
-                    agent.agent(user_input=action)
+                    # The PING prefix carries the delivery time so the model
+                    # can tell a scheduled wake-up from something the user
+                    # just typed, and knows when it actually fired.
+                    stamped = (f"PING [{now.strftime(agent.PING_TIME_FORMAT)}]: "
+                               f"{action}")
+                    agent.agent(user_input=stamped)
                     save_conversation(name, agent.get_messages())
                     logger.info("Delivered ping for user=%s scheduled=%s action=%r", name, stamp, action)
                 except Exception:
