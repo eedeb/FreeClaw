@@ -725,9 +725,10 @@ def _reset_turn_usage():
 # no originating turn is told to fall back to working the window out for itself.
 
 
-def _pin_turn_prefix(start, turn_tools):
+def _pin_turn_prefix(start, turn_tools, lean_start=None):
     """Record the prefix this turn's first request used."""
-    _sess().pin_turn_prefix(start, turn_tools)
+    _sess().pin_turn_prefix(start, turn_tools,
+                            start if lean_start is None else lean_start)
 
 
 def _clear_turn_prefix():
@@ -2659,20 +2660,32 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     return "Unknown tool: " + command_name
 
 
-# Per-intent settings for a turn: (recent messages to send, temperature,
-# tools offered, minimum certainty to act on the tag). Simple conversational
-# intents get a small context window and a trimmed toolset; precision-flavored
-# intents run colder. The system message at index 0 is always sent on top of
-# the recent slice.
+# Per-intent settings for a turn: (recent messages to send in full, further
+# messages to send with the tool traffic trimmed out, temperature, tools
+# offered, minimum certainty to act on the tag). Simple conversational intents
+# get a small context window and a trimmed toolset; precision-flavored intents
+# run colder. The system message at index 0 is always sent on top of the recent
+# slice.
 #
-# The windows are deliberately tight and stay that way. A wide floor across
-# every tag is the blunt fix for a turn that couldn't see far enough back, and
-# it makes every cheap turn pay for the expensive one's mistake — Smalltalk
-# genuinely needs four messages. What a turn can see is instead handled where
-# the problem actually is: the tag has to be right (so a stateful mid-task turn
-# lands on Followup's 12 rather than Smalltalk's 4), and anything that must
-# outlive *any* window goes into context.md, which is re-read into the prompt
-# every turn regardless of the tag (see _live_context_block).
+# The two window numbers buy different things, which is why the tags don't
+# scale one from the other. The first is what the turn can *work* from: every
+# tool call it made, with its arguments and everything the tool returned, and
+# it is expensive — one scraped page can outweigh a whole day of chat. The
+# second is only what was *said*, tool calls and results stripped out
+# (_history_for_request), so it costs almost nothing per message and can reach
+# much further back. A tag that runs tools mid-task wants the first one wide;
+# a tag that mainly needs to remember the conversation wants the second one.
+#
+# The full windows are deliberately tight and stay that way. A wide floor
+# across every tag is the blunt fix for a turn that couldn't see far enough
+# back, and it makes every cheap turn pay for the expensive one's mistake —
+# Smalltalk genuinely needs four messages of tool detail. What a turn can see
+# is instead handled where the problem actually is: the tag has to be right (so
+# a stateful mid-task turn lands on Followup's 12 rather than Smalltalk's 4),
+# the cheap half of the window carries the rest of the conversation, and
+# anything that must outlive *any* window goes into context.md, which is
+# re-read into the prompt every turn regardless of the tag (see
+# _live_context_block).
 #
 # Temperature: everything that answers a question of fact, ranks options, or
 # gives a recommendation runs cold. Followup in particular used to sit at 1.0,
@@ -2682,23 +2695,28 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 # ideas (Compose, Imagine, Smalltalk keep it); it is a straight loss on "which
 # of these is better".
 _TAG_SETTINGS = {
-    # permissive — settings >= the (7, 1.0, 'all') fallback; a gate can only
-    # cost you trimming here, never protect anything.
-    'Followup':  (12, 0.4, 'all',         0.0),
-    'Code':      ( 9, 0.2, 'all',         0.0),
-    'Reason':    ( 7, 0.2, 'all',         0.0),
-    'Compose':   ( 7, 1.0, 'all',         0.0),
-    'Imagine':   ( 7, 1.0, 'all',         0.0),
+    #             full lean  temp  tools           threshold
+    # permissive — settings >= the (7, 14, 0.4, 'all') fallback; a gate can
+    # only cost you trimming here, never protect anything.
+    'Followup':  (12,  8, 0.4, 'all',         0.0),
+    'Code':      ( 9,  6, 0.2, 'all',         0.0),
+    'Reason':    ( 7,  5, 0.2, 'all',         0.0),
+    'Compose':   ( 7,  5, 1.0, 'all',         0.0),
+    'Imagine':   ( 7,  5, 1.0, 'all',         0.0),
 
     # restrictive — measured at 90% precision on the 658-message held-out block
-    'Smalltalk': ( 4, 1.0, 'file',        0.63),
-    'System':    ( 5, 0.2, 'all',         0.57),
-    'Control':   ( 2, 0.2, 'file',        0.47),
-    'Websearch': ( 5, 0.4, 'search+mcp',  0.41),
-    'Memory':    ( 5, 0.3, 'file+mcp',    0.32),
-    'Files':     ( 7, 0.4, 'file+mcp',    0.27),
+    'Smalltalk': ( 4,   4, 1.0, 'file',        0.63),
+    'System':    ( 5,  5, 0.2, 'all',         0.57),
+    # The one tag with no cheap half at all: a Control turn is "stop", "reset",
+    # "switch model" — it acts on the instruction in front of it, and older
+    # conversation is not evidence about what to do, only something to be
+    # misread as a second instruction.
+    'Control':   ( 2,   2, 0.2, 'file',        0.47),
+    'Websearch': ( 5,  5, 0.4, 'search+mcp',  0.41),
+    'Memory':    ( 5,  5, 0.3, 'file+mcp',    0.32),
+    'Files':     ( 7,  5, 0.4, 'file+mcp',    0.27),
 }
-_DEFAULT_TAG_SETTINGS = (7, 0.4, 'all', 0.0)  # any tag not listed, and any
+_DEFAULT_TAG_SETTINGS = (7, 14, 0.4, 'all', 0.0)  # any tag not listed, and any
 # listed tag whose classifier score fell below its threshold above.
 
 
@@ -2740,6 +2758,80 @@ def _window_start(messages, recent):
     while start < len(messages) and messages[start].get("role") == "tool":
         start += 1
     return start
+
+
+# ── the lean half of the window ──────────────────────────────
+#
+# The window above is all-or-nothing: a message is either sent whole — tool
+# calls, tool results and all — or not sent at all. That makes the cheapest
+# thing in a conversation (what the user asked, what the model answered) cost
+# the same as the most expensive (a tool result that ran to thousands of
+# tokens), so the window has to be set by what the tool traffic costs, and the
+# plain conversation gets cut off at the same short distance as a byte dump.
+#
+# So the window has two halves. The most recent `recent` messages go verbatim —
+# the model can see everything it just did, arguments and results included,
+# which is what a mid-task turn needs. Behind those, a further stretch goes in
+# lean: user messages and assistant replies only, with the tool calls and their
+# results taken out. The model still knows what was said that far back, without
+# re-reading the pages it scraped to say it.
+#
+# How far each half reaches is per-tag, in _TAG_SETTINGS — the two are separate
+# numbers there rather than one scaled from the other, because they are bought
+# for different reasons. See the comment above that table.
+
+# Keys that only make sense next to the tool call they belong to. `reasoning`
+# and `reasoning_items` are dropped rather than kept: the encrypted items a
+# Responses provider replays are the thinking that produced these very calls,
+# and handing them back with the calls removed leaves the reasoning pointing at
+# function_call items that are no longer in the payload.
+_LEAN_STRIPPED_KEYS = ("tool_calls", "reasoning", "reasoning_items", "images")
+
+
+def _lean_message(m):
+    """One history message as it goes into the lean half of the window, or None
+    if nothing of it survives — a tool result, or an assistant message that was
+    a tool call and no text."""
+    role = m.get("role")
+    if role == "tool":
+        return None
+    if role != "assistant":
+        return m
+    if not any(m.get(k) for k in _LEAN_STRIPPED_KEYS):
+        return m
+    # An assistant message with no text was pure tool traffic; keeping it as an
+    # empty turn would tell the model nothing and some providers reject it.
+    if not m.get("content"):
+        return None
+    return {k: v for k, v in m.items() if k not in _LEAN_STRIPPED_KEYS}
+
+
+def _lean_window_start(messages, full_start, lean):
+    """Index the lean half should start at: `lean` messages further back than
+    the verbatim half begins, never past the system message.
+
+    Measured from `full_start` rather than from the end of the conversation, so
+    the two settings in _TAG_SETTINGS add up to the tag's total reach and the
+    cheap half doesn't quietly shrink when _window_start widens the expensive
+    one to keep a tool call whole.
+
+    No tool-boundary walk-back here, unlike _window_start — the lean half drops
+    tool results outright, so a cut landing on one can't orphan anything."""
+    return max(1, min(full_start, full_start - lean))
+
+
+def _history_for_request(messages, full_start, lean_start):
+    """The slice a request actually sends: the system message, then the lean
+    half, then everything from `full_start` verbatim.
+
+    Both indices are pinned for the turn (see _pin_turn_prefix) rather than
+    recomputed per request, so every tool continuation rebuilds the identical
+    prefix and the provider's cache still matches."""
+    lean = [] if lean_start >= full_start else [
+        lm for lm in (_lean_message(m) for m in messages[lean_start:full_start])
+        if lm is not None
+    ]
+    return [messages[0], *lean, *messages[full_start:]]
 
 
 # How many of a conversation's most recent tool images stay attached. Every one
@@ -2838,7 +2930,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         agent_messages.append({"role": "user", "content": user_input})
         agent_input = user_input
 
-        recent, temp, tool_mode, min_certainty = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
+        recent, lean, temp, tool_mode, min_certainty = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)
         # classify() returns both lists ordered by descending probability, so
         # [0] is the winning tag's own score. Below the tag's threshold, drop
         # back to the default settings: the narrow windows and trimmed toolsets
@@ -2847,14 +2939,19 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # Unlisted tags carry a 0.0 threshold, which never fires — they are
         # already on these values.
         if certainty[0] <= min_certainty:
-            recent, temp, tool_mode, _ = _DEFAULT_TAG_SETTINGS
+            recent, lean, temp, tool_mode, _ = _DEFAULT_TAG_SETTINGS
         # Normalised to an index either way (1 is "everything after the system
         # message"), so there's a single number to pin for the continuations.
         if len(agent_messages) > recent + 2:
             window_start = _window_start(agent_messages, recent)
         else:
             window_start = 1
-        eco_messages = [agent_messages[0], *agent_messages[window_start:]]
+        # Behind the verbatim window, the same conversation reaches `lean`
+        # messages further back with the tool traffic stripped out. lean == 0
+        # (Control) means no cheap half: the slice ends where the full one does.
+        lean_start = _lean_window_start(agent_messages, window_start, lean)
+        eco_messages = _history_for_request(agent_messages, window_start,
+                                            lean_start)
         # The '+mcp' modes keep the user's MCP servers on top of the trimmed
         # built-in set. Without them a restricted turn drops every MCP tool,
         # because these lists are rebuilt from the build_*() helpers and those
@@ -2899,7 +2996,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 check_tools += build_search_tools()
                 check_tools += mcp_tools_for(_tools_user())
         check_tools = _apply_depth_limit(check_tools, sess)
-        _pin_turn_prefix(window_start, check_tools)
+        _pin_turn_prefix(window_start, check_tools, lean_start)
     elif system_input:
         # Kept for direct/external callers only — note that appending a
         # second system-role message breaks the single-leading-system-message
@@ -2928,6 +3025,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # to everything. See _turn_prefix.
             start_index = sess.turn_prefix["start"]
             check_tools = sess.turn_prefix["tools"]
+            lean_index = sess.turn_prefix.get("lean_start", start_index)
         else:
             # No turn in flight: a direct tool_input caller. Resume from 2 user
             # messages ago, or the first user message if there aren't 2. A
@@ -2940,7 +3038,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 start_index = user_indices[0]
             else:
                 start_index = 1
-        eco_messages = [agent_messages[0]] + agent_messages[start_index:]
+            # No turn to inherit a lean half from: send this slice verbatim.
+            lean_index = start_index
+        eco_messages = _history_for_request(agent_messages, start_index,
+                                            lean_index)
     else:
         raise Exception("You must have either user input or system input.")
     print('Received: ' + agent_input)

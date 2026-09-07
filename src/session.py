@@ -158,8 +158,14 @@ class Session:
         if name:
             self.turn_tool_names.append(name)
 
-    def pin_turn_prefix(self, start, turn_tools):
-        self.turn_prefix = {"start": start, "tools": turn_tools}
+    def pin_turn_prefix(self, start, turn_tools, lean_start=None):
+        # "lean_start" is where the tool-stripped half of the history window
+        # begins; == start when the turn has no lean half at all.
+        self.turn_prefix = {
+            "start": start,
+            "tools": turn_tools,
+            "lean_start": start if lean_start is None else lean_start,
+        }
 
     def clear_turn_prefix(self):
         self.turn_prefix = {}
