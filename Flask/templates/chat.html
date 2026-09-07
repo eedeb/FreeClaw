@@ -180,7 +180,7 @@
     }
     #reset-btn:active { border-color: rgba(192,57,57,0.5); color: #e05555; transform: scale(0.96); }
 
-    #home-btn, #settings-btn, #browser-btn {
+    #home-btn, #settings-btn, #browser-btn, #context-btn {
       background: none;
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -197,8 +197,8 @@
       display: inline-flex;
       align-items: center;
     }
-    #home-btn:active, #settings-btn:active, #browser-btn:active { border-color: var(--accent-dim); color: var(--accent); transform: scale(0.96); }
-    #settings-btn:hover, #browser-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+    #home-btn:active, #settings-btn:active, #browser-btn:active, #context-btn:active { border-color: var(--accent-dim); color: var(--accent); transform: scale(0.96); }
+    #settings-btn:hover, #browser-btn:hover, #context-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
 
     /* ── Messages ── */
     #messages {
@@ -710,6 +710,127 @@
     .approval.settled { border-color: var(--border); border-left-color: var(--muted); }
     .approval.settled .approval-head { color: var(--muted); }
 
+    /* ── context.md side panel ──
+       The agent's long-term memory, opened from the header and edited by hand.
+       Lives outside #app (which is capped at 860px and centred) so it can sit
+       flush against the right edge of the window at any width. */
+    #context-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      z-index: 60;
+    }
+    #context-backdrop.open { opacity: 1; pointer-events: auto; }
+
+    #context-panel {
+      position: fixed;
+      top: 0; right: 0; bottom: 0;
+      width: min(460px, 100%);
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.22s ease;
+      z-index: 61;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-right: env(safe-area-inset-right);
+    }
+    #context-panel.open { transform: translateX(0); }
+
+    .ctx-head {
+      display: flex;
+      align-items: baseline;
+      gap: 9px;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .ctx-title {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .ctx-user {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #ctx-close {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+      padding: 6px 9px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #ctx-close:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+    #ctx-text {
+      flex: 1;
+      width: 100%;
+      resize: none;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.65;
+      padding: 14px 16px;
+      -webkit-overflow-scrolling: touch;
+    }
+    #ctx-text::placeholder { color: var(--muted); }
+    #ctx-text:disabled { opacity: 0.5; }
+
+    .ctx-foot {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 16px 13px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #ctx-status {
+      font-family: var(--mono);
+      font-size: 9.5px;
+      color: var(--muted);
+      line-height: 1.4;
+      flex: 1;
+      min-width: 0;
+    }
+    #ctx-status.err { color: var(--err); }
+    #ctx-status.ok  { color: var(--accent-dim); }
+    #ctx-save {
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      color: #0d0d0f;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 8px 15px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    #ctx-save:disabled { opacity: 0.35; cursor: default; }
+
   </style>
 </head>
 <body>
@@ -733,6 +854,7 @@
     <div class="header-right">
       <span id="token-count">~0 tokens</span>
       <a id="browser-btn" href="/browser" title="Browser" style="display:none">🌐</a>
+      <button id="context-btn" title="Memory (context.md)">🧠</button>
       <a id="settings-btn" href="/settings" title="Settings">⚙</a>
       <button id="home-btn" title="Back to users">⌂</button>
       <button id="reset-btn">reset</button>
@@ -778,6 +900,21 @@
   </div>
 </div>
 
+<div id="context-backdrop"></div>
+<aside id="context-panel" aria-hidden="true" aria-label="context.md">
+  <div class="ctx-head">
+    <span class="ctx-title">context.md</span>
+    <span class="ctx-user" id="ctx-user"></span>
+    <button id="ctx-close" title="Close">✕</button>
+  </div>
+  <textarea id="ctx-text" spellcheck="false" autocapitalize="off" autocorrect="off"
+            placeholder="Loading…"></textarea>
+  <div class="ctx-foot">
+    <span id="ctx-status">The agent's long-term memory. It edits this too.</span>
+    <button id="ctx-save">save</button>
+  </div>
+</aside>
+
 <script>
   const messagesEl  = document.getElementById('messages');
   const inputEl     = document.getElementById('user-input');
@@ -809,6 +946,10 @@
   let totalTokens  = 0;
   let pendingFile  = null;
   let uploading    = false;
+  // Whose conversation this tab is showing. The server keeps it in the Flask
+  // session, so nothing here needs to send it — except the context.md routes,
+  // which are addressed by user name.
+  let currentUser  = null;
 
   // Exact token counts as reported by the provider, when it reports any. Not
   // every OpenAI-compatible endpoint does, so the length/4 estimate stays as
@@ -1756,6 +1897,7 @@
   }
 
   function applyConversation(data) {
+    if (data.user) currentUser = data.user;
     if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
     showBrowserLink(data.user);
     if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
@@ -1823,6 +1965,141 @@
   // comes back instead of waiting on it.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') checkForUpdates();
+  });
+
+  // ── context.md panel ──────────────────────────────────────────────
+  // The agent's long-term memory, read and written by hand. Both halves go
+  // through /api/users/<name>/context: the PUT there also refreshes the
+  // running conversation's system message, so an edit lands on the very next
+  // turn rather than waiting for a reset.
+  const ctxBtn      = document.getElementById('context-btn');
+  const ctxPanel    = document.getElementById('context-panel');
+  const ctxBackdrop = document.getElementById('context-backdrop');
+  const ctxClose    = document.getElementById('ctx-close');
+  const ctxText     = document.getElementById('ctx-text');
+  const ctxSave     = document.getElementById('ctx-save');
+  const ctxStatus   = document.getElementById('ctx-status');
+  const ctxUserEl   = document.getElementById('ctx-user');
+
+  const CTX_HINT = "The agent's long-term memory. It edits this too.";
+  let ctxOriginal = '';       // last known saved text, for the dirty check
+  let ctxSaving   = false;
+
+  function ctxSetStatus(msg, cls) {
+    ctxStatus.textContent = msg;
+    ctxStatus.className = cls || '';
+  }
+
+  const ctxDirty = () => !ctxText.disabled && ctxText.value !== ctxOriginal;
+
+  // The user name normally arrives with the conversation on page load; ask for
+  // it directly if the panel is opened before that landed (or if it failed).
+  async function ctxResolveUser() {
+    if (currentUser) return currentUser;
+    try {
+      const res = await fetch('/api/conversation');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) currentUser = data.user;
+      }
+    } catch (_) { /* reported by the caller */ }
+    return currentUser;
+  }
+
+  async function ctxLoad() {
+    ctxText.disabled = true;
+    ctxSave.disabled = true;
+    ctxText.value = '';
+    ctxText.placeholder = 'Loading…';
+    ctxSetStatus(CTX_HINT, '');
+    const user = await ctxResolveUser();
+    ctxUserEl.textContent = user || '';
+    if (!user) {
+      ctxText.placeholder = '';
+      ctxSetStatus('No conversation selected — pick a user first.', 'err');
+      return;
+    }
+    try {
+      const res = await fetch('/api/users/' + encodeURIComponent(user) + '/context');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      ctxOriginal = data.context || '';
+      ctxText.value = ctxOriginal;
+      ctxText.placeholder = 'Empty — nothing saved here yet.';
+      ctxText.disabled = false;
+      ctxSetStatus(CTX_HINT, '');
+    } catch (e) {
+      ctxText.placeholder = '';
+      ctxSetStatus("Couldn't load context.md — " + e.message, 'err');
+    }
+  }
+
+  async function ctxDoSave() {
+    if (ctxSaving || !currentUser || ctxText.disabled) return;
+    ctxSaving = true;
+    ctxSave.disabled = true;
+    // The PUT takes this conversation's lock, which a streaming turn holds
+    // until it finishes — say so rather than look hung.
+    ctxSetStatus(sendBtn.disabled ? 'Saving — waiting for the current turn…' : 'Saving…', '');
+    const sent = ctxText.value;
+    try {
+      const res = await fetch('/api/users/' + encodeURIComponent(currentUser) + '/context', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ context: sent })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      ctxOriginal = sent;
+      ctxSave.disabled = !ctxDirty();   // they may have typed on while it flew
+      ctxSetStatus('Saved — the running conversation has it.', 'ok');
+      // Refreshing the system message rewrites the conversation, so our own
+      // write moves updated_at. Re-baseline the poll or it reads that back as
+      // a background change and re-renders the thread underneath us.
+      syncUpdatedAt();
+    } catch (e) {
+      ctxSetStatus('Save failed — ' + e.message, 'err');
+      ctxSave.disabled = false;
+    } finally {
+      ctxSaving = false;
+    }
+  }
+
+  function ctxOpen() {
+    ctxPanel.classList.add('open');
+    ctxBackdrop.classList.add('open');
+    ctxPanel.setAttribute('aria-hidden', 'false');
+    ctxLoad();
+  }
+
+  function ctxClosePanel() {
+    if (ctxDirty() && !confirm('Discard unsaved changes to context.md?')) return;
+    ctxPanel.classList.remove('open');
+    ctxBackdrop.classList.remove('open');
+    ctxPanel.setAttribute('aria-hidden', 'true');
+  }
+
+  ctxBtn.addEventListener('click', () => {
+    if (ctxPanel.classList.contains('open')) ctxClosePanel(); else ctxOpen();
+  });
+  ctxClose.addEventListener('click', ctxClosePanel);
+  ctxBackdrop.addEventListener('click', ctxClosePanel);
+  ctxSave.addEventListener('click', ctxDoSave);
+  ctxText.addEventListener('input', () => {
+    ctxSave.disabled = !ctxDirty();
+    if (ctxStatus.className) ctxSetStatus(CTX_HINT, '');
+  });
+  ctxText.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); ctxDoSave(); }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && ctxPanel.classList.contains('open')) ctxClosePanel();
+  });
+  // Nothing else on the page can move context.md mid-edit except the agent
+  // itself (add_context, edit_file), and clobbering that silently would lose
+  // whatever it just remembered — so leaving with unsaved text asks first.
+  window.addEventListener('beforeunload', e => {
+    if (ctxDirty()) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // Keep messages scrolled when iOS keyboard resizes the viewport
