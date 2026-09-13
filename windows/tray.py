@@ -1,9 +1,10 @@
 """FreeClaw — Windows notification-area app and process supervisor.
 
-This is the Windows answer to systemd on Linux and `restart: unless-stopped`
-on macOS/Docker. It owns one child process (`python -m Flask.main`), keeps it
-alive, and puts an icon in the notification area so FreeClaw feels like an
-installed app rather than a terminal you must not close.
+This is the Windows answer to systemd on Linux, and the near twin of the menu
+bar app on macOS (mac/tray.py). It owns one child process (`python -m
+Flask.main`), keeps it alive, and puts an icon in the notification area so
+FreeClaw feels like an installed app rather than a terminal you must not
+close.
 
 Why a tray app rather than a real Windows service
 -------------------------------------------------
@@ -25,8 +26,8 @@ is the whole protocol:
     anything    crash — restart with backoff, then give up and say so
 
 Distinguishing those is why the code is 42 and not 0. systemd's Restart=always
-and Docker's restart policy respawn on any exit, so they never needed to tell
-"restart" from "stop"; a tray icon does, or Quit would resurrect the server.
+respawns on any exit, so it never needed to tell "restart" from "stop"; a tray
+icon does, or Quit would resurrect the server.
 """
 
 import os

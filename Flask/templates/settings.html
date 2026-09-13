@@ -293,7 +293,7 @@
         <input id="mcp-command" placeholder='Command — npx -y @modelcontextprotocol/server-filesystem /srv' autocomplete="off" spellcheck="false"/>
         <div class="sec-desc" style="margin:6px 0 0">
           Runs on the machine FreeClaw runs on, so the runtime it needs (node/npx, uv/uvx, python) has to be
-          installed there — inside the container, on a Docker install. Wrap paths containing spaces in
+          installed there. Wrap paths containing spaces in
           double quotes. Secrets go in <span style="font-family:var(--mono)">.env</span> under Environment
           below; the process inherits them.
         </div>
@@ -327,10 +327,10 @@
   </section>
 
   <!-- ── UPDATE ── -->
-  <!-- Hidden until /api/update/info says this install can update itself. The
-       Docker install cannot: the app runs inside the container, the update is a
-       host-side image rebuild, and there is no button that could do it from in
-       here. -->
+  <!-- Hidden until /api/update/info says this install can update itself —
+       which means it is a git checkout with its own updater sitting in it, or
+       a Windows install whose tray app can fetch one. Anything else (a tarball,
+       a container somebody built) has nothing this button could run. -->
   <section id="update-section">
     <div class="sec-head"><h2>Update FreeClaw</h2></div>
     <div class="update-box">
@@ -997,7 +997,7 @@
       const res = await fetch('/api/update/info');
       if (!res.ok) return;                       // not logged in; login redirect handles it
       const info = await res.json();
-      if (!info.supported) return;               // stays hidden (Docker, or no git checkout)
+      if (!info.supported) return;               // stays hidden (no git checkout, no updater)
       updateKind = info.kind;
       section.classList.add('show');
       const version = info.version ? `You're on v${info.version}. ` : '';

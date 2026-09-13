@@ -136,9 +136,9 @@ mean it.
 
 ## How it stays running
 
-Linux has systemd and macOS has Docker's restart policy. On Windows the tray
-app is the supervisor: it owns one `python -m Flask.main` child and puts it
-back when it goes away. The exit code is the whole protocol.
+Linux has systemd and macOS has its own menu bar app (`mac/tray.py`). On
+Windows the tray app is the supervisor: it owns one `python -m Flask.main`
+child and puts it back when it goes away. The exit code is the whole protocol.
 
 | Exit code | Meaning | Tray does |
 |---|---|---|
@@ -147,13 +147,14 @@ back when it goes away. The exit code is the whole protocol.
 | `0` | Clean shutdown | Stays stopped |
 | anything else | Crash | Restarts with backoff, gives up after 5 and says so |
 
-`43` exists because the server cannot update itself here. There is no git
-checkout and no `update.sh`; the install is a packaged tree, and half its files
-are open in the process that would be replacing them. The supervisor is the one
-thing not being replaced, so it starts `install.ps1` — the same script that
-installed FreeClaw — in a detached PowerShell and then quits, which removes
-`freeclaw.pid` and releases every file. The updater verifies its download,
-replaces the program files, and starts a fresh tray at the end.
+`43` exists because the server cannot update itself here — unlike the Linux
+and macOS installs, which run `update.sh` / `update-mac.sh` in place. There is
+no git checkout and no update script; the install is a packaged tree, and half
+its files are open in the process that would be replacing them. The supervisor
+is the one thing not being replaced, so it starts `install.ps1` — the same
+script that installed FreeClaw — in a detached PowerShell and then quits,
+which removes `freeclaw.pid` and releases every file. The updater verifies its
+download, replaces the program files, and starts a fresh tray at the end.
 
 Detached, and in its own process group, for a specific reason: the updater
 stops a running FreeClaw with `taskkill /T`, which walks the process tree. A

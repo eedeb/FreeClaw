@@ -161,8 +161,8 @@ def _file_lock(path):
     """Hold an exclusive lock on `path` for the duration of the block.
 
     A Session's own lock only covers threads inside one process, and the CLI is
-    a *different* process from the Flask app (on the macOS install, a whole
-    separate `docker compose exec`). Both write the same conversation.json, so
+    a *different* process from the Flask app. Both write the same
+    conversation.json, so
     without this the read-modify-write below is last-writer-wins across the two
     and a turn taken in one can silently erase a turn taken in the other.
 

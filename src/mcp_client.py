@@ -220,8 +220,8 @@ _http = requests.Session()
 # The choices live in `Flask/static/<user>/.mcp_enabled.json`, alongside that
 # user's bash approval rules and there for the same two reasons: outside
 # `static/<user>/files/`, so the agent's own file tools can't rewrite the list
-# of tools it's allowed, and still under `static/`, which the Docker install
-# bind-mounts so a choice survives `update.sh` recreating the container.
+# of tools it's allowed, and still under `static/`, the one tree every updater
+# leaves alone, so a choice survives an update.
 
 PREFS_FILENAME = ".mcp_enabled.json"
 
@@ -758,8 +758,7 @@ class _StdioServer:
             raise StdioSpawnFailed(
                 f"'{argv[0]}' isn't installed or isn't on PATH. Stdio MCP servers run a "
                 f"local command, so whatever it needs (node/npx, uv/uvx, python…) has to "
-                f"exist on the machine FreeClaw runs on — inside the container, for a "
-                f"Docker install."
+                f"exist on the machine FreeClaw runs on."
             )
         except OSError as e:
             raise StdioSpawnFailed(f"couldn't start '{argv[0]}': {e}")

@@ -29,21 +29,47 @@ The script will:
 
 ### macOS
 
-macOS has no systemd, so FreeClaw runs in a container instead. Needs `git` and [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running).
+Runs natively — no Docker Desktop, no Homebrew, no Python of your own. Needs
+`git` (`xcode-select --install`), which FreeClaw's bash tool wants anyway.
 
 ```bash
 curl -fsSL https://freeclaw.eedeb.dev/install-mac.sh | bash
 ```
 
-Same flow — clone, set a password, start — but step 1 builds a Docker image rather than a virtualenv, and step 3 runs the container with `restart: unless-stopped` in place of a systemd unit. The `freeclaw` CLI is installed as a wrapper around `docker compose exec`. Once it's up, open **http://localhost:6767**.
+It will:
+1. Clone FreeClaw into `~/.freeclaw` and download a private, checksum-pinned Python 3.12 for it — no administrator rights, and it doesn't touch any Python you already have
+2. Ask you to set a **password** for the web UI (no API keys collected here)
+3. Add **FreeClaw** to the menu bar, where a small supervisor keeps the server running and restarts it on demand — the job systemd does on Linux
+4. Build `~/Applications/FreeClaw.app`, install the `freeclaw` command, and offer to start FreeClaw at login
+5. Start FreeClaw and point you at **http://127.0.0.1:6767**
 
-The first build downloads PyTorch and takes a few minutes; the resulting image is on the order of a gigabyte. Later builds are cached.
+**Click the menu bar icon to open FreeClaw.** The same menu has Restart, the
+logs folder, *Start at Login*, and *Copy address for other devices* — the LAN
+address to open on your phone.
 
-> **Apple Silicon:** if Docker Desktop fails to start with `Failed to install Rosetta`, choose **Disable Rosetta** in that dialog. Rosetta is only needed to run x86/amd64 images; FreeClaw builds natively for arm64, so turning it off costs you nothing.
+Re-run the same line to update — your chats, files and settings are left alone,
+and Python is reused, so it takes seconds. To remove it, run the uninstaller
+that came with the install:
 
-Your chats, uploads, `context.md`, logs, and `.env` are bind-mounted from the install directory, so they survive rebuilds and updates.
+```bash
+~/.freeclaw/uninstall-mac.sh
+```
 
-One difference from the Linux install: the OpenAI-compatible API's on/off state is stored inside the container, so it resets to **off** after `./update-mac.sh` recreates it. Turn it back on with `/startapi` or the API chip on the homepage.
+Your data stays unless you add `--purge`.
+
+3.12 and not Apple's own `python3`, which is 3.9: the shipped browser MCP
+server needs 3.10+, so an install built on the system Python would come up
+quietly missing it. See [mac/README.md](mac/README.md) for the rest — the
+supervisor's exit-code contract, the LaunchAgent, and why `PATH` is resolved
+from your login shell.
+
+> **Coming from the Docker install?** macOS used to run FreeClaw in a
+> container, because there was no supervisor to be had otherwise. Run the
+> one-liner, then remove the old one yourself with `docker rm -f freeclaw` —
+> nothing does it for you, because that container's bind mounts are the only
+> copy of your old chats. Copy them (and your `.env`) over from the old
+> checkout first; [mac/README.md](mac/README.md#coming-from-the-docker-install)
+> has the steps.
 
 ### Windows
 
@@ -103,7 +129,7 @@ re-installing merges into your existing `.env` rather than overwriting it.
 
 ---
 
-> **Note:** each *script* installer checks out only the files for its own platform — a Linux install has no `docker/` directory or `*-mac.sh` scripts, and a macOS install has no systemd scripts. Run the wrong one and it will tell you and point at the other. Windows installs a prebuilt package rather than a checkout, so it isn't affected.
+> **Note:** each installer checks out only the files for its own platform — a Linux install has no `mac/` directory or `*-mac.sh` scripts, a macOS install has no systemd scripts, and neither carries the Windows ones. Run the wrong one and it will tell you and point at the other.
 
 ---
 
@@ -139,6 +165,7 @@ You can type these directly into the chat box:
 - **Web search & scraping** — queries DuckDuckGo for instant answers, news, and snippets, then scrapes and cleans the top non-JS-heavy result pages, all stitched into one capped, structured block of context for the model — no extra LLM call required
 - **Bash execution, gated on your approval** — can run shell commands on the host machine, but only ones you've okayed. The prompt is raised by FreeClaw itself, not by the model: see [Bash Approvals](#bash-approvals)
 - **File, page & image tools** — can create, read, edit (find/replace), delete, and list files in its sandboxed static folder; can publish a live HTML page at a public URL; can describe an uploaded image in detail using a vision model
+- **Scheduled pings, one-off or recurring** — the agent can schedule a future action for itself with `add_ping`, writing it to `ping.md`; a background thread delivers it as a normal turn when its time comes, so the exchange is waiting the next time you open the chat. Pass `repeat` as `hourly`, `daily`, or `weekly` and it reschedules itself on every fire. Nothing runs while nothing is due — there's no polling loop spending tokens on your behalf
 - **MCP servers, remote or local** — connect external [Model Context Protocol](https://modelcontextprotocol.io) servers from **Settings → MCP Servers**, over HTTP *or* as a local process on stdio (which is how most published MCP servers ship). Their tools are merged into the agent's toolset automatically, no restart required
 - **Prompt caching** — the system prompt is laid out stable-part-first so providers can cache it, cutting the cost of the repeated prefix every turn resends. See [Prompt Caching](#prompt-caching)
 - **Password-protected UI** — the web chat sits behind a login screen so it's safe to expose on your local network
@@ -204,9 +231,12 @@ FreeClaw/
 │   └── data.pth              # Classy intent classifier weights
 ├── logs/
 │   └── freeclaw.log          # Created at first run; full error detail, see Debugging below
-├── docker/                   # macOS install only
-│   ├── Dockerfile            # CPU-only PyTorch + the agent, mirroring what install.sh does natively
-│   └── docker-compose.yml    # Port 6767, restart policy, bind mounts for .env / static / logs
+├── mac/                      # macOS install only — see mac/README.md
+│   ├── tray.py               # Menu bar app; supervises the server, playing systemd's role
+│   ├── make_icon.py          # Renders the shared mark into a menu bar PNG and an .icns
+│   ├── freeclaw.png          # Menu bar icon (drawn at 2x for Retina)
+│   ├── freeclaw.icns         # App bundle icon
+│   └── requirements-mac.txt  # pystray + pyobjc, the menu bar's own dependencies
 ├── windows/                  # Windows install only — see windows/README.md
 │   ├── tray.py               # Notification-area app; supervises the server, playing systemd's role
 │   ├── write_env.py          # Seeds .env at install time; merges, never overwrites
@@ -217,14 +247,14 @@ FreeClaw/
 ├── install.sh                # One-line installer      (Linux)
 ├── update.sh                 # Pull and apply updates  (Linux)
 ├── uninstall.sh              # Remove service + files  (Linux)
-├── install-mac.sh            # One-line installer      (macOS, Docker)
-├── update-mac.sh             # Pull, rebuild, restart  (macOS, Docker)
-├── uninstall-mac.sh          # Remove container + files (macOS, Docker)
+├── install-mac.sh            # One-line installer      (macOS, clones this repo)
+├── update-mac.sh             # Pull and apply updates  (macOS)
+├── uninstall-mac.sh          # Remove app + files      (macOS)
 ├── requirements.txt          # Python dependencies (web/agent libs)
 └── .env                      # Password, providers, MCP servers, and other config (created during install)
 ```
 
-Only one platform's scripts are checked out at install time, so you'll see either the Linux set or the macOS set — not both. A Windows install is a prebuilt package rather than a checkout, and additionally carries its own `python\` directory.
+Only one platform's files are checked out at install time, so you'll see one of those three sets, not all of them. The macOS and Windows installs additionally carry a `python/` directory — a private interpreter fetched at install time, standing in for the virtualenv the Linux install builds.
 
 ---
 
@@ -246,7 +276,7 @@ npx -y @modelcontextprotocol/server-filesystem /srv/shared
 
 Things worth knowing:
 
-- **The runtime has to exist where FreeClaw runs.** `npx` needs Node on that machine — the host on a Linux install, but **inside the container** on the macOS/Docker one, whose image ships Python only. So `npx`-based servers need `nodejs`/`npm` added to [`docker/Dockerfile`](docker/Dockerfile) and a rebuild. FreeClaw says exactly this rather than failing vaguely when the binary is missing.
+- **The runtime has to exist where FreeClaw runs.** `npx` needs Node on the machine running FreeClaw, `uvx` needs uv, and so on. FreeClaw says exactly this rather than failing vaguely when the binary is missing. On macOS the menu bar app resolves `PATH` from your login shell before starting the server, so a Homebrew `node` is found even when FreeClaw was started at login by launchd — which otherwise hands a process a `PATH` with almost nothing on it.
 - **Secrets go in `.env`.** The child inherits FreeClaw's environment, so a server wanting `GITHUB_TOKEN` gets it by adding that key under **Settings → Environment**. There's no separate credential field for stdio servers.
 - **Paths with spaces need double quotes** (`… "/My Files/notes"`). Single quotes would break the `.env` encoding and are rejected.
 - **One process per server**, started on first use and kept alive, shut down when you remove the server or the last user switches it off, and respawned automatically if it dies mid-session.
@@ -373,8 +403,8 @@ Settings live in a `.env` file in the project root, created for you during insta
 | `PROVIDER_NAMES` / `PROVIDER_URLS` / `PROVIDER_KEYS` / `PROVIDER_MODELS` / `PROVIDER_ENABLED` | Yes | Your LLM provider(s) — managed entirely from **Settings → Providers**; the agent has nothing to call until at least one exists here |
 | `VISION_PROVIDER` | No | Name of the configured provider (from **Settings → Providers**) used to describe uploaded images — pick it in **Settings → Vision Model** |
 | `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` / `MCP_TRANSPORTS` / `MCP_COMMANDS` | No | Connected MCP servers — managed from **Settings → MCP Servers**. `MCP_TRANSPORTS` is `http` or `stdio` per entry (missing = `http`); `MCP_COMMANDS` holds the command line for stdio ones. `MCP_ENABLED` is the default a user inherits until they switch a server on or off for themselves |
-| `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns. Set to `http://localhost:6767` by the macOS installer, since a container can't see the host's LAN address |
-| `FC_DEBUG` | No | `0` turns off Werkzeug's reloader and interactive debugger. Defaults to on for native installs; the Docker image sets it to `0` |
+| `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns. Set it from **Settings → Custom Domain** if you reach FreeClaw through a name rather than an address |
+| `FC_DEBUG` | No | `0` turns off Werkzeug's reloader and interactive debugger. Defaults to on when you run `python -m Flask.main` yourself; every supervisor sets it to `0`, because the reloader forks a second process and would leave the supervisor watching the wrong one |
 | `FC_TELEMETRY` | No | `1` sends the one-off anonymous install ping described under [Telemetry](#telemetry). Off unless you opted in during install |
 | `FC_INSTALL_ID` | No | Random UUID written here after that ping is sent, so it's only ever sent once. Delete the line to reset |
 
@@ -391,7 +421,7 @@ If you say yes, FreeClaw sends **one** HTTP request, the first time it starts, c
   "install_id": "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
   "version": "0.1.0",
   "os": "darwin",
-  "install_method": "docker"
+  "install_method": "native"
 }
 ```
 
@@ -410,19 +440,18 @@ If the endpoint is unreachable the failure is swallowed silently and start-up is
 
 ## Updating
 
-**Settings → Update FreeClaw** does it from the browser on Linux and Windows. On
-Linux it runs `update.sh` and streams the output onto the page, then restarts
-the server; on Windows it hands off to the notification-area app, which fetches
-`install.ps1` again. A failed update changes nothing — the server
-is only restarted after the script finishes cleanly, so you keep the version
-that was working.
+**Settings → Update FreeClaw** does it from the browser on every platform. On
+Linux and macOS it runs the updater that ships inside the install (`update.sh`
+/ `update-mac.sh`), streams the output onto the page, and restarts the server
+afterwards; on Windows it hands off to the notification-area app, which fetches
+`install.ps1` again, because there the files being replaced are open in the
+process doing the replacing. A failed update changes nothing — the server is
+only restarted after the script finishes cleanly, so you keep the version that
+was working.
 
-The button is deliberately absent on the macOS/Docker install. FreeClaw runs
-*inside* the container there, and updating means rebuilding the image from
-outside it — the container has neither the git repo (`.git/` is excluded by
-`.dockerignore`) nor any route to the Docker daemon. Giving it one would mean
-mounting `docker.sock`, which hands root-equivalent control of the host to a
-container that also runs an agent with a shell tool.
+The button is absent only on an install that is not a git checkout and has no
+updater to run — FreeClaw unpacked from a tarball, say. Update that the way you
+installed it.
 
 From the command line instead, in your FreeClaw install directory — on Linux:
 
@@ -433,10 +462,18 @@ From the command line instead, in your FreeClaw install directory — on Linux:
 On macOS:
 
 ```bash
-./update-mac.sh
+~/.freeclaw/update-mac.sh
 ```
 
-Both pull the latest `src/`, `Flask/templates/`, and `Flask/main.py` from `origin/main` and leave your `Flask/static/` data (context, uploads, generated pages) untouched. The Linux script syncs the virtualenv and restarts the systemd service; the macOS one rebuilds the image (the source is baked in at build time, so a rebuild is what makes new code take effect) and restarts the container.
+Both pull the latest `src/`, `models/`, `Flask/templates/` and `Flask/main.py`
+from `origin/main`, sync dependencies, and leave your `Flask/static/` data
+(context, uploads, generated pages) and `.env` untouched. Re-running the
+installer does the same thing and is equally safe.
+
+One macOS-only wrinkle: a change to the menu bar app itself (`mac/tray.py`)
+only takes effect the next time it starts, since it is the one process an
+update can't replace underneath itself. The updater says so when that
+happens — quit FreeClaw from the menu bar and open it again.
 
 `./update.sh --no-service` is the same update without touching
 `FreeClaw.service` — what the Settings button uses, since it is running inside
@@ -453,7 +490,7 @@ Every unexpected failure — a provider erroring out, a tool crashing, an MCP se
 tail -f logs/freeclaw.log
 ```
 
-Warnings and errors are also mirrored to the console. On Linux that means `journalctl -u FreeClaw.service -f`; on macOS, `docker compose -f docker/docker-compose.yml logs -f`. Either way `logs/freeclaw.log` holds the same detail — on macOS the directory is bind-mounted out of the container, so you can tail it from the host exactly as above.
+Warnings and errors are also mirrored to the console. On Linux that means `journalctl -u FreeClaw.service -f`. On macOS and Windows the supervisor captures them instead: `logs/server-console.log` beside `logs/freeclaw.log`, plus `logs/tray.log` for the supervisor's own account of what it started, restarted, or gave up on. The menu bar's **Open logs folder** item goes straight there.
 
 `logs/` is never served by the app (unlike `Flask/static/`), so it's safe to keep tracebacks there even though they can include file paths and request shapes.
 

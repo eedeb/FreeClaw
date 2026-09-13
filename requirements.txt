@@ -16,8 +16,8 @@ python-dotenv
 # It used to arrive indirectly with the old torch-based classifier's dependency
 # tree; now that stack is gone it has to be requested outright, or run_model
 # fails to import and every turn dies before it reaches the model. The word
-# table it needs is a separate download — install.sh and the Dockerfile fetch
-# it, and run_model.py falls back to fetching it on first use.
+# table it needs is a separate download — every installer fetches it, and
+# run_model.py falls back to fetching it on first use.
 nltk
 
 # ── the shipped browser MCP server (src/mcp_client.py: BUILTIN_SERVERS) ──

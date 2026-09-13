@@ -37,8 +37,9 @@ logger = get_logger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.normpath(os.path.join(BASE_DIR, ".."))
 
-# Deliberately a sibling of Flask/, not a child of Flask/static/. Bind-mounted
-# by docker-compose so logins survive ./update-mac.sh recreating the container.
+# Deliberately a sibling of Flask/, not a child of Flask/static/: these are
+# live session credentials, and Flask/static is served over HTTP. Untracked, so
+# no updater touches it and saved logins survive one.
 PROFILES_ROOT = os.environ.get("FC_BROWSER_PROFILES") or os.path.join(
     REPO_ROOT, "browser-profiles"
 )

@@ -34,6 +34,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 from dotenv import load_dotenv, dotenv_values
 import os
+import sys
 load_dotenv()
 
 logger = get_logger(__name__)
@@ -1607,11 +1608,11 @@ def api_set_vision_model():
 
 # Exit code the process uses to mean "put me back", as opposed to "I am done".
 #
-# systemd (Restart=always) and Docker (restart: unless-stopped) respawn on any
-# exit code, so for those two supervisors the value is arbitrary. The Windows
-# tray app (windows/tray.py) is the one that needs to tell the difference: it
-# also handles Quit, so an exit it cannot classify would either resurrect a
-# server the user just closed or fail to bring back one that asked to restart.
+# systemd (Restart=always) respawns on any exit code, so for that supervisor
+# the value is arbitrary. The tray apps (windows/tray.py, mac/tray.py) are the
+# ones that need to tell the difference: they also handle Quit, so an exit
+# they cannot classify would either resurrect a server the user just closed or
+# fail to bring back one that asked to restart.
 RESTART_EXIT_CODE = 42
 
 
@@ -1622,10 +1623,9 @@ def api_restart():
 
     Mechanism: the process simply exits with RESTART_EXIT_CODE, and whatever
     is supervising it brings it back within a few seconds — systemd with
-    Restart=always / RestartSec=5 on Linux (see install.sh), Docker's restart
-    policy on macOS, the tray app on Windows. No sudo, no shelling out to
-    systemctl. The frontend polls until the server answers again, then
-    reloads. If FreeClaw is being run WITHOUT a supervisor (e.g. a bare
+    Restart=always / RestartSec=5 on Linux (see install.sh), the menu bar app
+    on macOS, the tray app on Windows. No sudo, no shelling out to systemctl.
+    The frontend polls until the server answers again, then reloads. If FreeClaw is being run WITHOUT a supervisor (e.g. a bare
     `python -m Flask.main` during development), nothing restarts it and the
     process just stops — the poll will time out with a clear message rather
     than silently hang."""
@@ -1648,65 +1648,67 @@ def api_restart():
 # ── UPDATE ───────────────────────────────────────────────────
 #
 # "Update FreeClaw" in Settings. What that can mean depends entirely on how
-# FreeClaw was installed, so install_kind() decides and the three paths share
-# almost nothing:
+# FreeClaw was installed, so install_kind() decides:
 #
 #   linux    A git checkout with a venv, supervised by systemd. update.sh is
 #            right there, so run it and restart afterwards.
+#   mac      A git checkout with a private interpreter, supervised by the menu
+#            bar app. The same shape as linux, and the same path through this
+#            code — only the script's name and its flag differ.
 #   windows  A packaged tree with no git and no update script. The tray app is
 #            the supervisor and the only thing that can replace files that are
 #            currently in use, so the server exits with UPDATE_EXIT_CODE and
 #            windows/tray.py fetches and runs the installer.
-#   docker   Not supported, and the button is hidden. The app runs inside the
-#            container; the update is a host-side image rebuild
-#            (./update-mac.sh), and the container has neither the git repo
-#            (.dockerignore excludes .git/) nor any way to reach the Docker
-#            daemon. Reaching the host would mean mounting docker.sock, which
-#            hands root-equivalent control of the machine to a container that
-#            also runs an agent with a shell tool.
 
 # Exit code meaning "replace me, then start me again", as opposed to
 # RESTART_EXIT_CODE's "start me again". Only the Windows tray distinguishes
-# them; systemd and Docker respawn either way, which is exactly why neither of
-# them can be the thing that performs a Windows-style update.
+# them: everywhere else the update runs in place and ends with an ordinary
+# restart, which is exactly why only Windows needs a second code.
 UPDATE_EXIT_CODE = 43
 
-# Where update.sh lives — repo root, one level up from Flask/.
+# Repo root, one level up from Flask/.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_UPDATE_SCRIPT = os.path.join(_REPO_ROOT, "update.sh")
+
+# The updater each platform ships, and the flag that tells it to leave the
+# running server alone — this process *is* that server, and on both platforms
+# stopping it would kill the update halfway through. See the comment on the
+# flag in update.sh / update-mac.sh.
+_UPDATE_SCRIPTS = {
+    "linux": ("update.sh", "--no-service"),
+    "mac": ("update-mac.sh", "--no-restart"),
+}
+
+
+def _update_script(kind):
+    """(path, flag) for this kind of install, or (None, None)."""
+    name, flag = _UPDATE_SCRIPTS.get(kind, (None, None))
+    return (os.path.join(_REPO_ROOT, name) if name else None), flag
 
 
 def install_kind():
-    """Which kind of install this is: 'windows', 'docker', 'linux' or 'unknown'.
+    """Which kind of install this is: 'windows', 'mac', 'linux' or 'unknown'.
 
-    Windows first: a Windows container is not something FreeClaw ships, so
-    os.name settles it before the container check muddies things.
+    Windows first, on os.name, because nothing below it is true there.
 
-    Docker is detected by /.dockerignore's counterpart — /.dockerenv, which the
-    daemon creates in every container — plus a cgroup check for the runtimes
-    that no longer write it (podman, and Docker on cgroup v2 in some configs).
+    macOS and Linux are told apart by sys.platform and then confirmed the same
+    way: the install has to be a git checkout with its own updater sitting in
+    it. install-mac.sh and install.sh both produce exactly that.
 
     'unknown' covers a native install that is not a git checkout — someone
-    running `python -m Flask.main` out of a tarball. Treated like docker: no
-    button, because update.sh either is not there or would not do anything
-    useful.
+    running `python -m Flask.main` out of a tarball, or inside a container they
+    built themselves. No button, because there is no update script to run and
+    nothing sensible to guess.
     """
     if os.name == "nt":
         return "windows"
-    if os.path.exists("/.dockerenv"):
-        return "docker"
-    try:
-        with open("/proc/self/cgroup", "r", encoding="utf-8", errors="replace") as f:
-            if any(m in f.read() for m in ("docker", "containerd", "podman")):
-                return "docker"
-    except OSError:
-        pass
-    if os.path.isfile(_UPDATE_SCRIPT) and os.path.isdir(os.path.join(_REPO_ROOT, ".git")):
-        return "linux"
+    kind = "mac" if sys.platform == "darwin" else "linux"
+    script, _ = _update_script(kind)
+    if script and os.path.isfile(script) and os.path.isdir(os.path.join(_REPO_ROOT, ".git")):
+        return kind
     return "unknown"
 
 
-UPDATABLE = ("linux", "windows")
+UPDATABLE = ("linux", "mac", "windows")
 
 # Progress for the run in flight. One update at a time, process-wide — it
 # rewrites the install, so two at once would be two git checkouts and two pips
@@ -1726,18 +1728,21 @@ def _update_append(line):
         _update_state["lines"].append(line)
 
 
-def _run_update_script():
-    """Run `update.sh --no-service` and record its output.
+def _run_update_script(kind):
+    """Run this platform's updater with its leave-the-server-alone flag, and
+    record the output.
 
-    --no-service because this process is the thing systemd would be stopping:
-    see the long comment on the flag in update.sh. The restart is left to the
-    browser, which calls /api/restart once the log shows a clean finish — so a
-    failed update leaves the current version running rather than bouncing the
-    server into whatever half-applied state it produced.
+    That flag matters: this process is the thing the script would otherwise be
+    stopping — see the long comment on it in update.sh and update-mac.sh. The
+    restart is left to the browser, which calls /api/restart once the log shows
+    a clean finish, so a failed update leaves the current version running
+    rather than bouncing the server into whatever half-applied state it
+    produced.
     """
+    script, flag = _update_script(kind)
     try:
         proc = subprocess.Popen(
-            ["bash", _UPDATE_SCRIPT, "--no-service"],
+            ["bash", script, flag],
             cwd=_REPO_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,   # one interleaved stream, in real order
@@ -1746,10 +1751,10 @@ def _run_update_script():
             env={**os.environ, "TERM": "dumb"},
         )
     except OSError as e:
-        logger.exception("Couldn't start update.sh")
+        logger.exception("Couldn't start %s", script)
         with _update_lock:
             _update_state.update(running=False, done=True, ok=False,
-                                 error=f"Couldn't start update.sh: {e}")
+                                 error=f"Couldn't start {os.path.basename(script)}: {e}")
         return
 
     try:
@@ -1757,21 +1762,22 @@ def _run_update_script():
             _update_append(_strip_ansi(line.rstrip("\n")))
         code = proc.wait()
     except Exception as e:
-        logger.exception("update.sh failed while running")
+        logger.exception("%s failed while running", script)
         with _update_lock:
             _update_state.update(running=False, done=True, ok=False,
                                  error=str(e))
         return
 
-    logger.info("update.sh finished with exit code %s", code)
+    logger.info("%s finished with exit code %s", script, code)
     with _update_lock:
         _update_state.update(
             running=False, done=True, ok=(code == 0),
-            error=None if code == 0 else f"update.sh exited with code {code}")
+            error=None if code == 0
+            else f"{os.path.basename(script)} exited with code {code}")
 
 
-# update.sh writes colour escapes unconditionally; they are meaningless in the
-# browser and would show up as literal "[38;5;154m".
+# The updaters write colour escapes unconditionally; they are meaningless in
+# the browser and would show up as literal "[38;5;154m".
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -1805,10 +1811,11 @@ def _read_version():
 
 @app.route('/api/update', methods=['POST'])
 def api_update():
-    """Start an update. The response says which shape it took, because the two
-    supported platforms behave completely differently from here:
+    """Start an update. The response says which shape it took, because the
+    supported platforms behave differently from here:
 
       linux    202 + {'mode': 'script'} — poll /api/update/log, then restart.
+      mac      the same, running update-mac.sh instead.
       windows  202 + {'mode': 'installer'} — the process is about to exit and
                the tray takes over; there is no log to poll.
     """
@@ -1834,16 +1841,12 @@ def api_update():
         _update_state.update(running=True, lines=[], done=False, ok=None,
                              error=None)
 
-    threading.Thread(target=_run_update_script, daemon=True,
+    threading.Thread(target=_run_update_script, args=(kind,), daemon=True,
                      name="freeclaw-update").start()
     return jsonify({'ok': True, 'mode': 'script'}), 202
 
 
 def _unsupported_message(kind):
-    if kind == "docker":
-        return ("This is the Docker install, which updates by rebuilding its "
-                "image from outside the container. Run ./update-mac.sh in your "
-                "FreeClaw folder on the host.")
     return ("This install has no update script — it is not a git checkout. "
             "Update it the same way you installed it.")
 
@@ -2007,8 +2010,9 @@ def start_ping_scheduler():
 
 if __name__ == '__main__':
     # FC_DEBUG=0 turns off the reloader and the interactive debugger. Defaults
-    # to on, so a native install behaves exactly as before; the Docker image
-    # sets it to 0.
+    # to on, so running this by hand during development behaves as before; every
+    # supervisor sets it to 0, because the reloader forks a second process and
+    # would leave the supervisor watching the wrong one.
     debug = os.getenv("FC_DEBUG", "1").strip().lower() not in ("0", "false", "no", "off")
 
     # debug=True runs Werkzeug's reloader, which re-execs this module in a

@@ -28,14 +28,11 @@ you're testing against and `PORT` if 8900 is taken.
 key exactly as it is; the proxy forwards your `Authorization` header upstream
 and never logs it.
 
-| Install | Provider URL |
-|---|---|
-| Native (Linux) | `http://localhost:8900/v1` |
-| Docker (macOS) | `http://host.docker.internal:8900/v1` |
-
-The Docker row matters: inside the container `localhost` is the container, not
-your Mac, so the native URL fails with a connection error. The proxy binds
-`0.0.0.0` so the container can reach it.
+Every install runs FreeClaw on the host, so the URL is the same everywhere:
+`http://localhost:8900/v1`. The proxy binds `0.0.0.0`, so it is still reachable
+if you have FreeClaw somewhere else on the network — or in a container you
+built yourself, where `localhost` is the container and `host.docker.internal`
+is the machine.
 
 **OpenClaw** — set its base URL to the same address.
 

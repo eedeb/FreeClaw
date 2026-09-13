@@ -88,8 +88,8 @@ def ensure_display():
     `ok` False means callers should launch headless and tell the user why.
     """
     if sys.platform == "darwin":
-        # A native macOS install has a real window server. (The Docker install
-        # is Linux inside the container and takes the branch below.)
+        # macOS has a real window server, and the menu bar app runs in the
+        # user's own GUI session — so a headful browser has somewhere to draw.
         return True, ""
     if (os.environ.get("DISPLAY") or "").strip():
         return True, ""

@@ -51,8 +51,8 @@ _state = {"status": None, "message": ""}
 
 def _browsers_dir():
     """Where playwright keeps its browser builds. PLAYWRIGHT_BROWSERS_PATH wins
-    when set, which is how the container keeps them on a mounted volume instead
-    of in a layer that `update-mac.sh` throws away (see docker-compose.yml)."""
+    when set, for an install that would rather keep a few hundred megabytes of
+    Chromium somewhere other than the user's cache directory."""
     override = (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
     # "0" is playwright's "put them next to the package", not a path.
     if override and override != "0":
@@ -176,13 +176,14 @@ def _install_xvfb():
     install.sh/update.sh instead, and browser_takeover falls back to headless
     with a message naming the command if it's somehow still missing.
 
-    A backstop, not the main path: the container image now ships Xvfb
-    (docker/Dockerfile), so this only has anything to do inside a container
-    built before that landed and not yet rebuilt.
+    A backstop, not the main path: nothing FreeClaw ships runs as root any
+    more, so in practice this returns immediately. It is kept for a container
+    somebody built themselves, where it is the only way the sign-in browser
+    gets a display.
 
-    `apt-get update` first because that is exactly the case this runs in — the
-    image deletes /var/lib/apt/lists after its own install, so an `apt-get
-    install` on its own can only fail with "unable to locate package". (The
+    `apt-get update` first because that is the case this runs in — an image
+    that deletes /var/lib/apt/lists after its own install leaves an `apt-get
+    install` able only to fail with "unable to locate package". (The
     Chromium download path happens to run an update via `playwright install
     --with-deps`, but the already-downloaded path doesn't, and relying on that
     is what left this silently broken.)

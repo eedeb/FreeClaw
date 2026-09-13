@@ -5,19 +5,21 @@ set -e
 #  FreeClaw — Installer (Linux / systemd)
 #  github.com/eedeb/FreeClaw
 #
-#  macOS has no systemd; it runs FreeClaw in Docker instead. See
+#  macOS has no systemd; there the menu bar app is the supervisor. See
 #  install-mac.sh.
 # ─────────────────────────────────────────────
 
-# Top-level paths that only make sense for the Docker/macOS install. Excluded
-# from the checkout below so a Linux install doesn't carry container files it
-# never uses. install-mac.sh does the mirror image of this.
-MAC_ONLY=(
-    "/docker/"
+# Top-level paths another platform's install owns. Excluded from the checkout
+# below so a Linux install doesn't carry a menu bar app and Windows batch
+# files it can never run. install-mac.sh does the mirror image of this.
+OTHER_PLATFORMS=(
+    "/mac/"
     "/install-mac.sh"
     "/update-mac.sh"
     "/uninstall-mac.sh"
-    "/.dockerignore"
+    "/windows/"
+    "/install.ps1"
+    "/uninstall.ps1"
 )
 
 # Development-only paths, skipped on every platform: the benchmark harness is
@@ -153,7 +155,7 @@ section_gap
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
     error "This installer registers a systemd service, which macOS doesn't have."
-    info "Use the macOS installer instead — it runs FreeClaw in Docker:"
+    info "Use the macOS installer instead — it installs a menu bar app:"
     info "  ${LIME}curl -fsSL https://freeclaw.eedeb.dev/install-mac.sh | bash${RESET}"
     exit 1
 fi
@@ -190,21 +192,21 @@ checkout_main() {
     fi
 }
 
-# Check out everything except the Docker/macOS files. Non-cone mode is what
+# Check out everything except the other platforms' files. Non-cone mode is what
 # allows negated patterns; it needs git 2.25+, so fall back to deleting the
 # files after a normal checkout on anything older.
 if git sparse-checkout init --no-cone &>/dev/null; then
     {
         echo '/*'
-        for path in "${MAC_ONLY[@]}" "${DEV_ONLY[@]}"; do echo "!${path}"; done
+        for path in "${OTHER_PLATFORMS[@]}" "${DEV_ONLY[@]}"; do echo "!${path}"; done
     } | git sparse-checkout set --stdin
     checkout_main
-    success "Repository ready (macOS-only and dev files skipped)"
+    success "Repository ready (other platforms' and dev files skipped)"
 else
     warn "git is too old for sparse-checkout — pruning after checkout instead"
     checkout_main
-    for path in "${MAC_ONLY[@]}" "${DEV_ONLY[@]}"; do rm -rf ".${path}"; done
-    success "Repository ready (macOS-only and dev files removed)"
+    for path in "${OTHER_PLATFORMS[@]}" "${DEV_ONLY[@]}"; do rm -rf ".${path}"; done
+    success "Repository ready (other platforms' and dev files removed)"
 fi
 
 section_gap

@@ -1,0 +1,23 @@
+# Extra dependencies for the macOS menu bar app (mac/tray.py).
+#
+# Kept out of the top-level requirements.txt on purpose: nothing on Linux or
+# Windows imports this set, and pyobjc has no business being pulled into an
+# install that has no Cocoa to bind to. windows/requirements-windows.txt is
+# the same idea from the other side.
+
+# The menu bar icon and its menu. Same library as the Windows tray, different
+# backend underneath (pystray._darwin, NSStatusBar).
+pystray
+
+# pystray wants a real image object for the icon; it does not read a PNG by
+# itself. This is the only reason Pillow is here.
+pillow
+
+# The Cocoa bindings pystray's macOS backend imports (AppKit, Foundation), and
+# with them the pyobjc-core that carries PyObjCTools.MachSignals — which is
+# how mac/tray.py receives SIGTERM from inside Cocoa's event loop.
+#
+# Deliberately this one framework wheel rather than the `pyobjc` umbrella
+# package: that pulls in every framework binding Apple ships, some two hundred
+# megabytes of them, to use two.
+pyobjc-framework-Cocoa

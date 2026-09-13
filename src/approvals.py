@@ -19,8 +19,8 @@ since `ls; rm -rf ~` would otherwise satisfy a rule that says `ls`.
 Rules live in ``Flask/static/<user>/.bash_approvals.json``. Outside
 ``static/<user>/files/`` on purpose — that's the folder the agent's own file
 tools operate on, so a rule-file there would be one it could rewrite. Still
-under ``static/`` because that tree is bind-mounted by the Docker install, so
-the list survives ``update-mac.sh``.
+under ``static/`` because that is the one tree every updater leaves alone, so
+the list survives an update.
 
 Not a sandbox: an approved command can do anything the FreeClaw process can,
 including rewriting this file, so approving one arbitrary command is

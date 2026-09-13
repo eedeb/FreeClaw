@@ -33,6 +33,11 @@ __pycache__/
 *.pyc
 venv/
 
+# The private interpreter a macOS install keeps beside the source
+# (install-mac.sh), and the one a Windows install keeps (install.ps1). Both are
+# downloaded, both are hundreds of files, and neither belongs to the repo.
+python/
+
 # Saved browser logins, one folder per FreeClaw user (src/browser_profiles.py).
 # Cookies and localStorage for whatever the user signed the agent into — live
 # credentials, and the reason this directory is a sibling of Flask/static/
@@ -49,11 +54,16 @@ build/
 dist/
 windows/icon-preview.png
 
-# Written by the Windows tray app at startup so the installer and uninstaller
-# can stop a running FreeClaw before touching its files (windows/tray.py).
+# Written by the tray/menu bar app at startup so the installer and uninstaller
+# can stop a running FreeClaw before touching its files (windows/tray.py,
+# mac/tray.py). macOS records the supervised server separately, and holds the
+# lock file open for as long as it runs — it is what makes the app a singleton.
 freeclaw.pid
+freeclaw-server.pid
+freeclaw.lock
 
-# Written by install.ps1 into a Windows install to mark it as one. An install
-# is a clone of this repo, so without a marker uninstall.ps1 cannot tell an
-# install from somebody's working tree - and must never delete the latter.
+# Written by install.ps1 and install-mac.sh into an install to mark it as one.
+# An install is a clone of this repo, so without a marker the uninstallers
+# cannot tell an install from somebody's working tree - and must never delete
+# the latter.
 .freeclaw-install
