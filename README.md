@@ -231,17 +231,18 @@ FreeClaw/
 │   └── data.pth              # Classy intent classifier weights
 ├── logs/
 │   └── freeclaw.log          # Created at first run; full error detail, see Debugging below
+├── assets/                   # Not installed — the icon source and its generator
+│   ├── eagle.png            # The FreeClaw eagle, as the website serves it
+│   └── make_icons.py        # Builds the .ico, the .icns and the menu bar .png
 ├── mac/                      # macOS install only — see mac/README.md
 │   ├── tray.py               # Menu bar app; supervises the server, playing systemd's role
-│   ├── make_icon.py          # Renders the shared mark into a menu bar PNG and an .icns
 │   ├── freeclaw.png          # Menu bar icon (drawn at 2x for Retina)
-│   ├── freeclaw.icns         # App bundle icon
+│   ├── freeclaw.icns         # App bundle icon (Finder, Spotlight, Login Items)
 │   └── requirements-mac.txt  # pystray + pyobjc, the menu bar's own dependencies
 ├── windows/                  # Windows install only — see windows/README.md
 │   ├── tray.py               # Notification-area app; supervises the server, playing systemd's role
 │   ├── write_env.py          # Seeds .env at install time; merges, never overwrites
-│   ├── make_icon.py          # Generates freeclaw.ico (nine sizes) from the app's accent colour
-│   └── freeclaw.ico          # Tray and shortcut icon
+│   └── freeclaw.ico          # Tray and shortcut icon (nine sizes)
 ├── install.ps1               # One-line installer      (Windows, clones this repo)
 ├── uninstall.ps1             # Uninstaller             (Windows)
 ├── install.sh                # One-line installer      (Linux)

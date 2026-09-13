@@ -24,3 +24,12 @@
 # install/update scripts are run by bash on Linux and macOS, which chokes on
 # a CRLF shebang.
 *.sh text eol=lf
+
+# Icons are binary. Without this they are only binary by git's own sniffing,
+# and a clone with core.autocrlf=true on Windows is one bad guess away from
+# rewriting bytes inside a .ico. The .sh and .ps1 rules above exist for the
+# mirror-image reason.
+*.png binary
+*.ico binary
+*.icns binary
+*.gif binary

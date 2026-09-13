@@ -102,6 +102,7 @@ OTHER_PLATFORMS=(
 DEV_ONLY=(
     "/bench/"
     "/telemetry/"
+    "/assets/"
 )
 
 # Refreshed from the repo on an upgrade, path by path — never a bare checkout.
@@ -199,10 +200,11 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 success "macOS $(sw_vers -productVersion 2>/dev/null || echo "") detected"
 
-case "$(uname -m)" in
+ARCH="$(uname -m)"
+case "$ARCH" in
     arm64)  PY_ARCH="aarch64-apple-darwin"; PY_SHA256="$PY_SHA256_ARM64" ;;
     x86_64) PY_ARCH="x86_64-apple-darwin";  PY_SHA256="$PY_SHA256_X86_64" ;;
-    *)      die "Unsupported architecture: $(uname -m)." ;;
+    *)      die "Unsupported architecture: $ARCH." ;;
 esac
 success "$(uname -m) build selected"
 
@@ -554,6 +556,16 @@ else
          mac/tray.py sets the same policy at runtime, for the times it is
          started without going through this bundle. -->
     <key>LSUIElement</key><true/>
+    <!-- Load-bearing, and not obviously so. The executable below is a shell
+         script, which has no Mach-O header for Launch Services to read the
+         supported architectures out of. Left to guess on an Apple Silicon Mac
+         it concludes the app is Intel-only and refuses to open it with
+         kLSNoRosettaEnvironmentErr (-10669) — "to open FreeClaw you need to
+         install Rosetta" — on any machine that hasn't got Rosetta. Naming the
+         architecture here is what tells it otherwise. Written from uname, so
+         the bundle says what the machine it was built on actually is. -->
+    <key>LSArchitecturePriority</key>
+    <array><string>${ARCH}</string></array>
 </dict>
 </plist>
 PLIST
@@ -562,7 +574,22 @@ PLIST
 #!/bin/bash
 # Launcher for the FreeClaw menu bar app. Written by install-mac.sh with the
 # install location baked in; reinstalling rewrites it.
-exec "${INSTALL_DIR}/python/bin/python3" "${INSTALL_DIR}/mac/tray.py" "\$@"
+#
+# Deliberately NOT \`exec\`, which is the obvious way to write this and is
+# wrong. Launch Services checks this process in as the application; exec
+# replaces its image with the interpreter, and what comes out the other side
+# is no longer the app it checked in. The process runs perfectly well — the
+# server starts, the log is clean, everything works — and its NSStatusItem is
+# silently never placed, so FreeClaw runs with no menu bar icon and no error
+# anywhere. Staying in the picture as the parent, with Python as an ordinary
+# child, is what keeps the app registered and the icon on screen.
+#
+# The trap forwards a quit — at logout, or from a Force Quit — to the child,
+# which would otherwise be orphaned and keep running with its icon behind it.
+"${INSTALL_DIR}/python/bin/python3" "${INSTALL_DIR}/mac/tray.py" "\$@" &
+child=\$!
+trap 'kill "\$child" 2>/dev/null' TERM INT
+wait "\$child"
 LAUNCHER
     chmod +x "$APP_BUNDLE/Contents/MacOS/FreeClaw"
     cp mac/freeclaw.icns "$APP_BUNDLE/Contents/Resources/freeclaw.icns"
@@ -695,11 +722,14 @@ if [[ -z "$NO_START" ]]; then
         # script is about to exit, and the menu bar app must outlive it.
         nohup "$PY" "$INSTALL_DIR/mac/tray.py" >/dev/null 2>&1 &
         disown 2>/dev/null || true
-    else
-        # Never fatal: `open` fails over SSH and in any session without a
-        # window server, and an install that is otherwise complete should say
-        # so rather than abort on its last step.
-        open "$APP_BUNDLE" || warn "Couldn't launch the app — open FreeClaw from ~/Applications."
+    elif ! open "$APP_BUNDLE" 2>/dev/null; then
+        # Never fatal, and never the end of the story: `open` fails over SSH
+        # and in any session without a window server. Start the app the direct
+        # way instead, so an install still finishes with FreeClaw running —
+        # the menu bar icon needs a GUI session, but the server does not.
+        warn "Launch Services wouldn't open the app — starting it directly."
+        nohup "$PY" "$INSTALL_DIR/mac/tray.py" >/dev/null 2>&1 &
+        disown 2>/dev/null || true
     fi
 
     info "waiting for the web UI (the first start loads the classifier)..."

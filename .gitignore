@@ -52,7 +52,6 @@ browser-profiles/
 # FreeClaw-Setup-*.exe. All regenerable, and hundreds of megabytes.
 build/
 dist/
-windows/icon-preview.png
 
 # Written by the tray/menu bar app at startup so the installer and uninstaller
 # can stop a running FreeClaw before touching its files (windows/tray.py,

@@ -780,8 +780,47 @@ class Tray:
         # the earliest point notifications and menu updates are safe.
         def _started(icon):
             icon.visible = True
+            _check_icon_placed(icon)
             self.server.start()
         self.icon.run(setup=_started)
+
+
+def _check_icon_placed(icon):
+    """Say so in the log if the menu bar icon never made it onto the bar.
+
+    Worth the twenty lines because of how this fails: everything else works.
+    The app starts, the server comes up, the log reads clean, and the only
+    symptom is an icon that is not there — with nothing to search for and
+    nothing to read. It happened for real: the app bundle's launcher used
+    `exec`, which replaced the process Launch Services had checked in, and the
+    status item was then silently never placed (see install-mac.sh).
+
+    `window().isVisible()` is the signal, and only that one. A placed item
+    reports a window that is visible but has no `screen()`; an unplaced one
+    reports the opposite of both, which is exactly backwards from what you
+    would guess and why this checks the narrow thing it measured rather than
+    the obvious one.
+
+    A warning, never an error: it is a heuristic against a private detail of
+    pystray's backend, so a wrong guess should cost one log line and nothing
+    else.
+    """
+    def _look():
+        try:
+            window = icon._status_item.button().window()
+        except Exception:
+            logger.debug("couldn't inspect the status item", exc_info=True)
+            return
+        if window is not None and not window.isVisible():
+            logger.warning(
+                "the menu bar icon was not placed — FreeClaw is running and "
+                "the web UI works, but there is no icon to click. Open "
+                "http://127.0.0.1:%s directly, and see mac/README.md "
+                "(\"The app bundle\") for what causes this.", PORT)
+
+    # After a beat: placement is not synchronous, and asking too early reports
+    # a window that simply has not been positioned yet.
+    threading.Timer(3.0, lambda: _on_main_thread(_look)).start()
 
 
 def _install_signal_handlers(shutdown):

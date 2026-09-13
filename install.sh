@@ -28,6 +28,7 @@ OTHER_PLATFORMS=(
 DEV_ONLY=(
     "/bench/"
     "/telemetry/"
+    "/assets/"
 )
 
 # Colors & styles
