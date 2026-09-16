@@ -49,17 +49,61 @@ _lock = threading.Lock()
 _state = {"status": None, "message": ""}
 
 
+def _default_cache_dir():
+    """The per-user cache directory playwright derives its registry from.
+
+    These three branches mirror `defaultCacheDirectory` in playwright's own
+    driver (registry/index.js) exactly, because the whole point of this module
+    is to answer "has the download already happened?" the same way playwright
+    would. Guessing differently is not a cosmetic disagreement: every caller of
+    `chromium_present()` treats a miss as "Chromium isn't installed", so a
+    wrong directory hides the browser tools from the agent and makes the
+    Settings page re-download a browser that is already on disk.
+
+    Windows was that bug. It fell through to the Linux branch and looked in
+    `~/.cache/ms-playwright`, which nothing on Windows ever writes — playwright
+    puts its builds under LOCALAPPDATA there.
+    """
+    if sys.platform == "win32":
+        return (os.environ.get("LOCALAPPDATA")
+                or os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Caches")
+    # Linux and the BSDs. XDG_CACHE_HOME is honoured because playwright honours
+    # it — an install that sets it would otherwise look in the wrong place for
+    # the same reason Windows did.
+    return os.environ.get("XDG_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache")
+
+
+def _package_local_browsers():
+    """`<playwright package>/driver/package/.local-browsers`, or None.
+
+    Where `PLAYWRIGHT_BROWSERS_PATH=0` puts the builds. Located through
+    `find_spec` rather than an import so asking the question stays free — this
+    runs on every Settings page load and on every rebuild of the tool list.
+    """
+    try:
+        spec = importlib.util.find_spec("playwright")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    return os.path.join(list(spec.submodule_search_locations)[0],
+                        "driver", "package", ".local-browsers")
+
+
 def _browsers_dir():
     """Where playwright keeps its browser builds. PLAYWRIGHT_BROWSERS_PATH wins
     when set, for an install that would rather keep a few hundred megabytes of
     Chromium somewhere other than the user's cache directory."""
     override = (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
-    # "0" is playwright's "put them next to the package", not a path.
-    if override and override != "0":
+    if override == "0":
+        # Not a path: playwright's "keep them inside the package directory".
+        return _package_local_browsers() or ""
+    if override:
         return override
-    if sys.platform == "darwin":
-        return os.path.expanduser("~/Library/Caches/ms-playwright")
-    return os.path.expanduser("~/.cache/ms-playwright")
+    return os.path.join(_default_cache_dir(), "ms-playwright")
 
 
 def chromium_present():
@@ -143,6 +187,14 @@ def _missing_deps_hint(output):
     rather than something to run."""
     lowered = (output or "").lower()
     if "missing dependencies" in lowered or "error while loading shared libraries" in lowered:
+        # `install-deps` is apt/dnf/yum underneath, so it exists only on Linux.
+        # Naming it on Windows or macOS would send the user after a command
+        # that fails with "not supported on this platform" — worse than no
+        # hint, because it reads like the real fix.
+        if sys.platform in ("win32", "darwin"):
+            return ("Chromium downloaded but won't start. Enable the browser server "
+                    "again to re-fetch it; if it still won't start, the download is "
+                    "damaged — delete it and retry.")
         # The full interpreter path, not its basename: on a Linux install this
         # is the venv's python, and plain `sudo python` would run the system
         # one, which has no playwright and fails confusingly.

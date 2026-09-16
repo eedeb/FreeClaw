@@ -1685,6 +1685,26 @@ def _update_script(kind):
     return (os.path.join(_REPO_ROOT, name) if name else None), flag
 
 
+def _windows_install():
+    """Whether this Windows process is a FreeClaw *install* rather than someone
+    running the server out of a checkout.
+
+    It matters because the Windows update is the one that cannot be undone from
+    here: the server exits and something else has to bring it back. Under the
+    tray that is guaranteed. Run by hand from a clone — `python -m Flask.main`
+    in a terminal — nothing is supervising, so the button would simply make
+    FreeClaw exit, and install.ps1 would then convert the developer's checkout
+    into an install behind their back.
+
+    Two ways to be sure, because one of them is newer than some installs:
+    windows/tray.py stamps FC_SUPERVISOR into the environment of the server it
+    spawns, and install.ps1 leaves .freeclaw-install in the install directory.
+    """
+    if (os.environ.get("FC_SUPERVISOR") or "").strip():
+        return True
+    return os.path.isfile(os.path.join(_REPO_ROOT, ".freeclaw-install"))
+
+
 def install_kind():
     """Which kind of install this is: 'windows', 'mac', 'linux' or 'unknown'.
 
@@ -1700,7 +1720,7 @@ def install_kind():
     nothing sensible to guess.
     """
     if os.name == "nt":
-        return "windows"
+        return "windows" if _windows_install() else "unknown"
     kind = "mac" if sys.platform == "darwin" else "linux"
     script, _ = _update_script(kind)
     if script and os.path.isfile(script) and os.path.isdir(os.path.join(_REPO_ROOT, ".git")):
@@ -1747,6 +1767,12 @@ def _run_update_script(kind):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,   # one interleaved stream, in real order
             text=True,
+            # The updaters print box-drawing characters and arrows, and a
+            # `LANG=C` systemd unit would decode those as ASCII and raise
+            # part-way through the log — losing the rest of an update that is
+            # still running. errors="replace" keeps a stray byte from doing the
+            # same.
+            encoding="utf-8", errors="replace",
             bufsize=1,
             env={**os.environ, "TERM": "dumb"},
         )
@@ -1847,6 +1873,12 @@ def api_update():
 
 
 def _unsupported_message(kind):
+    if os.name == "nt":
+        # The Windows update works by exiting and letting the tray reinstall,
+        # so without the tray this button could only stop FreeClaw.
+        return ("FreeClaw is running without its tray app, which is what applies "
+                "an update here. Re-run the installer to update:  "
+                "irm https://freeclaw.eedeb.dev/install.ps1 | iex")
     return ("This install has no update script — it is not a git checkout. "
             "Update it the same way you installed it.")
 

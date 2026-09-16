@@ -74,11 +74,93 @@ UPDATE_EXIT_CODE = 43
 UPDATE_URL = os.environ.get(
     "FC_UPDATE_URL", "https://freeclaw.eedeb.dev/install.ps1")
 
+# The updater's transcript. The update runs windowless, so this is the only
+# place its output exists — "Update FreeClaw did nothing" is unanswerable
+# without it.
+UPDATE_LOG = os.path.join(LOG_DIR, "update.log")
+
+# How long to watch the updater before trusting it. The failure this catches —
+# a PowerShell that cannot start and exits without running anything — happens in
+# well under a second, so this needs to be short rather than generous: every
+# second here is a second the outgoing tray spends holding resources the
+# incoming one wants.
+UPDATER_LAUNCH_PROBE_SECONDS = 2
+
+# The wrapper the tray writes and PowerShell runs. Kept as a template rather
+# than a shipped .ps1 file because it has to carry this install's paths, and an
+# install directory is user-controlled text that has no business being pasted
+# into a command line. Every {field} is substituted with a quoted PowerShell
+# literal (see Server._write_updater_script).
+_UPDATER_PS1 = r"""
+$ErrorActionPreference = 'Continue'
+$ProgressPreference = 'SilentlyContinue'
+
+$log = {log}
+$url = {url}
+$appDir = {app_dir}
+$pythonw = {pythonw}
+$tray = {tray}
+
+# Best effort: a transcript that cannot be started must not stop the update.
+try {{ Start-Transcript -LiteralPath $log -Force | Out-Null }} catch {{ }}
+Write-Output ("[freeclaw-update] starting for " + $appDir)
+
+# Windows PowerShell defaults to SSL3/TLS1.0, which the download host refuses.
+try {{
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}} catch {{ }}
+
+$ok = $false
+$installer = Join-Path $env:TEMP ("freeclaw-install-" + [guid]::NewGuid().ToString("N") + ".ps1")
+try {{
+    Invoke-WebRequest $url -OutFile $installer -UseBasicParsing
+    Write-Output "[freeclaw-update] running the installer"
+    # To a file and then -File, rather than `irm | iex`: a real exit code comes
+    # back, which is the difference between knowing the update failed and
+    # guessing. The installer signals failure by exiting non-zero.
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+    $code = $LASTEXITCODE
+    Write-Output ("[freeclaw-update] installer exited with " + $code)
+    if ($code -eq 0) {{ $ok = $true }}
+}} catch {{
+    Write-Output ("[freeclaw-update] failed: " + $_.Exception.Message)
+}} finally {{
+    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+}}
+
+if (-not $ok) {{
+    # The promise every platform makes: a failed update leaves you with the
+    # version you had. Linux and macOS keep it by never stopping the server;
+    # here the server had to stop, so it gets started again.
+    Write-Output "[freeclaw-update] update failed - restarting the previous version"
+    try {{
+        Start-Process -FilePath $pythonw -ArgumentList ('"' + $tray + '"') -WorkingDirectory $appDir
+    }} catch {{
+        Write-Output ("[freeclaw-update] couldn't restart FreeClaw: " + $_.Exception.Message)
+    }}
+}}
+
+Write-Output "[freeclaw-update] done"
+try {{ Stop-Transcript | Out-Null }} catch {{ }}
+
+# The tray wrote this script into TEMP for this one run.
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+"""
+
 # Restart storm guard. A server that dies on a bad .env would otherwise be
 # respawned forever, hammering the disk and hiding the real error behind
 # thousands of log lines.
 MAX_CONSECUTIVE_FAILURES = 5
 FAILURE_BACKOFF_SECONDS = (2, 5, 10, 20, 30)
+
+# A server that ran at least this long before dying was not a failure to start,
+# so it clears the counter above — the same rule mac/tray.py applies, and for
+# the same reason. The guard exists for an install that cannot come up at all
+# (a bad .env, a missing dependency), and those die in seconds. Without this,
+# five unrelated crashes spread over days of uptime would eventually leave
+# FreeClaw refusing to start at all, because nothing ever reset the count.
+HEALTHY_RUN_SECONDS = 60
 
 # How long to let the server bind its port before we stop calling it "starting".
 # The first run of a fresh install imports nltk and loads the classifier, which
@@ -99,6 +181,12 @@ PID_FILE = os.path.join(APP_DIR, "freeclaw.pid")
 
 MUTEX_NAME = "Local\\FreeClawTraySingleton"
 ERROR_ALREADY_EXISTS = 183
+
+# How long a starting tray will wait for a departing one to let go of the
+# singleton before deciding it is a duplicate. Only ever spent during an update
+# handoff — see already_running(), which returns immediately when a FreeClaw is
+# genuinely answering.
+SINGLETON_WAIT_SECONDS = 20
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "FreeClaw"
@@ -221,6 +309,10 @@ class Server:
         # down: the update replaces the files this process runs from, and the
         # new one is started by install.ps1 at the end.
         self.on_update_handoff = None
+        # Set by Tray. Called instead when the updater never got going, so the
+        # user is told why rather than watching the Settings page reload with
+        # the same version on it and no explanation.
+        self.on_update_failed = None
 
     # ── state ──
     def _set_state(self, state):
@@ -261,6 +353,11 @@ class Server:
         # and the agent's output is full of text that isn't cp1252.
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
+        # How the server knows something is supervising it, which on Windows is
+        # what makes "Settings -> Update FreeClaw" safe to offer: the update
+        # works by exiting, and only a supervisor puts the server back. See
+        # Flask/main.py: _windows_install().
+        env["FC_SUPERVISOR"] = "tray"
 
         os.makedirs(LOG_DIR, exist_ok=True)
         console_log = open(
@@ -299,6 +396,7 @@ class Server:
         failures = 0
         while not self._quitting.is_set():
             self._set_state(STATE_STARTING)
+            started = time.monotonic()
             try:
                 proc, console_log = self._spawn()
             except Exception:
@@ -340,6 +438,8 @@ class Server:
                 # back, because the alternative is a FreeClaw that vanished
                 # when the user clicked Update.
                 logger.error("update failed to start; restarting the current version")
+                if self.on_update_failed:
+                    self.on_update_failed()
                 self._set_state(STATE_RESTARTING)
                 continue
 
@@ -355,6 +455,10 @@ class Server:
                 self._set_state(STATE_STOPPED)
                 return
 
+            # A crash after a long healthy run is not a failure to *start*, and
+            # the guard below only means to catch the latter.
+            if time.monotonic() - started >= HEALTHY_RUN_SECONDS:
+                failures = 0
             failures += 1
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 logger.error("server failed %s times in a row — giving up",
@@ -370,42 +474,123 @@ class Server:
                 return
 
     def _run_updater(self):
-        """Start install.ps1 in a detached PowerShell. True if it launched.
+        """Start the updater in its own PowerShell. True if it is really running.
 
-        True means "the updater is running", not "the update worked" — the
-        script outlives this process by design, so there is nothing left here
-        to report its result to. It writes its own log; failures leave the
-        current install untouched because it only replaces files once the
-        download has passed its checksum.
+        True means "the updater is under way", not "the update worked": the
+        script outlives this process by design, because it replaces the files
+        this process is running from. What it does *not* mean any more is
+        "Popen returned without raising" — see the creationflags note below.
 
-        Detached, and in a new process group, for one specific reason: the
-        updater stops the running FreeClaw with `taskkill /T`, which walks the
-        process tree. A child of this process would be inside that tree and
-        would be killed halfway through replacing the install.
+        **No DETACHED_PROCESS.** That flag used to be here, to keep the updater
+        out of the process tree that install.ps1's `taskkill /T` walks. It also
+        silently broke the whole feature: DETACHED_PROCESS gives the child no
+        console at all, and powershell.exe with no console exits immediately
+        with code 0 without running a single statement. Popen succeeded, this
+        method returned True, the tray handed over and quit — and nothing
+        replaced it, so clicking "Update FreeClaw" made FreeClaw disappear.
+
+        CREATE_NO_WINDOW gives the child its own hidden console, which is what
+        PowerShell needs, and the taskkill problem is solved where it actually
+        lives instead: `remove_pid_file()` below runs *before* the launch, so
+        the installer's "stop the running FreeClaw" step has no PID to walk a
+        tree from. This tray is stopping itself a moment later regardless.
         """
+        wrapper = self._write_updater_script()
+        if wrapper is None:
+            return False
+
+        # Before the launch, not after: install.ps1 reads freeclaw.pid and
+        # taskkills that PID *and its children*. The updater is about to be one
+        # of those children, so leaving the file in place is a race in which the
+        # updater can kill itself. Restored below if the launch turns out to
+        # have failed, since the file is also how the *next* install finds us.
+        remove_pid_file()
+
+        logger.info("starting the updater: %s", UPDATE_URL)
         try:
-            command = "irm '{}' | iex".format(UPDATE_URL)
-            logger.info("starting the updater: %s", UPDATE_URL)
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-WindowStyle", "Hidden", "-Command", command],
+                 "-WindowStyle", "Hidden", "-File", wrapper],
                 cwd=os.environ.get("TEMP", APP_DIR),
-                creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
-                               | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                                | NO_WINDOW),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 close_fds=True,
                 # Update this install, wherever it happens to live, rather than
-                # install.ps1's default location. Piped through `iex` there is
-                # no way to pass a parameter, so the script reads these.
+                # install.ps1's default location. The installer reads each of
+                # its parameters from the environment for exactly this case.
                 env={**os.environ,
                      "FREECLAW_DIR": APP_DIR,
                      "FREECLAW_NO_SHORTCUT": "1",
                      "FREECLAW_NO_PATH": "1"},
             )
-            return True
         except Exception:
             logger.exception("couldn't start the updater")
+            write_pid_file()
             return False
+
+        # Prove it is actually running before burning the bridge. A real update
+        # takes tens of seconds — downloading the installer, then git, then pip
+        # — so a child that has already exited here has failed to start, which
+        # is precisely the failure DETACHED_PROCESS used to produce invisibly.
+        try:
+            code = proc.wait(timeout=UPDATER_LAUNCH_PROBE_SECONDS)
+        except subprocess.TimeoutExpired:
+            return True                     # still going: the normal path
+        logger.error("the updater exited immediately with code %s — see %s",
+                     code, UPDATE_LOG)
+        write_pid_file()
+        return False
+
+    @staticmethod
+    def _write_updater_script():
+        """Write the PowerShell wrapper that runs the installer, and return its
+        path (None if it couldn't be written).
+
+        A wrapper rather than the bare `irm … | iex` this used to run, for two
+        things that one-liner had no room for:
+
+        * **A log.** The updater runs with no window, so without a transcript a
+          failed update is entirely invisible — the user sees FreeClaw vanish
+          and has nothing to read. It goes next to the tray's own log.
+        * **A way back.** On Linux and macOS a failed update leaves the running
+          version up, because the server is never stopped (update.sh
+          --no-service, update-mac.sh --no-restart). Windows has to stop
+          FreeClaw to replace files that are open, so the equivalent promise
+          has to be kept by putting it back: if the installer fails, the
+          wrapper restarts the tray it replaced nothing of.
+        """
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable
+        tray = os.path.abspath(__file__)
+
+        def q(value):
+            """A PowerShell single-quoted literal. Doubling is the only escape
+            a single-quoted string has, and it is enough: an install path can
+            contain an apostrophe (a user named O'Brien is all it takes)."""
+            return "'" + str(value).replace("'", "''") + "'"
+
+        script = _UPDATER_PS1.format(
+            log=q(UPDATE_LOG), url=q(UPDATE_URL), app_dir=q(APP_DIR),
+            pythonw=q(pythonw), tray=q(tray),
+        )
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            path = os.path.join(
+                os.environ.get("TEMP") or APP_DIR,
+                "freeclaw-update-{}.ps1".format(os.getpid()))
+            # UTF-8 with a BOM: Windows PowerShell 5.1 reads a BOM-less file as
+            # the ANSI code page, which mangles any non-ASCII character in the
+            # install path and can break the script outright.
+            with open(path, "w", encoding="utf-8-sig") as f:
+                f.write(script)
+            return path
+        except OSError:
+            logger.exception("couldn't write the updater script")
+            return None
 
     # ── control ──
     def start(self):
@@ -461,17 +646,86 @@ class Server:
 
 # ── Windows integration ──────────────────────────────────────
 
-def already_running():
+_mutex_handle = None
+
+
+def _kernel32():
+    """kernel32 with a *reliable* GetLastError and correctly typed calls.
+
+    Two things the obvious `ctypes.windll.kernel32` gets wrong here:
+
+    * **Last error.** ctypes does not preserve the thread's last-error across
+      its own calls unless the library was opened with `use_last_error`, so
+      `kernel32.GetLastError()` can report something ctypes did in between
+      rather than the result of CreateMutexW. A tray that reads that wrong
+      believes a second copy is running when none is, and silently refuses to
+      start.
+    * **Handle width.** ctypes defaults a foreign function's return type to
+      `c_int`, which truncates a 64-bit HANDLE to 32 bits. That was harmless
+      while the return value was discarded; it is not harmless now that the
+      handle is kept and closed.
+    """
+    lib = ctypes.WinDLL("kernel32", use_last_error=True)
+    lib.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p)
+    lib.CreateMutexW.restype = ctypes.c_void_p
+    lib.CloseHandle.argtypes = (ctypes.c_void_p,)
+    lib.CloseHandle.restype = ctypes.c_bool
+    return lib
+
+
+def already_running(wait_seconds=SINGLETON_WAIT_SECONDS):
     """True if another tray instance holds the singleton mutex.
 
-    The handle is deliberately leaked: it must stay open for the lifetime of
-    the process, and Windows drops it when we exit.
+    On success the handle is kept in `_mutex_handle` for the lifetime of the
+    process — Windows drops it when we exit, and `release_singleton()` drops it
+    sooner when a successor is about to need it.
+
+    **Why this waits.** An update hands one tray's job to the next: install.ps1
+    starts a new tray at the end, while the outgoing one is still finishing its
+    shutdown. Answering "yes, already running" in that window is how an update
+    ends with no tray at all — the successor opens a browser and exits, then the
+    predecessor exits too, and FreeClaw is gone. So a held mutex is only taken
+    at face value when a FreeClaw is actually *answering*: that is a genuine
+    duplicate launch (someone double-clicked the Start Menu entry) and should be
+    instant. A held mutex with a dead port is a handoff, and worth waiting out.
     """
     if not IS_WINDOWS:
         return False
-    kernel32 = ctypes.windll.kernel32
-    kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    return kernel32.GetLastError() == ERROR_ALREADY_EXISTS
+    global _mutex_handle
+    kernel32 = _kernel32()
+    deadline = time.monotonic() + max(0, wait_seconds)
+    while True:
+        handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        if handle and ctypes.get_last_error() != ERROR_ALREADY_EXISTS:
+            _mutex_handle = handle
+            return False
+        # Someone else owns it. This handle is our own reference to their
+        # mutex, and holding it would keep the object alive after they exit.
+        if handle:
+            kernel32.CloseHandle(handle)
+        if _port_open():
+            return True                       # a real FreeClaw is up
+        if time.monotonic() >= deadline:
+            logger.warning("another tray holds the singleton but nothing is "
+                           "answering on port %s after %ss", PORT, wait_seconds)
+            return True
+        time.sleep(0.25)
+
+
+def release_singleton():
+    """Drop the singleton mutex now rather than at process exit.
+
+    Called on the update handoff so the tray install.ps1 starts can claim it
+    without having to wait this process out.
+    """
+    global _mutex_handle
+    if not IS_WINDOWS or _mutex_handle is None:
+        return
+    try:
+        _kernel32().CloseHandle(_mutex_handle)
+    except Exception:                          # noqa: BLE001 — we are exiting
+        logger.exception("couldn't release the singleton mutex")
+    _mutex_handle = None
 
 
 def write_pid_file():
@@ -554,6 +808,7 @@ class Tray:
     def __init__(self):
         self.server = Server(on_state_change=self._refresh)
         self.server.on_update_handoff = self._on_update_handoff
+        self.server.on_update_failed = self._on_update_failed
         self.icon = pystray.Icon(
             "freeclaw",
             Image.open(ICON_PATH),
@@ -640,7 +895,21 @@ class Tray:
         """
         logger.info("handing over to the updater and exiting")
         self.server.stop()
+        # Before the icon comes down, because stopping it is the slow part and
+        # install.ps1 can reach its "start FreeClaw" step while we are still at
+        # it. Holding the singleton that long is what makes the successor tray
+        # exit as a duplicate, leaving the update finished and nothing running.
+        release_singleton()
         self.icon.stop()
+
+    def _on_update_failed(self):
+        """The updater never got going. FreeClaw is coming back on its own;
+        this is only here so the user learns that from FreeClaw rather than
+        from a Settings page that reloads unchanged."""
+        self._notify("Update didn't start",
+                     "FreeClaw is still on the version you had. "
+                     f"The reason is in {os.path.basename(UPDATE_LOG)}, "
+                     "under Open logs folder.")
 
     def run(self):
         # setup= runs on pystray's own thread once the icon exists, which is

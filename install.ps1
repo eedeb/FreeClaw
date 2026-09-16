@@ -132,6 +132,25 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
 if (-not [Environment]::Is64BitOperatingSystem) {
     Die "FreeClaw needs 64-bit Windows."
 }
+
+# Which embeddable Python to fetch. python.org publishes an arm64 build
+# alongside the amd64 one, and taking it matters on a Snapdragon/Surface
+# machine: the amd64 interpreter does run there, but every FreeClaw process -
+# the server, the tray, each stdio MCP server, the browser - runs under x64
+# emulation for the life of the install.
+#
+# PROCESSOR_ARCHITEW6432 first: it is what holds the *machine's* architecture
+# when this script happens to be running in a 32-bit PowerShell, where
+# PROCESSOR_ARCHITECTURE reads "x86" and would send an ARM64 machine the wrong
+# interpreter. Preferred over RuntimeInformation.OSArchitecture, which needs
+# .NET 4.7.1 and is absent on early Windows 10.
+$machineArch = $env:PROCESSOR_ARCHITEW6432
+if (-not $machineArch) { $machineArch = $env:PROCESSOR_ARCHITECTURE }
+switch ("$machineArch".ToUpperInvariant()) {
+    "AMD64" { $PyArch = "amd64" }
+    "ARM64" { $PyArch = "arm64" }
+    default { Die "Unsupported processor architecture: $machineArch. FreeClaw needs x64 or ARM64 Windows." }
+}
 if ([Environment]::OSVersion.Version.Major -lt 10) {
     Die "Windows 10 or newer is required."
 }
@@ -224,8 +243,8 @@ if (Test-Path $versionFile) { $Version = (Get-Content $versionFile -Raw).Trim() 
 $PyDir = Join-Path $InstallDir "python"
 $PyExe = Join-Path $PyDir "python.exe"
 if (-not (Test-Path $PyExe)) {
-    Step "Fetching Python $PythonVersion"
-    $zipName = "python-$PythonVersion-embed-amd64.zip"
+    Step "Fetching Python $PythonVersion ($PyArch)"
+    $zipName = "python-$PythonVersion-embed-$PyArch.zip"
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("freeclaw-py-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     $pyZip = Join-Path $tmp $zipName

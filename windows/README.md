@@ -43,7 +43,12 @@ What it does:
 - downloads the embeddable Python from python.org into `python\` and installs
   the dependencies there. Private to the install, never added to PATH, and it
   does not touch any Python you already have — the same role install.sh's
-  virtualenv plays on Linux;
+  virtualenv plays on Linux. The build matches the machine: `amd64` on an Intel
+  or AMD box, `arm64` on a Snapdragon or Surface one. Both are 64-bit — 32-bit
+  Windows is refused up front. The architecture is read from
+  `PROCESSOR_ARCHITEW6432` before `PROCESSOR_ARCHITECTURE`, because only the
+  first is right when the installer happens to be running under a 32-bit
+  PowerShell on an ARM64 machine;
 - stops a running FreeClaw first, through `freeclaw.pid`, so it is never
   replacing files that are in use;
 - generates a login password and prints it once. FreeClaw fails closed without
@@ -152,17 +157,46 @@ and macOS installs, which run `update.sh` / `update-mac.sh` in place. There is
 no git checkout and no update script; the install is a packaged tree, and half
 its files are open in the process that would be replacing them. The supervisor
 is the one thing not being replaced, so it starts `install.ps1` — the same
-script that installed FreeClaw — in a detached PowerShell and then quits,
-which removes `freeclaw.pid` and releases every file. The updater verifies its
-download, replaces the program files, and starts a fresh tray at the end.
-
-Detached, and in its own process group, for a specific reason: the updater
-stops a running FreeClaw with `taskkill /T`, which walks the process tree. A
-child of the tray would be inside that tree and would be killed halfway through
-replacing the install.
+script that installed FreeClaw — and then quits, which removes `freeclaw.pid`
+and releases every file. The updater verifies its download, replaces the
+program files, and starts a fresh tray at the end.
 
 Set `FC_UPDATE_URL` to point that at a fork, a staging host or an internal
 mirror.
+
+### How the handoff is made safe
+
+Three things have to be true at once, and each of them was a way for "Update
+FreeClaw" to leave the machine with no FreeClaw at all.
+
+**The updater gets a console.** It runs under `CREATE_NO_WINDOW` in a new
+process group — deliberately *not* `DETACHED_PROCESS`. That flag gives the
+child no console whatsoever, and `powershell.exe` with no console exits
+immediately with code `0` without running a single statement: the launch looks
+like it succeeded, the tray hands over and quits, and nothing replaces it.
+
+**Nothing kills the updater.** `install.ps1` stops a running FreeClaw with
+`taskkill /T`, which walks the process tree, and the updater is the tray's own
+child. Rather than trying to escape the tree, the tray removes `freeclaw.pid`
+*before* launching — so the installer's stop step has no PID to walk from. The
+tray is stopping itself a moment later anyway.
+
+**The successor can start.** The tray is a singleton, held by a named mutex, and
+`install.ps1` starts the new one while the old one is still shutting down. A
+second instance that simply gave up here would exit, the first would finish
+exiting, and FreeClaw would be gone with the update applied. So the outgoing
+tray releases the mutex explicitly as the first step of its handoff, and a
+starting tray that finds the mutex held but *nothing answering on the port*
+waits it out instead of assuming a duplicate. A held mutex with a live port is
+still an instant "already running" — that is someone double-clicking the Start
+Menu entry, and it should be.
+
+Failures are recoverable, which is the promise the other two platforms keep by
+never stopping the server. Here the server has to stop, so the wrapper the tray
+writes restarts the previous version if `install.ps1` exits non-zero, the tray
+refuses to hand over at all if the updater dies in its first seconds, and the
+whole run is transcribed to `logs\update.log` — otherwise a windowless update
+that failed leaves nothing to read.
 
 It is a tray app rather than a real Windows service because a service runs in
 session 0, which has no desktop. FreeClaw's sign-in browser
@@ -170,6 +204,23 @@ session 0, which has no desktop. FreeClaw's sign-in browser
 Microsoft sign-in refuse headless browsers — and headful needs a desktop.
 Running in the interactive session also means stdio MCP servers can reach the
 Node and Python you actually have installed.
+
+## The browser server
+
+The built-in `shadow-web` MCP server ships switched off; turning it on in
+Settings is what downloads Chromium. Windows needs no virtual display for any
+of it — the tray runs in the interactive session, so `ensure_display()` returns
+straight away here, exactly as it does on macOS. Xvfb is a Linux answer to a
+problem Windows does not have.
+
+Chromium lands where playwright puts it, which on Windows is
+`%LOCALAPPDATA%\ms-playwright` — not the `~/.cache/ms-playwright` used on
+Linux. `src/browser_setup.py` mirrors playwright's own three-way rule, and has
+to: every caller reads "not found" as "not installed", so looking in the wrong
+directory hides the browser tools from the agent, makes the sign-in browser
+refuse to open, and re-downloads a few hundred megabytes that are already on
+disk. Set `PLAYWRIGHT_BROWSERS_PATH` to move it; `0` means "inside the
+playwright package", and is understood too.
 
 ## Uninstalling
 

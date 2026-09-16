@@ -747,6 +747,19 @@ class _StdioServer:
             self.proc = subprocess.Popen(
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True,
+                # UTF-8 explicitly, because `text=True` alone decodes with
+                # whatever `locale.getpreferredencoding()` says — cp1252 on a
+                # Windows machine outside the tray (which sets PYTHONUTF8), and
+                # ASCII under a `LANG=C` systemd unit. MCP's stdio transport is
+                # specified as UTF-8, so the locale never had a vote: the wrong
+                # one turns an em dash in a tool result into mojibake and can
+                # fail the decode outright.
+                #
+                # errors="replace" so it degrades instead of dying: a bad byte
+                # mangles one line, which then fails to parse as JSON and is
+                # dropped by the reader below, rather than killing the reader
+                # thread and hanging every later call on this server.
+                encoding="utf-8", errors="replace",
                 bufsize=1,             # line buffered — newline-delimited JSON
                 creationflags=NO_WINDOW,   # no console window (see above)
                 # .env is already loaded into our own environment; `env` on top

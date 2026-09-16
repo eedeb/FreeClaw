@@ -82,6 +82,8 @@ irm https://freeclaw.eedeb.dev/install.ps1 | iex
 It clones the repo into `%LOCALAPPDATA%\FreeClaw` and puts a private Python
 beside it, so it needs only [Git](https://git-scm.com/download/win)
 (`winget install --id Git.Git -e`) — which FreeClaw's bash tool wants anyway.
+The Python it fetches matches your machine, x64 or ARM64, so a Surface or
+Snapdragon laptop runs natively rather than under emulation.
 It generates your web UI password and prints it, adds the `freeclaw` command
 and a Start Menu shortcut, and starts FreeClaw when it's done.
 

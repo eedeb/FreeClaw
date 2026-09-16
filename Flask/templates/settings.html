@@ -1056,6 +1056,7 @@
     $('update-log').textContent = '';
     updateSay(isWin ? 'Asking the tray app to run the installer…' : 'Starting the update…');
     let data = {};
+    let dropped = false;
     try {
       const res = await fetch('/api/update', { method: 'POST' });
       data = await res.json().catch(() => ({}));
@@ -1064,9 +1065,19 @@
       // On Windows the server exits almost immediately, so a dropped
       // connection here is the expected case, not a failure.
       if (!isWin) { updateSay(e.message, true); btn.disabled = false; return; }
+      dropped = true;
     }
-    if (isWin) {
-      updateSay('Installer starting. Follow the setup window — this page reloads once FreeClaw is back.');
+    // The server's own answer decides what happens next, not updateKind. The
+    // two agree in every normal load, but if /api/update/info never returned
+    // (a reload mid-request, a proxy hiccup) updateKind is still null, and
+    // guessing "script" for a Windows install means polling /api/update/log
+    // against a server that has already exited — a spinner that never ends and
+    // never says why. A dropped connection means the installer branch too:
+    // only Windows exits before replying.
+    const mode = data.mode || (dropped || isWin ? 'installer' : 'script');
+    if (mode === 'installer') {
+      updateSay('Installing — FreeClaw is restarting itself. This takes a minute or two, '
+                + 'and the page reloads on its own when it is back.');
       waitForServer(btn, $('update-status'), 300000);
       return;
     }

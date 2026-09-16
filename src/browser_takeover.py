@@ -91,6 +91,20 @@ def ensure_display():
         # macOS has a real window server, and the menu bar app runs in the
         # user's own GUI session — so a headful browser has somewhere to draw.
         return True, ""
+    if sys.platform == "win32":
+        # Same reasoning as macOS, and the reason windows/tray.py is a tray app
+        # rather than a Windows service: a service runs in session 0, which has
+        # no desktop, while the tray runs in the interactive session the user is
+        # signed into. So a headful Chromium has a real desktop to draw on and
+        # there is no virtual display to arrange.
+        #
+        # Before this branch existed Windows fell through to the Linux path,
+        # found no Xvfb — there is no such thing on Windows — and launched the
+        # sign-in browser headless while advising the user to run
+        # `sudo apt-get install xvfb`. Headless is the one mode this flow
+        # cannot use: refusing automated browsers is exactly what Google and
+        # Microsoft sign-in do.
+        return True, ""
     if (os.environ.get("DISPLAY") or "").strip():
         return True, ""
     if not shutil.which("Xvfb"):
