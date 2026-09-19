@@ -231,9 +231,17 @@
       <div class="form-label">Add a provider</div>
       <input id="prov-name" placeholder="Name, e.g. cerebras" maxlength="60" autocomplete="off" spellcheck="false"/>
       <input id="prov-url" placeholder="Base URL — https://api.cerebras.ai/v1" autocomplete="off" spellcheck="false"/>
+      <!-- autocomplete="new-password" on every API-key box, not "off".
+           Browsers ignore "off" on a password field: they see one, take the
+           nearest text box above it for the username, and fill both from
+           whatever is saved for this site — which here is the FreeClaw login,
+           landing in Model and API key. "new-password" is the value they do
+           honour, and with no current-password field left to fill they stop
+           filling the text box above it too. Same on the MCP token, the Quick
+           Setup keys, and the secret rows in Environment. -->
       <div class="grid2">
         <input id="prov-model" placeholder="Model, e.g. gpt-oss-120b" autocomplete="off" spellcheck="false"/>
-        <input id="prov-key" placeholder="API key" type="password" autocomplete="off" spellcheck="false"/>
+        <input id="prov-key" placeholder="API key" type="password" autocomplete="new-password" spellcheck="false"/>
       </div>
       <div class="form-check">
         <input id="prov-responses" class="toggle" type="checkbox" title="Use the Responses API"/>
@@ -287,7 +295,7 @@
       </div>
       <div id="mcp-http-fields">
         <input id="mcp-url" placeholder="Server URL — https://…/mcp" autocomplete="off" spellcheck="false"/>
-        <input id="mcp-token" placeholder="Token / API key (optional)" type="password" autocomplete="off" spellcheck="false" style="margin-top:8px"/>
+        <input id="mcp-token" placeholder="Token / API key (optional)" type="password" autocomplete="new-password" spellcheck="false" style="margin-top:8px"/>
       </div>
       <div id="mcp-stdio-fields" hidden>
         <input id="mcp-command" placeholder='Command — npx -y @modelcontextprotocol/server-filesystem /srv' autocomplete="off" spellcheck="false"/>
@@ -366,13 +374,13 @@
       providers, plus an NVIDIA NIM vision model — all saved to your <span style="font-family:var(--mono)">.env</span>.
     </div>
     <div class="form-label">Groq API key — <a href="https://console.groq.com/keys" target="_blank" rel="noopener">get one</a></div>
-    <input id="qs-groq" type="password" placeholder="gsk_…" autocomplete="off" spellcheck="false"/>
+    <input id="qs-groq" type="password" placeholder="gsk_…" autocomplete="new-password" spellcheck="false"/>
     <div class="form-label">Cerebras API key — <a href="https://cloud.cerebras.ai" target="_blank" rel="noopener">get one</a></div>
-    <input id="qs-cerebras" type="password" placeholder="csk-…" autocomplete="off" spellcheck="false"/>
+    <input id="qs-cerebras" type="password" placeholder="csk-…" autocomplete="new-password" spellcheck="false"/>
     <div class="form-label">NVIDIA NIM API key — <a href="https://build.nvidia.com" target="_blank" rel="noopener">get one</a></div>
-    <input id="qs-nvidia" type="password" placeholder="nvapi-…" autocomplete="off" spellcheck="false"/>
+    <input id="qs-nvidia" type="password" placeholder="nvapi-…" autocomplete="new-password" spellcheck="false"/>
     <div class="form-label">OpenRouter API key — <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">get one</a></div>
-    <input id="qs-openrouter" type="password" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false"/>
+    <input id="qs-openrouter" type="password" placeholder="sk-or-v1-…" autocomplete="new-password" spellcheck="false"/>
     <button id="qs-submit" class="primary">Add providers</button>
     <div id="qs-msg" class="msg"></div>
   </div>
@@ -615,6 +623,17 @@
     if (!groq || !cerebras || !nvidia || !openrouter) { showMsg(qsMsg, 'All four API keys are required.', false); return; }
 
     const btn = $('qs-submit'); btn.disabled = true; btn.textContent = 'Adding…';
+
+    // Whatever is already in the chain, captured before we add anything.
+    // A POST appends, so without the reorder below these four would land
+    // *behind* an existing provider and never get tried first. Best-effort:
+    // if this read fails we still add the providers, just at the back.
+    let existing = [];
+    try {
+      const res = await fetch('/api/providers');
+      if (res.ok) existing = ((await res.json()).providers || []).map(p => p.name);
+    } catch (_) { /* reported by the reorder step if it matters */ }
+
     const jobs = [
       ['Groq', 'https://api.groq.com/openai/v1', 'openai/gpt-oss-120b', groq],
       ['Cerebras', 'https://api.cerebras.ai/v1', 'gpt-oss-120b', cerebras],
@@ -627,6 +646,29 @@
       try { await qsAddProvider(name, url, model, key); }
       catch (e) { errors.push(`${name}: ${e.message}`); }
     }
+
+    // Put the chain in the order Quick Setup promises: its four chat
+    // providers first, anything that was already here next — keeping its own
+    // relative order — and NVIDIA-vision last, since it's disabled below and
+    // only ever reached through the vision-model setting.
+    //
+    // A name that was already in `existing` is filtered out of the middle so
+    // it can't appear twice (re-running Quick Setup is the normal way that
+    // happens). Names whose add failed are simply unknown to the endpoint,
+    // which skips them, so a partial run still orders what did land.
+    const QS_FIRST = ['Groq', 'Cerebras', 'NVIDIA', 'OpenRouter'];
+    const QS_LAST = 'NVIDIA-vision';
+    const order = [
+      ...QS_FIRST,
+      ...existing.filter(n => !QS_FIRST.includes(n) && n !== QS_LAST),
+      QS_LAST,
+    ];
+    try {
+      const res = await fetch('/api/providers/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+    } catch (e) { errors.push(`Ordering providers: ${e.message}`); }
+
     try {
       const res = await fetch(`/api/providers/${encodeURIComponent('NVIDIA-vision')}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
       const data = await res.json();
@@ -935,7 +977,11 @@
         inp.className = 'form-input'; inp.dataset.key = s.key;
         inp.type = s.secret ? 'password' : 'text';
         inp.value = s.value || '';
-        inp.autocomplete = 'off'; inp.spellcheck = false;
+        // "off" is ignored on a password field — browsers fill the saved
+        // FreeClaw login into it anyway. "new-password" is the one they
+        // honour. See the note on the Add-a-provider form.
+        inp.autocomplete = s.secret ? 'new-password' : 'off';
+        inp.spellcheck = false;
         inp.style.cssText = 'background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:9px 11px;font-family:var(--mono);font-size:12px;width:100%';
         const lab = document.createElement('label');
         lab.textContent = s.label + '  (' + s.key + ')';
