@@ -710,8 +710,10 @@
     .approval.settled { border-color: var(--border); border-left-color: var(--muted); }
     .approval.settled .approval-head { color: var(--muted); }
 
-    /* ── context.md side panel ──
-       The agent's long-term memory, opened from the header and edited by hand.
+    /* ── files side panel ──
+       Everything in this user's files folder — the agent's memory and
+       schedule at the top, then whatever it wrote or was given. Opened from
+       the header: a list, and one file at a time viewed or edited in place.
        Lives outside #app (which is capped at 860px and centred) so it can sit
        flush against the right edge of the window at any width. */
     #context-backdrop {
@@ -831,6 +833,102 @@
     }
     #ctx-save:disabled { opacity: 0.35; cursor: default; }
 
+    /* A panel section is laid out with flex when shown, so `hidden` alone
+       loses to that — this is what actually hides the half we're not on. */
+    #context-panel [hidden] { display: none !important; }
+
+    #ctx-back {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+      padding: 6px 9px;
+      cursor: pointer;
+      flex-shrink: 0;
+      align-self: center;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #ctx-back:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+    .ctx-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    #ctx-list-view {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    #ctx-list { list-style: none; margin: 0; padding: 6px 0; }
+    .ctx-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      background: none;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      text-align: left;
+      padding: 11px 16px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .ctx-row:hover { background: rgba(255,255,255,0.04); }
+    .ctx-row-icon { flex-shrink: 0; font-size: 13px; line-height: 1; }
+    .ctx-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ctx-row.protected .ctx-row-name { color: var(--accent); }
+    .ctx-row-meta {
+      flex-shrink: 0;
+      font-size: 9.5px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    #ctx-list-empty, #ctx-binary {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.7;
+      padding: 18px 16px;
+    }
+
+    #ctx-file-view {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    #ctx-image-wrap {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      overflow: auto;
+    }
+    #ctx-image { max-width: 100%; max-height: 100%; border-radius: var(--radius); }
+
+    #ctx-delete {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 8px 12px;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #ctx-delete:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+    #ctx-delete:disabled { opacity: 0.35; cursor: default; }
+
   </style>
 </head>
 <body>
@@ -854,7 +952,7 @@
     <div class="header-right">
       <span id="token-count">~0 tokens</span>
       <a id="browser-btn" href="/browser" title="Browser" style="display:none">🌐</a>
-      <button id="context-btn" title="Memory (context.md)">🧠</button>
+      <button id="context-btn" title="Files">🗂</button>
       <a id="settings-btn" href="/settings" title="Settings">⚙</a>
       <button id="home-btn" title="Back to users">⌂</button>
       <button id="reset-btn">reset</button>
@@ -901,17 +999,30 @@
 </div>
 
 <div id="context-backdrop"></div>
-<aside id="context-panel" aria-hidden="true" aria-label="context.md">
+<aside id="context-panel" aria-hidden="true" aria-label="Files">
   <div class="ctx-head">
-    <span class="ctx-title">context.md</span>
+    <button id="ctx-back" title="Back to files" hidden>←</button>
+    <span class="ctx-title" id="ctx-title">files</span>
     <span class="ctx-user" id="ctx-user"></span>
     <button id="ctx-close" title="Close">✕</button>
   </div>
-  <textarea id="ctx-text" spellcheck="false" autocapitalize="off" autocorrect="off"
-            placeholder="Loading…"></textarea>
+
+  <div id="ctx-list-view">
+    <ul id="ctx-list"></ul>
+    <div id="ctx-list-empty" hidden></div>
+  </div>
+
+  <div id="ctx-file-view" hidden>
+    <textarea id="ctx-text" spellcheck="false" autocapitalize="off" autocorrect="off"
+              placeholder="Loading…" hidden></textarea>
+    <div id="ctx-image-wrap" hidden><img id="ctx-image" alt=""/></div>
+    <div id="ctx-binary" hidden></div>
+  </div>
+
   <div class="ctx-foot">
-    <span id="ctx-status">The agent's long-term memory. It edits this too.</span>
-    <button id="ctx-save">save</button>
+    <span id="ctx-status"></span>
+    <button id="ctx-delete" hidden>delete</button>
+    <button id="ctx-save" hidden>save</button>
   </div>
 </aside>
 
@@ -1967,30 +2078,63 @@
     if (document.visibilityState === 'visible') checkForUpdates();
   });
 
-  // ── context.md panel ──────────────────────────────────────────────
-  // The agent's long-term memory, read and written by hand. Both halves go
-  // through /api/users/<name>/context: the PUT there also refreshes the
-  // running conversation's system message, so an edit lands on the very next
-  // turn rather than waiting for a reset.
-  const ctxBtn      = document.getElementById('context-btn');
-  const ctxPanel    = document.getElementById('context-panel');
-  const ctxBackdrop = document.getElementById('context-backdrop');
-  const ctxClose    = document.getElementById('ctx-close');
-  const ctxText     = document.getElementById('ctx-text');
-  const ctxSave     = document.getElementById('ctx-save');
-  const ctxStatus   = document.getElementById('ctx-status');
-  const ctxUserEl   = document.getElementById('ctx-user');
+  // ── files panel ───────────────────────────────────────────────────
+  // This user's files folder: context.md and ping.md pinned at the top, then
+  // everything the agent wrote or was sent. A list, and one file at a time —
+  // text files open in an editor, images in a viewer, anything else says so.
+  // Saving context.md goes through /api/users/<name>/files/context.md, which
+  // refreshes the running conversation's system message on the way, so an
+  // edit lands on the very next turn rather than waiting for a reset.
+  const ctxBtn       = document.getElementById('context-btn');
+  const ctxPanel     = document.getElementById('context-panel');
+  const ctxBackdrop  = document.getElementById('context-backdrop');
+  const ctxClose     = document.getElementById('ctx-close');
+  const ctxBack      = document.getElementById('ctx-back');
+  const ctxHeading   = document.getElementById('ctx-title');
+  const ctxListView  = document.getElementById('ctx-list-view');
+  const ctxListEl    = document.getElementById('ctx-list');
+  const ctxListEmpty = document.getElementById('ctx-list-empty');
+  const ctxFileView  = document.getElementById('ctx-file-view');
+  const ctxText      = document.getElementById('ctx-text');
+  const ctxImageWrap = document.getElementById('ctx-image-wrap');
+  const ctxImage     = document.getElementById('ctx-image');
+  const ctxBinary    = document.getElementById('ctx-binary');
+  const ctxSave      = document.getElementById('ctx-save');
+  const ctxDelete    = document.getElementById('ctx-delete');
+  const ctxStatus    = document.getElementById('ctx-status');
+  const ctxUserEl    = document.getElementById('ctx-user');
 
-  const CTX_HINT = "The agent's long-term memory. It edits this too.";
-  let ctxOriginal = '';       // last known saved text, for the dirty check
+  const LIST_HINT = "The agent's files. It reads and writes these too.";
+  const FILE_HINTS = {
+    'context.md': "Long-term memory. The agent edits this too.",
+    'ping.md': "Scheduled pings, soonest first.",
+  };
+
+  let ctxOpenFile = null;    // { name, kind, protected } of the open file, or null
+  let ctxOriginal = '';      // last known saved text, for the dirty check
   let ctxSaving   = false;
+  let ctxBusy     = false;   // a delete is in flight
 
   function ctxSetStatus(msg, cls) {
     ctxStatus.textContent = msg;
     ctxStatus.className = cls || '';
   }
 
-  const ctxDirty = () => !ctxText.disabled && ctxText.value !== ctxOriginal;
+  const ctxDirty = () =>
+    !!ctxOpenFile && ctxOpenFile.kind === 'text'
+    && !ctxText.disabled && ctxText.value !== ctxOriginal;
+
+  const ctxFileUrl = name =>
+    '/api/users/' + encodeURIComponent(currentUser) + '/files/'
+    + name.split('/').map(encodeURIComponent).join('/');
+
+  function fmtSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  const KIND_ICON = { text: '📄', image: '🖼', binary: '📦' };
 
   // The user name normally arrives with the conversation on page load; ask for
   // it directly if the panel is opened before that landed (or if it failed).
@@ -2006,36 +2150,130 @@
     return currentUser;
   }
 
-  async function ctxLoad() {
-    ctxText.disabled = true;
-    ctxSave.disabled = true;
+  // ── list view ──
+  async function ctxShowList(status) {
+    ctxOpenFile = null;
+    ctxOriginal = '';
+    ctxFileView.hidden = true;
+    ctxListView.hidden = false;
+    ctxBack.hidden = true;
+    ctxSave.hidden = true;
+    ctxDelete.hidden = true;
+    ctxHeading.textContent = 'files';
+    // Drop the image so a closed panel isn't still holding it in memory.
+    ctxImage.removeAttribute('src');
     ctxText.value = '';
-    ctxText.placeholder = 'Loading…';
-    ctxSetStatus(CTX_HINT, '');
+    ctxSetStatus(status || LIST_HINT, status ? 'ok' : '');
+
     const user = await ctxResolveUser();
     ctxUserEl.textContent = user || '';
+    ctxListEl.innerHTML = '';
     if (!user) {
-      ctxText.placeholder = '';
+      ctxListEmpty.hidden = false;
+      ctxListEmpty.textContent = '';
       ctxSetStatus('No conversation selected — pick a user first.', 'err');
       return;
     }
     try {
-      const res = await fetch('/api/users/' + encodeURIComponent(user) + '/context');
+      const res = await fetch('/api/users/' + encodeURIComponent(user) + '/files');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      ctxOriginal = data.context || '';
-      ctxText.value = ctxOriginal;
-      ctxText.placeholder = 'Empty — nothing saved here yet.';
-      ctxText.disabled = false;
-      ctxSetStatus(CTX_HINT, '');
+      ctxRenderList(data.files || []);
     } catch (e) {
+      ctxListEmpty.hidden = false;
+      ctxListEmpty.textContent = '';
+      ctxSetStatus("Couldn't load the file list — " + e.message, 'err');
+    }
+  }
+
+  function ctxRenderList(files) {
+    ctxListEl.innerHTML = '';
+    ctxListEmpty.hidden = files.length > 0;
+    ctxListEmpty.textContent = files.length ? '' : 'No files yet.';
+    for (const f of files) {
+      const li  = document.createElement('li');
+      const row = document.createElement('button');
+      row.className = 'ctx-row' + (f.protected ? ' protected' : '');
+      row.type = 'button';
+
+      const icon = document.createElement('span');
+      icon.className = 'ctx-row-icon';
+      icon.textContent = KIND_ICON[f.kind] || '📄';
+
+      const name = document.createElement('span');
+      name.className = 'ctx-row-name';
+      name.textContent = f.name;
+
+      const meta = document.createElement('span');
+      meta.className = 'ctx-row-meta';
+      meta.textContent = fmtSize(f.size);
+
+      row.append(icon, name, meta);
+      row.addEventListener('click', () => ctxOpenFileView(f));
+      li.appendChild(row);
+      ctxListEl.appendChild(li);
+    }
+  }
+
+  // ── one file ──
+  async function ctxOpenFileView(f) {
+    ctxOpenFile = f;
+    ctxOriginal = '';
+    ctxListView.hidden = true;
+    ctxFileView.hidden = false;
+    ctxBack.hidden = false;
+    ctxHeading.textContent = f.name;
+    ctxText.hidden = true;
+    ctxImageWrap.hidden = true;
+    ctxBinary.hidden = true;
+    ctxSave.hidden = f.kind !== 'text';
+    ctxSave.disabled = true;
+    ctxDelete.hidden = !!f.protected;
+    ctxDelete.disabled = false;
+    ctxSetStatus(FILE_HINTS[f.name] || '', '');
+
+    if (f.kind === 'image') {
+      // Cache-bust so reopening after the agent rewrote the file shows the
+      // new one rather than whatever the browser kept.
+      ctxImage.src = ctxFileUrl(f.name) + '?raw=1&t=' + Date.now();
+      ctxImage.alt = f.name;
+      ctxImageWrap.hidden = false;
+      if (!ctxStatus.textContent) ctxSetStatus(fmtSize(f.size) + ' image', '');
+      return;
+    }
+    if (f.kind !== 'text') {
+      ctxBinary.hidden = false;
+      ctxBinary.textContent = "This one isn't text or an image, so there's "
+        + "nothing to show here. " + fmtSize(f.size) + ".";
+      return;
+    }
+
+    ctxText.hidden = false;
+    ctxText.disabled = true;
+    ctxText.value = '';
+    ctxText.placeholder = 'Loading…';
+    try {
+      const res = await fetch(ctxFileUrl(f.name));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      // They may have gone back or opened another file while this was in
+      // flight — don't drop a stale file's text into the one that's open.
+      if (!ctxOpenFile || ctxOpenFile.name !== f.name) return;
+      ctxOriginal = data.content || '';
+      ctxText.value = ctxOriginal;
+      ctxText.placeholder = 'Empty — nothing in here yet.';
+      ctxText.disabled = false;
+    } catch (e) {
+      if (!ctxOpenFile || ctxOpenFile.name !== f.name) return;
       ctxText.placeholder = '';
-      ctxSetStatus("Couldn't load context.md — " + e.message, 'err');
+      ctxSetStatus("Couldn't open " + f.name + " — " + e.message, 'err');
     }
   }
 
   async function ctxDoSave() {
-    if (ctxSaving || !currentUser || ctxText.disabled) return;
+    if (ctxSaving || !currentUser || !ctxOpenFile
+        || ctxOpenFile.kind !== 'text' || ctxText.disabled) return;
+    const file = ctxOpenFile;
     ctxSaving = true;
     ctxSave.disabled = true;
     // The PUT takes this conversation's lock, which a streaming turn holds
@@ -2043,20 +2281,23 @@
     ctxSetStatus(sendBtn.disabled ? 'Saving — waiting for the current turn…' : 'Saving…', '');
     const sent = ctxText.value;
     try {
-      const res = await fetch('/api/users/' + encodeURIComponent(currentUser) + '/context', {
+      const res = await fetch(ctxFileUrl(file.name), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ context: sent })
+        body: JSON.stringify({ content: sent })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
-      ctxOriginal = sent;
-      ctxSave.disabled = !ctxDirty();   // they may have typed on while it flew
-      ctxSetStatus('Saved — the running conversation has it.', 'ok');
-      // Refreshing the system message rewrites the conversation, so our own
-      // write moves updated_at. Re-baseline the poll or it reads that back as
-      // a background change and re-renders the thread underneath us.
-      syncUpdatedAt();
+      if (ctxOpenFile && ctxOpenFile.name === file.name) {
+        ctxOriginal = sent;
+        ctxSave.disabled = !ctxDirty();   // they may have typed on while it flew
+        ctxSetStatus(file.name === 'context.md'
+          ? 'Saved — the running conversation has it.' : 'Saved.', 'ok');
+      }
+      // Refreshing the system message rewrites the conversation, so a save to
+      // context.md moves updated_at. Re-baseline the poll or it reads that
+      // back as a background change and re-renders the thread underneath us.
+      if (file.name === 'context.md') syncUpdatedAt();
     } catch (e) {
       ctxSetStatus('Save failed — ' + e.message, 'err');
       ctxSave.disabled = false;
@@ -2065,18 +2306,50 @@
     }
   }
 
+  async function ctxDoDelete() {
+    if (ctxBusy || !ctxOpenFile || ctxOpenFile.protected || !currentUser) return;
+    const file = ctxOpenFile;
+    if (!confirm('Delete ' + file.name + '? This cannot be undone.')) return;
+    ctxBusy = true;
+    ctxDelete.disabled = true;
+    ctxSave.disabled = true;
+    ctxSetStatus('Deleting…', '');
+    try {
+      const res = await fetch(ctxFileUrl(file.name), { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      ctxOriginal = ctxText.value;   // nothing left to warn about losing
+      ctxBusy = false;
+      ctxShowList('Deleted ' + file.name + '.');
+    } catch (e) {
+      ctxSetStatus('Delete failed — ' + e.message, 'err');
+      ctxDelete.disabled = false;
+      ctxSave.disabled = !ctxDirty();
+      ctxBusy = false;
+    }
+  }
+
+  // ── open / close ──
+  function ctxConfirmLeave() {
+    return !ctxDirty()
+      || confirm('Discard unsaved changes to ' + ctxOpenFile.name + '?');
+  }
+
   function ctxOpen() {
     ctxPanel.classList.add('open');
     ctxBackdrop.classList.add('open');
     ctxPanel.setAttribute('aria-hidden', 'false');
-    ctxLoad();
+    ctxShowList();
   }
 
   function ctxClosePanel() {
-    if (ctxDirty() && !confirm('Discard unsaved changes to context.md?')) return;
+    if (!ctxConfirmLeave()) return;
     ctxPanel.classList.remove('open');
     ctxBackdrop.classList.remove('open');
     ctxPanel.setAttribute('aria-hidden', 'true');
+    ctxImage.removeAttribute('src');
+    ctxOpenFile = null;
+    ctxOriginal = '';
   }
 
   ctxBtn.addEventListener('click', () => {
@@ -2084,20 +2357,25 @@
   });
   ctxClose.addEventListener('click', ctxClosePanel);
   ctxBackdrop.addEventListener('click', ctxClosePanel);
+  ctxBack.addEventListener('click', () => { if (ctxConfirmLeave()) ctxShowList(); });
   ctxSave.addEventListener('click', ctxDoSave);
+  ctxDelete.addEventListener('click', ctxDoDelete);
   ctxText.addEventListener('input', () => {
     ctxSave.disabled = !ctxDirty();
-    if (ctxStatus.className) ctxSetStatus(CTX_HINT, '');
+    if (ctxStatus.className) ctxSetStatus(FILE_HINTS[ctxOpenFile && ctxOpenFile.name] || '', '');
   });
   ctxText.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); ctxDoSave(); }
   });
+  // Escape backs out one level at a time: open file → list → closed.
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && ctxPanel.classList.contains('open')) ctxClosePanel();
+    if (e.key !== 'Escape' || !ctxPanel.classList.contains('open')) return;
+    if (ctxOpenFile) { if (ctxConfirmLeave()) ctxShowList(); }
+    else ctxClosePanel();
   });
-  // Nothing else on the page can move context.md mid-edit except the agent
+  // Nothing else on the page can move these files mid-edit except the agent
   // itself (add_context, edit_file), and clobbering that silently would lose
-  // whatever it just remembered — so leaving with unsaved text asks first.
+  // whatever it just wrote — so leaving with unsaved text asks first.
   window.addEventListener('beforeunload', e => {
     if (ctxDirty()) { e.preventDefault(); e.returnValue = ''; }
   });

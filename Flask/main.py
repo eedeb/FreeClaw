@@ -16,7 +16,7 @@ from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
     user_ping_path, list_users, user_exists, create_user,
     load_conversation, save_conversation, derive_title, ensure_conversation,
-    activate_session, read_user_context, write_user_context,
+    activate_session, read_user_context, write_user_context, write_file_atomic,
 )
 from src.logging_setup import get_logger
 import atexit
@@ -311,6 +311,203 @@ def api_user_context(name):
     except Exception as e:
         return _log_and_error(e)
     return jsonify({'ok': True, 'user': name})
+
+
+# ── USER FILES API ───────────────────────────────────────────
+# Everything the agent can read or write lives in static/<user>/files/ —
+# its memory, its schedule, anything it created and anything uploaded to it.
+# These routes put that folder in front of the person the agent works for:
+# list it, open a file, edit and save it, throw one away.
+
+# The two the panel won't delete: the agent's memory and its schedule, the
+# same pair agent._PROTECTED_FILES stops the model itself deleting. Order
+# matters — it's the order they're pinned to the top of the list.
+PROTECTED_FILES = ('context.md', 'ping.md')
+
+# Extensions we serve as images rather than trying to show as text. Anything
+# not here is classified by sniffing its bytes, so a .py, .csv, .json or a
+# text file with no extension at all still opens in the editor.
+IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg'}
+
+def _files_root(name):
+    """Absolute, symlink-resolved path of this user's files folder. Creating
+    it if missing is conv_files_dir's job, and harmless here."""
+    return os.path.realpath(conv_files_dir(name))
+
+
+def _resolve_user_file(name, relpath):
+    """Absolute path of `relpath` inside this user's files folder, or None if
+    it points anywhere else.
+
+    Both halves are resolved before comparing, so a symlink planted in the
+    folder can't be followed out of it, and the comparison goes through
+    normcase because Windows paths differ in case without differing."""
+    if not relpath or '\x00' in relpath:
+        return None
+    if os.path.isabs(relpath) or relpath.startswith(('/', '\\')):
+        return None
+    root = _files_root(name)
+    full = os.path.realpath(os.path.join(root, relpath))
+    root_cmp, full_cmp = os.path.normcase(root), os.path.normcase(full)
+    if full_cmp != root_cmp and not full_cmp.startswith(root_cmp + os.sep):
+        return None
+    return full
+
+
+def _file_kind(path):
+    """'image', 'text' or 'binary' — what the panel should do with this file.
+
+    Extension decides images (we need a real decoder either way). For
+    everything else the bytes decide: a file that's valid UTF-8 with no NULs
+    in its first chunk is editable text, whatever it's called."""
+    if os.path.splitext(path)[1].lower() in IMAGE_EXTS:
+        return 'image'
+    try:
+        with open(path, 'rb') as f:
+            chunk = f.read(8192)
+    except OSError:
+        return 'binary'
+    if b'\x00' in chunk:
+        return 'binary'
+    try:
+        chunk.decode('utf-8')
+    except UnicodeDecodeError:
+        # A multi-byte character can legitimately straddle the end of the
+        # chunk, so a failure there doesn't mean the file isn't text — but
+        # only when we stopped mid-file. A short file we read to the end has
+        # no continuation to wait for, so its failure is the real thing.
+        if len(chunk) < 8192:
+            return 'binary'
+        try:
+            chunk[:-4].decode('utf-8')
+        except UnicodeDecodeError:
+            return 'binary'
+    return 'text'
+
+
+def _list_user_files(name):
+    """Every file under this user's files folder, protected ones first and
+    the rest alphabetically. Walks subfolders so files the agent tucked away
+    in one are still reachable; paths are relative and always use forward
+    slashes, so the same name round-trips through a URL on any OS."""
+    root = _files_root(name)
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith('.'))
+        for fname in filenames:
+            # Dotfiles covers our own working files too — the conversation
+            # lock sidecar and the ".tmp-"/".ctx-"/".edit-" leftovers an
+            # interrupted atomic write leaves behind — none of which belong
+            # to the user and none of which they should be editing.
+            if fname.startswith('.') or fname.endswith(('.lock', '.tmp')):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, root).replace(os.sep, '/')
+            try:
+                stat = os.stat(full)
+            except OSError:
+                continue
+            found.append({
+                'name': rel,
+                'kind': _file_kind(full),
+                'size': stat.st_size,
+                'modified': stat.st_mtime,
+                'protected': rel in PROTECTED_FILES,
+            })
+    order = {n: i for i, n in enumerate(PROTECTED_FILES)}
+    found.sort(key=lambda f: (order.get(f['name'], len(order)), f['name'].lower()))
+    return found
+
+
+def _files_user(name):
+    """(name, error_response) for the file routes — exactly one is set."""
+    if not logged_in():
+        return None, (jsonify({'error': 'Unauthorized'}), 401)
+    name = safe_username(name)
+    if not name or not user_exists(name):
+        return None, (jsonify({'error': 'No such user'}), 404)
+    return name, None
+
+
+@app.route('/api/users/<name>/files', methods=['GET'])
+def api_list_user_files(name):
+    """This user's files folder, as the panel shows it."""
+    name, err = _files_user(name)
+    if err:
+        return err
+    try:
+        return jsonify({'user': name, 'files': _list_user_files(name)})
+    except Exception as e:
+        return _log_and_error(e)
+
+
+@app.route('/api/users/<name>/files/<path:relpath>', methods=['GET', 'PUT', 'DELETE'])
+def api_user_file(name, relpath):
+    """Open, save or delete one file in this user's files folder.
+
+    GET returns the text of a text file as JSON; ?raw=1 (and anything that
+    isn't text) sends the bytes instead, which is what an <img> needs.
+
+    A PUT to context.md goes through write_user_context so the edit reaches
+    the conversation that's already running — same as the context route."""
+    name, err = _files_user(name)
+    if err:
+        return err
+    path = _resolve_user_file(name, relpath)
+    if path is None:
+        return jsonify({'error': 'Invalid file name'}), 400
+    # Take the name back off the resolved path rather than off the URL, so it
+    # is spelled exactly as the listing spells it — which is what the
+    # protected-file check below is comparing against.
+    rel = os.path.relpath(path, _files_root(name)).replace(os.sep, '/')
+
+    if request.method == 'DELETE':
+        if rel in PROTECTED_FILES:
+            return jsonify({'error': f"{rel} can't be deleted."}), 403
+        if os.path.isdir(path):
+            return jsonify({'error': 'That is a folder, not a file.'}), 400
+        if not os.path.exists(path):
+            return jsonify({'error': 'File not found'}), 404
+        try:
+            with _session_lock(name):
+                os.remove(path)
+        except Exception as e:
+            return _log_and_error(e)
+        return jsonify({'ok': True, 'name': rel})
+
+    if not os.path.isfile(path):
+        return jsonify({'error': 'File not found'}), 404
+
+    if request.method == 'GET':
+        kind = _file_kind(path)
+        if kind != 'text' or request.args.get('raw'):
+            return send_from_directory(_files_root(name), rel)
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+        except Exception as e:
+            return _log_and_error(e)
+        return jsonify({'user': name, 'name': rel, 'kind': kind, 'content': content})
+
+    # PUT
+    if _file_kind(path) != 'text':
+        return jsonify({'error': "That file isn't text — it can't be edited here."}), 400
+    data = request.get_json(silent=True) or {}
+    content = data.get('content')
+    if not isinstance(content, str):
+        return jsonify({'error': "Send JSON with a 'content' string."}), 400
+    try:
+        with _session_lock(name):
+            if rel == 'context.md':
+                write_user_context(name, content)
+                activate_session(name)
+                if agent.refresh_context():
+                    save_conversation(name, agent.get_messages())
+            else:
+                write_file_atomic(path, content)
+    except Exception as e:
+        return _log_and_error(e)
+    return jsonify({'ok': True, 'name': rel})
 
 
 @app.route('/api/conversation', methods=['GET'])

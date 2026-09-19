@@ -291,6 +291,13 @@ def _write_json_atomic(path, data):
     _write_atomic(path, json.dumps(data), prefix=".conv-")
 
 
+def write_file_atomic(path, text):
+    """Replace any file in a user's files folder with `text` in one step —
+    the same atomic write context.md gets (see _write_atomic), so the agent
+    reading a file mid-turn never sees it half-written."""
+    _write_atomic(path, text, prefix=".edit-")
+
+
 def read_user_context(name):
     """This user's context.md — their long-term memory — or "" if they have
     none yet."""
