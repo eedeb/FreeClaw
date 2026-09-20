@@ -93,6 +93,8 @@
     }
     .statusbar .msg.err { color: var(--err); }
     .statusbar .msg.ok { color: var(--accent); }
+    .statusbar .nav-state { color: var(--accent-dim); }
+    .statusbar .nav-state:not(:empty)::after { content: ' ·'; color: var(--muted); }
 
     .banner {
       font-family: var(--mono); font-size: 11px; line-height: 1.6;
@@ -172,6 +174,7 @@
   </div>
 
   <div class="statusbar">
+    <span class="nav-state" id="nav-state"></span>
     <span id="title-text"></span>
     <span class="spacer" style="flex:1"></span>
     <span class="msg" id="msg"></span>
@@ -199,10 +202,24 @@
   // image back into it, so the two must agree.
   let viewport = { width: 1280, height: 800 };
   let running = false;
+  let frameTimer = null;        // the frame loop's single pending tick
+  let gotFrame = false;         // has this session drawn anything yet
+  let addrDirty = false;        // the address bar holds something the user typed
+  let lastUrl = '';             // last page the server reported being on
+  let lastNavError = '';        // so one failure is reported once, not every poll
+  let navErrorShown = false;    // is `msg` currently a failed load, and ours to clear
 
   function say(text, kind) {
     msg.textContent = text || '';
     msg.className = 'msg' + (kind ? ' ' + kind : '');
+    navErrorShown = false;
+  }
+
+  // Separate from `say` on purpose: this one is owned by the poll and changes
+  // on its own, and it must not wipe out the result of something the user did
+  // (a "Saved" that arrived a moment earlier).
+  function navState(text) {
+    el('nav-state').textContent = text || '';
   }
 
   function showOverlay(text, spinning) {
@@ -211,8 +228,16 @@
     overlay.classList.remove('hidden');
   }
 
-  async function api(path, options) {
+  // `timeout` is load-bearing. Both loops below are await-chains that only
+  // schedule their next turn once the current request settles, so a single
+  // request that never came back — a wedged worker, a phone that changed
+  // network — stopped the screen and the status poll for good, until the page
+  // was reloaded by hand.
+  async function api(path, options, timeout) {
     const opts = Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {});
+    if (!opts.signal) {
+      try { opts.signal = AbortSignal.timeout(timeout || 15000); } catch (e) { /* older browser */ }
+    }
     // The user is named in the request, not taken from the session's open chat.
     const sep = path.includes('?') ? '&' : '?';
     const res = await fetch('/api/browser/' + path + sep + 'user=' + encodeURIComponent(USER), opts);
@@ -227,21 +252,51 @@
     running = on;
     ['back', 'forward', 'reload', 'save', 'close', 'discard'].forEach(
       (id) => { el(id).disabled = !on; });
-    if (on) {
-      overlay.classList.add('hidden');
-      if (!wasRunning) nextFrame();
+    if (on && !wasRunning) {
+      // The overlay comes down when a frame actually arrives, not here. The
+      // server returns from `start` as soon as the worker thread exists, which
+      // is seconds before Chromium has launched and drawn anything — hiding it
+      // at this point left the user watching a black rectangle with no
+      // spinner, which reads as "nothing happened".
+      gotFrame = false;
+      showOverlay('Loading the page…', true);
+      nextFrame();
+    }
+    if (!on) {
+      gotFrame = false;
+      addrDirty = false;
+      lastUrl = '';
+      lastNavError = '';
+      navState('');
+      clearTimeout(frameTimer);
     }
   }
 
   // Self-clocking frame loop: ask for the next screenshot as soon as the last
   // one finished decoding, so a slow link simply gets fewer frames instead of
   // queueing requests it can't keep up with.
+  function scheduleFrame(delay) {
+    clearTimeout(frameTimer);
+    frameTimer = setTimeout(nextFrame, delay);
+  }
+
   function nextFrame() {
     if (!running) return;
+    // Watchdog. An <img> whose request never completes fires neither `load`
+    // nor `error`, and those two handlers are the only things that ask for the
+    // next frame — so one stalled request froze the stream permanently. Every
+    // path through here shares the single `frameTimer`, so a duplicate
+    // schedule replaces the pending tick rather than forking a second loop.
+    clearTimeout(frameTimer);
+    frameTimer = setTimeout(nextFrame, 20000);
     screen.src = '/api/browser/frame?user=' + encodeURIComponent(USER) + '&t=' + Date.now();
   }
-  screen.addEventListener('load', () => setTimeout(nextFrame, 60));
-  screen.addEventListener('error', () => setTimeout(nextFrame, 400));
+
+  screen.addEventListener('load', () => {
+    if (!gotFrame) { gotFrame = true; overlay.classList.add('hidden'); }
+    scheduleFrame(60);
+  });
+  screen.addEventListener('error', () => scheduleFrame(400));
 
   function send(command) {
     if (!running) return;
@@ -303,11 +358,20 @@
   async function go() {
     const url = el('addr').value.trim();
     if (!url) return;
-    if (running) { send({ kind: 'nav', url: url }); return; }
+    if (running) {
+      send({ kind: 'nav', url: url });
+      // Say so now rather than at the next poll. A navigation freezes the
+      // screenshot on the page being left, and up to two seconds of that with
+      // no acknowledgement anywhere is what made people retype the address.
+      navState('Loading…');
+      return;
+    }
     showOverlay('Starting the browser…', true);
     say('');
     try {
-      const info = await api('start', { method: 'POST', body: JSON.stringify({ url: url }) });
+      // Starting can mean tearing down a previous browser first, which waits
+      // on a worker thread that may be mid-page-load.
+      const info = await api('start', { method: 'POST', body: JSON.stringify({ url: url }) }, 40000);
       if (info.viewport) viewport = info.viewport;
       if (info.note) { el('note').textContent = info.note; el('note').classList.remove('hidden'); }
       setRunning(true);
@@ -320,6 +384,9 @@
   el('addr').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); go(); screen.focus(); }
   });
+  // What the user typed outranks what the poll wants to put there, until the
+  // page actually goes somewhere. See poll().
+  el('addr').addEventListener('input', () => { addrDirty = true; });
   el('back').addEventListener('click', () => send({ kind: 'back' }));
   el('forward').addEventListener('click', () => send({ kind: 'forward' }));
   el('reload').addEventListener('click', () => send({ kind: 'reload' }));
@@ -327,7 +394,9 @@
   el('save').addEventListener('click', async () => {
     say('Saving…');
     try {
-      const info = await api('save', { method: 'POST' });
+      // save/finish block on the worker writing storage_state out; the server
+      // gives that its own 30s, so the client must not give up first.
+      const info = await api('save', { method: 'POST' }, 40000);
       renderDomains(info.saved_domains || []);
       say('Saved — the agent can use these now.', 'ok');
     } catch (e) { say(e.message, 'err'); }
@@ -336,7 +405,7 @@
   el('close').addEventListener('click', async () => {
     say('Saving…');
     try {
-      const info = await api('finish', { method: 'POST' });
+      const info = await api('finish', { method: 'POST' }, 40000);
       setRunning(false);
       showOverlay('Browser closed. Type an address to open it again.', false);
       renderDomains(info.saved_domains || []);
@@ -346,7 +415,7 @@
 
   el('discard').addEventListener('click', async () => {
     if (!confirm('Close without saving? Anything you signed into in this session is lost.')) return;
-    try { await api('cancel', { method: 'POST' }); } catch (e) { /* closing anyway */ }
+    try { await api('cancel', { method: 'POST' }, 25000); } catch (e) { /* closing anyway */ }
     setRunning(false);
     showOverlay('Browser closed. Type an address to open it again.', false);
     say('Closed without saving.');
@@ -388,8 +457,30 @@
       renderDomains(info.saved_domains || []);
       if (info.running) {
         if (!running) setRunning(true);
-        if (document.activeElement !== el('addr')) el('addr').value = info.url || '';
+        // The address the user typed stands until the page actually goes
+        // somewhere. Overwriting it on a timer — which is what happened here
+        // before, because `go()` moves focus to the screen and so the
+        // activeElement guard never fired — put the *old* URL back a second
+        // after they pressed Enter, over a screenshot still showing the old
+        // page. Nothing in that said "loading", so they typed it again.
+        if (info.url && info.url !== lastUrl) { lastUrl = info.url; addrDirty = false; }
+        if (!addrDirty && document.activeElement !== el('addr')) {
+          el('addr').value = info.url || '';
+        }
         el('title-text').textContent = info.title || '';
+        navState(info.navigating ? 'Loading…' : '');
+        // Once per failure, so a stale one doesn't sit on top of a later
+        // "Saved" every two seconds.
+        if (info.nav_error && info.nav_error !== lastNavError) {
+          lastNavError = info.nav_error;
+          say(info.nav_error, 'err');
+          navErrorShown = true;
+        } else if (!info.nav_error) {
+          lastNavError = '';
+          // Take it down once the next load works — but only if it's still
+          // ours; `say` clears the flag whenever anything else claims the line.
+          if (navErrorShown) say('');
+        }
         if (info.error) say(info.error, 'err');
       } else if (running) {
         setRunning(false);

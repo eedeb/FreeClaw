@@ -74,7 +74,13 @@ FRAME_QUALITY = 60
 XVFB_DISPLAY = ":99"
 
 _sessions = {}                    # FreeClaw user -> TakeoverSession
+# Held only long enough to read or swap an entry — never across a blocking
+# wait, because every request that touches a browser needs it (see start()).
 _registry_lock = threading.Lock()
+# Serialises start() against itself, which is the slow part: tearing an old
+# session down and launching a Chromium. Separate from _registry_lock so a
+# start in progress doesn't stall the frame and status polls.
+_start_lock = threading.Lock()
 
 _xvfb_proc = None
 _xvfb_lock = threading.Lock()
@@ -167,6 +173,15 @@ class TakeoverSession:
         self.note = ""                # e.g. the headless warning
         self.saved = False
 
+        # A navigation blocks this session's worker thread until the page
+        # loads, and no frame is captured while it does — so the UI shows a
+        # frozen screenshot of the page being *left*, with nothing to say why.
+        # These are what status() reports so it can say "Loading…" instead, and
+        # name a load that failed rather than looking identical to one that is
+        # merely slow.
+        self.navigating = False
+        self.nav_error = ""
+
         self._done = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name=f"takeover-{user}", daemon=True)
@@ -249,7 +264,12 @@ class TakeoverSession:
             # so a popup arriving mid-setup isn't immediately overwritten.
             context.on("page", self._on_new_page)
 
-            page.goto(self.start_url, wait_until="domcontentloaded", timeout=45000)
+            self.navigating = True
+            try:
+                page.goto(self.start_url, wait_until="domcontentloaded",
+                          timeout=45000)
+            finally:
+                self.navigating = False
             self.status = "running"
             self._loop(context)
         except Exception as e:                    # noqa: BLE001 — reported to the UI
@@ -331,10 +351,9 @@ class TakeoverSession:
                     # would hang the request until its timeout instead.
                     command["done"].set()
                     continue
-                self._apply(command)
-                acted = True
                 # Drain anything queued behind it — a burst of keystrokes
                 # should replay in order without a frame between each.
+                batch = [command]
                 while True:
                     try:
                         extra = self._commands.get_nowait()
@@ -347,20 +366,56 @@ class TakeoverSession:
                     if extra.get("kind") in ("finish", "cancel", "save"):
                         self._commands.put(extra)
                         break
-                    self._apply(extra)
+                    batch.append(extra)
+                for item in self._compact(batch):
+                    self._apply(item)
+                acted = True
 
             if acted:
                 time.sleep(POST_COMMAND_DELAY)
             self._capture()
 
+    @staticmethod
+    def _compact(batch):
+        """Drop navigations that a later one in the same batch supersedes.
+
+        `nav` blocks this thread until the page loads, so someone who retyped
+        an address — because the first attempt looked like it did nothing —
+        would otherwise wait out every attempt in turn, one whole page load
+        after another. Retrying made it strictly worse. Only the last address
+        can be the one they want.
+
+        `back`/`forward`/`reload` are deliberately left alone: two Backs mean
+        go back twice, and collapsing them would swallow the second."""
+        last_nav = -1
+        for i, item in enumerate(batch):
+            if item.get("kind") == "nav":
+                last_nav = i
+        if last_nav < 0:
+            return batch
+        return [item for i, item in enumerate(batch)
+                if item.get("kind") != "nav" or i == last_nav]
+
     def _apply(self, command):
         """One input command against the active page. Every failure here is
         swallowed: a click that lands while the page is navigating raises, and
-        killing the whole sign-in session over it would be absurd."""
+        killing the whole sign-in session over it would be absurd.
+
+        A failed *navigation* is swallowed too, but recorded in `nav_error`
+        first. A typo'd or unreachable address is the one failure the user has
+        to be told about — it used to go to the debug log and nowhere else,
+        leaving a page that simply never changed and no way to tell that from
+        one still loading."""
         page = self._current_page()
         if page is None:
             return
         kind = command.get("kind")
+        moving = kind in ("nav", "back", "forward", "reload")
+        if moving:
+            # Read by status() from a Flask thread while this one is blocked
+            # in the goto below.
+            self.navigating = True
+            self.nav_error = ""
         try:
             if kind == "click":
                 page.mouse.click(
@@ -387,7 +442,15 @@ class TakeoverSession:
             elif kind == "reload":
                 page.reload(wait_until="domcontentloaded", timeout=30000)
         except Exception as e:                    # noqa: BLE001 — see docstring
+            if moving:
+                # Playwright's messages are several lines of stack-ish detail;
+                # the first is the part that names what went wrong.
+                lines = str(e).strip().splitlines()
+                self.nav_error = lines[0] if lines else "The page wouldn't load."
             logger.debug("Sign-in input %r failed: %s", kind, e)
+        finally:
+            if moving:
+                self.navigating = False
 
     def _capture(self):
         page = self._current_page()
@@ -442,12 +505,20 @@ def start(user, url):
     file, and the second to save would quietly drop the first's login."""
     if not profiles.state_path(user):
         raise ValueError("That user name can't have a browser profile.")
-    with _registry_lock:
-        existing = _sessions.get(user)
+    # `_start_lock` is what keeps one session per user, not `_registry_lock`.
+    # cancel() blocks until the old worker notices — up to 15s if it is stuck
+    # mid-navigation — and _registry_lock was previously held across that wait.
+    # Every other browser route goes through get() for its session, so opening
+    # a new address while the old browser was busy froze the whole page for as
+    # long as the cancel took. Nothing reading the registry waits on this lock.
+    with _start_lock:
+        with _registry_lock:
+            existing = _sessions.pop(user, None)
         if existing is not None and existing.alive():
             existing.cancel()
         session = TakeoverSession(user, url)
-        _sessions[user] = session
+        with _registry_lock:
+            _sessions[user] = session
     return session
 
 
@@ -472,6 +543,8 @@ def status(user):
         "title": meta.get("title", ""),
         "note": session.note,
         "error": session.error,
+        "navigating": session.navigating,
+        "nav_error": session.nav_error,
         "viewport": dict(VIEWPORT),
         "saved_domains": profiles.domains(user),
     }
