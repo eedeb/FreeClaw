@@ -2267,9 +2267,13 @@ def load_mcp_tools(user=None):
     None means the install defaults, for a caller with no user behind it.
 
     A single unreachable server is logged and skipped rather than taking down
-    the whole tool list."""
+    the whole tool list — but the caller is told it happened, because a
+    catalogue assembled with a server missing is not one worth keeping (see
+    _catalogue). The third return value is True when every switched-on server
+    actually contributed."""
     registry = {}
     out = []
+    complete = True
     for server in mcp_client.read_servers(user):
         if not server.get("enabled", True):
             continue
@@ -2286,7 +2290,13 @@ def load_mcp_tools(user=None):
             print(f"[mcp] '{server.get('name')}' unavailable: {e}")
             logger.exception("MCP server '%s' (%s) unavailable",
                              server.get('name'), mcp_client.describe(server))
+            complete = False
             continue
+        if not server_tools:
+            # Switched on, reachable, and offering nothing. Usually means the
+            # thing behind it has not connected yet rather than that it has no
+            # tools, so the catalogue built from it is provisional.
+            complete = False
         excluded = set(server.get("exclude_tools") or ())
         for t in server_tools:
             real_name = t.get("name")
@@ -2311,12 +2321,20 @@ def load_mcp_tools(user=None):
                 },
             })
             registry[fn_name] = {"server": server, "tool": real_name}
-    return out, registry
+    return out, registry, complete
+
+
+# How long a catalogue built while a switched-on server had nothing to offer
+# is kept before it is built again. Short, because what it is waiting for is
+# usually something connecting at the other end of a server, and the person
+# who just connected it is watching. A *complete* catalogue is still kept
+# until something invalidates it, so the ordinary install re-lists nothing.
+PROVISIONAL_CATALOGUE_TTL = 30.0
 
 
 def _build_catalogue(user):
     """One user's tool list and MCP registry, built from scratch."""
-    mcp_tools, registry = load_mcp_tools(user)
+    mcp_tools, registry, complete = load_mcp_tools(user)
     return {
         "tools": (build_file_tools() + build_context_tools() + build_search_tools()
                   + build_utility_tools() + build_time_tools() + mcp_tools),
@@ -2326,6 +2344,10 @@ def _build_catalogue(user):
         # lose every MCP server the user has on — the browser included.
         "mcp": mcp_tools,
         "registry": registry,
+        # False when a switched-on server failed or offered nothing, which
+        # makes this entry provisional — see _catalogue.
+        "complete": complete,
+        "built_at": time.monotonic(),
     }
 
 
@@ -2342,6 +2364,13 @@ def _catalogue(user):
     the second wins; that's cheaper than holding a lock across what can be
     network I/O, and the result is the same list either way."""
     entry = _catalogues.get(user)
+    if entry is not None and not entry.get("complete"):
+        # Built while a server was unreachable or had nothing yet. Keeping it
+        # for good is how a server that comes up *after* the first turn stays
+        # invisible for the life of the process: nothing here expires, and the
+        # only things that clear it are a Settings toggle and a restart.
+        if time.monotonic() - entry.get("built_at", 0) >= PROVISIONAL_CATALOGUE_TTL:
+            entry = None
     if entry is None:
         entry = _build_catalogue(user)
         with _catalogues_lock:
