@@ -962,7 +962,14 @@ def list_tools(server, use_cache=True):
     if "error" in msg:
         raise RuntimeError(_err_text(msg["error"]))
     tools = (msg.get("result") or {}).get("tools", []) or []
-    _tool_cache[sig] = tools
+    # An empty list is never cached. For a server whose tools are fixed it
+    # costs one extra round trip and nothing else; for one whose tools only
+    # exist while something is connected at the other end, caching the empty
+    # answer forever is the difference between the tools appearing when that
+    # thing connects and never appearing at all. Nothing here expires on its
+    # own, so "nothing yet" must not be the answer we keep.
+    if tools:
+        _tool_cache[sig] = tools
     return tools
 
 
