@@ -22,8 +22,10 @@ and a nested run just binds a different Session for the duration.
     turn_usage               token tally for the turn in flight
     turn_prefix              pinned history window + tool set for the turn
     turn_tool_names          which tools the turn in flight actually ran
-    consecutive_tool_calls   } the runaway-tool throttle's run,
-    last_tool_name           } counted within a turn
+    consecutive_tool_calls   } the runaway-tool throttle's run: calls to the
+    last_tool_name           } same tool, and of those the ones that repeated
+    identical_tool_calls     } the previous call's arguments exactly, both
+    last_call_signature      } counted within a turn
     approval_user            } who bash approvals are checked against,
     approval_interactive     } and whether anyone can answer a prompt
     stop_event, turn_active  the Stop button's flag for this turn
@@ -114,6 +116,12 @@ class Session:
         self.turn_tag = None
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
+        # The arguments half of the throttle's run. An MCP server often puts
+        # several different operations behind one tool name, so a repeat there
+        # is a call whose arguments didn't move either — see the throttle in
+        # src/agent.py.
+        self.identical_tool_calls = 0
+        self.last_call_signature = None
         # Every tool this turn ran, in order. Distinct from last_tool_name
         # (which is only the throttle's one-deep run): this is the whole
         # turn's record, and it's what lets the finished reply be stamped
@@ -151,6 +159,8 @@ class Session:
         record the same way its token tally does."""
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
+        self.identical_tool_calls = 0
+        self.last_call_signature = None
         self.turn_tool_names = []
 
     def note_tool_used(self, name):
