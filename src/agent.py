@@ -763,14 +763,11 @@ def _clear_turn_prefix():
 # and counting names alone refused the third one as a runaway. What separates
 # progress from a loop there is the *arguments*: a call that differs from the
 # last one is different work, and only an identical call is a repeat. So an MCP
-# tool is counted twice over:
-#
-#   * identical call (same name, same arguments) — TOOL_CALL_RUN_LIMIT, exactly
-#     as any other tool. Asking the same question twice and expecting a new
-#     answer is the loop this throttle exists for.
-#   * same name, arguments moving — MCP_TOOL_RUN_LIMIT, a longer leash, because
-#     that is what working a server looks like. Still a backstop: an MCP loop
-#     that varies an argument each round would otherwise never be interrupted.
+# tool is counted on its arguments and not on its name — a long chain through
+# one server is ordinary and runs as far as it needs to, while the same call
+# sent twice over is held on the third exactly like any other tool. There's no
+# cap on the chain itself: nothing about a tenth different call is wrong, and a
+# chain that does go wrong is in front of the user, who has the Stop button.
 #
 # Everything else keeps the name-only count. `search` with a fresh query every
 # round is the runaway that put this here in the first place, so varied
@@ -780,7 +777,6 @@ def _clear_turn_prefix():
 # is: the recursion means a local wouldn't carry across tool hops.
 
 TOOL_CALL_RUN_LIMIT = 2
-MCP_TOOL_RUN_LIMIT = 6
 
 THROTTLE_NOTICE = (
     "'{name}' was NOT run. You have called it {limit} times in a row{same} without answering the "
@@ -790,7 +786,10 @@ THROTTLE_NOTICE = (
     "it really is the only option, you may call it again on the next step."
 )
 
-_SAME_ARGS_CLAUSE = " with the same arguments"
+# The two reasons a call is held, and the clause each puts in the notice.
+IDENTICAL_REPEAT = "identical_repeat"
+SAME_TOOL_RUN = "same_tool_run"
+_THROTTLE_CLAUSE = {IDENTICAL_REPEAT: " with the same arguments", SAME_TOOL_RUN: ""}
 
 
 def _reset_tool_run():
@@ -814,9 +813,9 @@ def _call_signature(args_dict):
 
 
 def _throttle_tool_call(name, args_dict=None):
-    """`{"limit": n, "identical": bool}` when this call should be held back
-    instead of run, else None. The returned figures are what the notice quotes
-    back, so the model is told which of the two counts it hit.
+    """Why this call should be held back instead of run — IDENTICAL_REPEAT or
+    SAME_TOOL_RUN — or None to let it through. The caller quotes the reason
+    back in the notice, so the model is told which count it hit.
 
     A different tool from the last one always runs and starts a fresh run, so
     varied work is never throttled. A held-back call resets both counts, so the
@@ -830,15 +829,14 @@ def _throttle_tool_call(name, args_dict=None):
         sess.consecutive_tool_calls = 1
         sess.identical_tool_calls = 1
         return None
-    # Same name as last time. For an MCP tool the arguments decide whether that
-    # is a repeat or the next step of the same job; for everything else the two
-    # counts are the same number, so the distinction costs nothing.
+    # Same name as last time — which for an MCP tool says nothing about whether
+    # the model is progressing, so only the arguments are counted there.
     identical = signature == sess.last_call_signature
-    run_limit = MCP_TOOL_RUN_LIMIT if name.startswith(_MCP_TOOL_PREFIX) else TOOL_CALL_RUN_LIMIT
     if identical and sess.identical_tool_calls >= TOOL_CALL_RUN_LIMIT:
-        held = {"limit": TOOL_CALL_RUN_LIMIT, "identical": True}
-    elif sess.consecutive_tool_calls >= run_limit:
-        held = {"limit": run_limit, "identical": False}
+        held = IDENTICAL_REPEAT
+    elif (not name.startswith(_MCP_TOOL_PREFIX)
+            and sess.consecutive_tool_calls >= TOOL_CALL_RUN_LIMIT):
+        held = SAME_TOOL_RUN
     else:
         held = None
     sess.last_call_signature = signature
@@ -3567,13 +3565,13 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 # shouldn't burn one of their answers either.
                 held = _throttle_tool_call(command_name, args_dict)
                 if held:
-                    same = _SAME_ARGS_CLAUSE if held["identical"] else ""
+                    same = _THROTTLE_CLAUSE[held]
                     result = THROTTLE_NOTICE.format(name=command_name,
-                                                    limit=held["limit"], same=same)
+                                                    limit=TOOL_CALL_RUN_LIMIT, same=same)
                     logger.info("Tool '%s' held back — called %d times in a row%s without answering",
-                                command_name, held["limit"], same)
+                                command_name, TOOL_CALL_RUN_LIMIT, same)
                     yield {"type": "tool_throttled", "name": command_name,
-                           "limit": held["limit"], "identical": held["identical"]}
+                           "limit": TOOL_CALL_RUN_LIMIT, "reason": held}
                 elif command_name == 'run_bash_command':
                     # The approval gate. Deliberately here rather than inside
                     # _run_tool: asking the user means emitting an event and
