@@ -990,16 +990,18 @@ def _create_completion(exclude=(), **kwargs):
     amount of waiting achieves."""
     global _last_provider
     failures = []
-    # The image-carrying variant is built only when there's an image to carry
-    # and only for the providers that could take one — a Responses provider
-    # can't (see _prepare_kwargs), and every other request is the same object
-    # it always was.
+    # The image-carrying variant is built only when there's an image to carry;
+    # every other request is the same object it always was. Both API shapes
+    # can send one — chat completions as image_url parts, Responses as
+    # input_image (src/responses_api.py: _content_parts) — so the variant is
+    # built for either, and a provider whose model has no vision falls back to
+    # the plain one through the retry below.
     has_images = any(m.get("images") for m in (kwargs.get("messages") or []))
     prepared = [
         (name, base_url, key,
          _prepare_kwargs(kwargs, model_override, extra_body, api),
          (_prepare_kwargs(kwargs, model_override, extra_body, api, images=True)
-          if has_images and api != "responses" else None),
+          if has_images else None),
          api)
         for name, base_url, key, model_override, extra_body, api in _active_providers()
         if key and key != "None" and name not in exclude
@@ -1055,16 +1057,22 @@ def _create_completion(exclude=(), **kwargs):
 
         call_kwargs = plain_kwargs
         applied = []
-        # The optional extras are chat-completions fields: stream_options, the
-        # cache_control breakpoints, and any image a tool returned. The
-        # Responses translation has its own shape for all three, so for those
-        # providers there's nothing to add here and nothing to retry without.
-        if api != "responses" and name not in _unsupported_extras:
+        if name not in _unsupported_extras:
+            # An image a tool returned goes to either API — the translation
+            # has its own shape for it — so this is applied whatever the
+            # provider speaks, and retried without on a refusal like any other
+            # extra. That retry is what covers a Responses model with no
+            # vision: it 400s, and the chain re-sends the text-note version.
             if image_kwargs is not None:
                 call_kwargs = image_kwargs
-            call_kwargs, applied = _apply_optional_extras(call_kwargs, call_kwargs.get("model"))
-            if image_kwargs is not None:
-                applied.insert(0, "images")
+                applied.append("images")
+            # stream_options and the cache_control breakpoints are
+            # chat-completions fields; build_request assembles the Responses
+            # equivalents itself, so there is nothing to add for those.
+            if api != "responses":
+                call_kwargs, extras = _apply_optional_extras(
+                    call_kwargs, call_kwargs.get("model"))
+                applied.extend(extras)
 
         # What actually went over the wire, for the size bookkeeping below: an
         # image is heavy enough that recording a refusal against the wrong

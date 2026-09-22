@@ -52,11 +52,12 @@ REASONING_SUMMARY = "auto"
 
 
 def _content_text(content):
-    """A message's content as plain text.
+    """A message's content as plain text, dropping anything that isn't.
 
-    The chain's messages are text-only: images go to the separate vision model
-    in agent.py, which describes them into text well before anything reaches
-    here. That's why dropping a non-text block is safe."""
+    Used where Responses takes a bare string and nothing else: an assistant
+    message being replayed, and a function_call_output. Neither can carry an
+    image in this API any more than it can in chat completions — see
+    _content_parts for the one place that can."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -68,6 +69,57 @@ def _content_text(content):
                 parts.append(block["text"])
         return "\n".join(parts)
     return ""
+
+
+def _image_url(block):
+    """The URL out of a chat-completions image block, or None.
+
+    The shape is `{"image_url": {"url": ...}}`, but a bare string is common
+    enough in hand-written content that it is worth accepting too."""
+    value = block.get("image_url")
+    if isinstance(value, dict):
+        url = value.get("url")
+    else:
+        url = value
+    return url if isinstance(url, str) and url else None
+
+
+def _content_parts(content):
+    """A user message's content in the shape Responses wants.
+
+    Returns a plain string when there is nothing but text, which is almost
+    always — the wire format then stays exactly what it was, and only a
+    request that really carries an image pays for the list form.
+
+    Chat completions names these blocks `text` and `image_url`; Responses
+    names the same things `input_text` and `input_image`, and takes the URL
+    unwrapped. Translating rather than dropping them is what lets a tool
+    hand this model a screenshot: an image cannot ride on a tool result in
+    either API, so agent.py follows the result with a user message carrying
+    the image, and this is the end of that path."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    parts, has_image = [], False
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                parts.append({"type": "input_text", "text": block})
+            continue
+        if not isinstance(block, dict):
+            continue
+        url = _image_url(block)
+        if url:
+            parts.append({"type": "input_image", "image_url": url})
+            has_image = True
+        elif block.get("text"):
+            parts.append({"type": "input_text", "text": block["text"]})
+
+    if not has_image:
+        return "\n".join(p["text"] for p in parts)
+    return parts
 
 
 def _tools_to_responses(tools):
@@ -131,12 +183,17 @@ def _messages_to_input(messages):
                 })
             continue
 
-        text = _content_text(m.get("content"))
-        if text:
-            items.append({
-                "role": "system" if role == "system" else "user",
-                "content": text,
-            })
+        # A system message is text by definition; a user message may be
+        # carrying an image a tool returned (see _content_parts).
+        if role == "system":
+            text = _content_text(m.get("content"))
+            if text:
+                items.append({"role": "system", "content": text})
+            continue
+
+        content = _content_parts(m.get("content"))
+        if content:
+            items.append({"role": "user", "content": content})
     return items
 
 
