@@ -267,6 +267,7 @@ def api_delete_user(name):
         return jsonify({'error': 'No such user'}), 404
     with _session_lock(name):
         shutil.rmtree(user_dir(name), ignore_errors=True)
+        _forget_browser(name)
         # Drop the in-memory conversation too, so a user recreated under the
         # same name starts clean instead of inheriting the deleted one's
         # messages from the registry.
@@ -276,6 +277,30 @@ def api_delete_user(name):
         if session.get('current_user') == name:
             session.pop('current_user', None)
     return jsonify({'ok': True})
+
+
+def _forget_browser(name):
+    """Everything browser-shaped a deleted user leaves behind.
+
+    Their saved logins live in browser-profiles/, outside the user directory,
+    so rmtree above doesn't reach them — and a user created later under the
+    same name would have been signed straight into whatever this one was.
+    Then the two places those logins are still live: an open sign-in browser,
+    closed unsaved so it can't write them back, and the agent's browser
+    child, which holds them in memory."""
+    try:
+        sess = browser_takeover.get(name)
+        if sess is not None and sess.alive():
+            sess.cancel()
+    except Exception:
+        logger.exception("Couldn't close the sign-in browser of deleted user %r", name)
+    try:
+        mcp_client.release_user_browser(name)
+    except Exception:
+        logger.exception("Couldn't stop the browser of deleted user %r", name)
+    path = browser_profiles.state_path(name)
+    if path:
+        shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
 
 @app.route('/api/users/<name>/context', methods=['GET', 'PUT'])

@@ -178,6 +178,7 @@ class TakeoverSession:
         self.start_url = url
         self.started_at = time.time()
         self.touched_at = time.time()
+        self._orphaned = False        # its profile was deleted under it
 
         self._commands = queue.Queue()
         self._frame = None            # latest JPEG bytes
@@ -279,6 +280,9 @@ class TakeoverSession:
 
         headful, note = ensure_display()
         self.note = note
+        # The profile directory exists from here on, so _save can tell "not
+        # created yet" from "deleted while this browser was open".
+        profiles.ensure_dir(self.user)
 
         playwright = browser = context = None
         try:
@@ -369,6 +373,8 @@ class TakeoverSession:
         # 0 once it has. Starts armed so a page that never paints still shows.
         nudge_at = time.time()
         while True:
+            if self._orphaned:
+                return
             now = time.time()
             if now - self.touched_at > IDLE_TIMEOUT:
                 logger.info("Browser for %r idle; saving and closing", self.user)
@@ -678,7 +684,19 @@ class TakeoverSession:
 
     def _save(self, context, close):
         """Write storage_state out. `close` decides whether this was the end of
-        the session or just a checkpoint in the middle of it."""
+        the session or just a checkpoint in the middle of it.
+
+        Never into a profile directory that has gone: that is the user having
+        been deleted while this browser was open, and writing now would hand
+        these logins to whoever is created under that name next. The session
+        ends instead, unsaved."""
+        state = profiles.state_path(self.user)
+        if state and not os.path.isdir(os.path.dirname(state)):
+            logger.warning("User %r was deleted; closing their sign-in browser unsaved",
+                           self.user)
+            self._orphaned = True
+            self.status = "closed"
+            return
         was = self.status
         self.status = "saving"
         path = profiles.ensure_dir(self.user)
