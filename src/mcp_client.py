@@ -1070,6 +1070,34 @@ def clear_cache():
     shutdown_stdio_servers()
 
 
+def release_user_browser(user):
+    """Stop the browser child running with `user`'s logins, and nobody else's.
+
+    For a deleted user: their saved logins are gone from disk, and the child
+    still holding them in memory must not outlive them. Matched on the one
+    environment value that is this user's own — the storage_state path
+    `for_user` gave it — so every other user's browser keeps running."""
+    import src.browser_profiles as browser_profiles
+
+    path = browser_profiles.state_path(user)
+    if not path:
+        return
+
+    def mine(sig):
+        return sig[0] == STDIO and ("FC_BROWSER_STORAGE_STATE", path) in sig[2]
+
+    for cache in (_tool_cache, _session_cache):
+        for sig in [k for k in cache if mine(k)]:
+            cache.pop(sig, None)
+    with _stdio_registry_lock:
+        procs = [_stdio_procs.pop(sig) for sig in [k for k in _stdio_procs if mine(k)]]
+    for proc in procs:
+        try:
+            proc.shutdown()
+        except Exception:
+            logger.exception("Couldn't shut down stdio MCP process %r", proc.command)
+
+
 def release(server):
     """Drop everything cached for one server: its tool list, its HTTP session,
     and — for stdio — every child process running its command.
