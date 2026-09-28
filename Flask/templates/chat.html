@@ -710,6 +710,20 @@
     .approval.settled { border-color: var(--border); border-left-color: var(--muted); }
     .approval.settled .approval-head { color: var(--muted); }
 
+    /* ── Sign-in request ──
+       The agent hit a login and handed it to the user (request_sign_in).
+       Built on the approval card, but in the accent rather than the warning
+       colour: it's an invitation, and nothing is blocked waiting on it. */
+    .signin { border-color: rgba(200,240,74,0.35); border-left-color: var(--accent); background: #13150f; }
+    .signin .approval-head { color: var(--accent); }
+    .signin-host { font-family: var(--mono); font-size: 13px; color: var(--text); margin-bottom: 10px; word-break: break-all; }
+    .signin a.approval-btn { text-decoration: none; display: inline-block; }
+    .signin .approval-btn.primary { background: var(--accent); border-color: var(--accent); color: #10100c; }
+    .signin .approval-btn.primary:hover { background: var(--accent-dim); color: #10100c; }
+    .signin.saved .approval-head::after { content: ' · saved ✓'; }
+    .signin.past { border-color: var(--border); border-left-color: var(--muted); background: transparent; }
+    .signin.past .approval-head { color: var(--muted); }
+
     /* ── files side panel ──
        Everything in this user's files folder — the agent's memory and
        schedule at the top, then whatever it wrote or was given. Opened from
@@ -1429,7 +1443,11 @@
       }
     }
 
-    for (const msg of conversation) {
+    // A sign-in card is still live only if the user hasn't spoken since.
+    let lastUserIdx = -1;
+    conversation.forEach((m, i) => { if (m.role === 'user') lastUserIdx = i; });
+
+    for (const [i, msg] of conversation.entries()) {
       // Skip system messages and tool result messages (rendered inline)
       if (msg.role === 'system' || msg.role === 'tool') continue;
 
@@ -1451,6 +1469,11 @@
             const result = toolResults[tc.id];
             const resultText = result ? result.content : '(no result)';
             const isError = resultText && resultText.toLowerCase().startsWith('error');
+            if (fn.name === 'request_sign_in' && !isError) {
+              let target = '';
+              try { target = (JSON.parse(fn.arguments || '{}') || {}).url || ''; } catch { /* malformed */ }
+              if (target && addSignInCard(String(target), i > lastUserIdx)) continue;
+            }
             addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError);
           }
         }
@@ -1491,6 +1514,89 @@
     // have inserted into the label when window.open() was blocked.
     if (label && !label.querySelector('a')) label.textContent = `ran tool: ${name}`;
   }
+
+  // ── Sign-in request card ─────────────────────────────────
+  // What a request_sign_in call draws instead of a tool pill, live and on
+  // re-render alike — the saved tool call is the only record of it. `pending`
+  // means nothing has been said since, so the agent is still waiting on the
+  // user and the card offers to carry on; an older one is only a record.
+  // Returns null for anything that isn't a web address, and the caller falls
+  // back to the ordinary tool block.
+  function addSignInCard(rawUrl, pending) {
+    let url, host;
+    try {
+      const u = new URL(rawUrl.includes('://') ? rawUrl : 'https://' + rawUrl);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+      url = u.href;
+      host = u.hostname;
+    } catch { return null; }
+    removeEmpty();
+
+    const wrap = document.createElement('div');
+    wrap.className = 'tool-group approval signin' + (pending ? '' : ' past');
+
+    const head = document.createElement('div');
+    head.className = 'approval-head';
+    head.textContent = 'sign-in needed';
+
+    const hostEl = document.createElement('div');
+    hostEl.className = 'signin-host';
+    hostEl.textContent = host;     // textContent: the model chose this address
+
+    const actions = document.createElement('div');
+    actions.className = 'approval-actions';
+
+    // A real link, opened by a real click, so no popup blocker gets a say —
+    // and a new tab, because leaving this page would hang up a turn that may
+    // still be streaming its last sentence.
+    const q = new URLSearchParams({ url: url, from: 'chat' });
+    if (currentUser) q.set('user', currentUser);
+    const open = document.createElement('a');
+    open.className = 'approval-btn primary';
+    open.href = '/browser?' + q.toString();
+    open.target = '_blank';
+    open.rel = 'noopener';
+    open.textContent = 'Sign in ↗';
+    actions.appendChild(open);
+
+    if (pending) {
+      const done = document.createElement('button');
+      done.className = 'approval-btn signin-continue';
+      done.textContent = "I'm signed in — continue";
+      done.addEventListener('click', () => {
+        inputEl.value = `I've signed in to ${host} — carry on.`;
+        // Mid-turn the send button is disabled; the text waits in the box.
+        if (!sendBtn.disabled) sendMessage();
+        else inputEl.focus();
+      });
+      actions.appendChild(done);
+    }
+
+    const note = document.createElement('div');
+    note.className = 'approval-note';
+    note.textContent = 'Opens a browser on the FreeClaw machine. Whatever you sign into there, '
+      + 'the agent can use until you clear it on that page.';
+
+    wrap.append(head, hostEl, actions, note);
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return wrap;
+  }
+
+  // The browser page announces each save. Flip any card still waiting so the
+  // next step — telling the agent — is the obvious button.
+  try {
+    new BroadcastChannel('freeclaw-browser').onmessage = (e) => {
+      const d = e.data || {};
+      if (d.type !== 'saved' || (currentUser && d.user !== currentUser)) return;
+      document.querySelectorAll('.signin:not(.past)').forEach((card) => {
+        card.classList.add('saved');
+        const open = card.querySelector('a.approval-btn');
+        const cont = card.querySelector('.signin-continue');
+        if (open && cont) { open.classList.remove('primary'); cont.classList.add('primary'); }
+      });
+    };
+  } catch (e) { /* no BroadcastChannel: the continue button works regardless */ }
 
   // ── Bash approval prompt ─────────────────────────────────
   // The agent's turn is blocked server-side while this is on screen, so it
@@ -1831,6 +1937,14 @@
             // browsers treat window.open() here as an untrusted popup
             // and silently block it. Fall back to a clickable link the
             // user can open themselves with a real click.
+            // Drawn now rather than at the end of the turn so the button is
+            // there while the model is still writing its sentence about it.
+            // The re-render on 'done' replaces it with the saved-history copy.
+            if (evt.name === 'request_sign_in') {
+              const target = evt.arguments && evt.arguments.url;
+              if (target) addSignInCard(String(target), true);
+            }
+
             if (evt.name === 'open_url') {
               const target = evt.arguments && evt.arguments.url;
               if (target) {

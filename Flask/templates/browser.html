@@ -39,6 +39,8 @@
       cursor: pointer; text-decoration: none; transition: all 0.15s; white-space: nowrap;
     }
     .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+    /* Saved, and the agent is waiting in the chat this came from. */
+    .nav-btn.ready { border-color: var(--accent); color: var(--accent); }
 
     /* ── browser chrome ── */
     .chrome {
@@ -125,7 +127,7 @@
       <div class="sub">{% if user %}{{ user }}{% else %}no user selected{% endif %}</div>
     </div>
     <div class="spacer"></div>
-    {% if user %}<a class="nav-btn" href="/chat?name={{ user }}">Chat</a>{% endif %}
+    {% if user %}<a class="nav-btn" id="chat-link" href="/chat?name={{ user }}">Chat</a>{% endif %}
     <a class="nav-btn" href="/settings">Settings</a>
     <a class="nav-btn" href="/">Home</a>
   </header>
@@ -208,6 +210,27 @@
   let lastUrl = '';             // last page the server reported being on
   let lastNavError = '';        // so one failure is reported once, not every poll
   let navErrorShown = false;    // is `msg` currently a failed load, and ours to clear
+
+  // Arrived from the agent's "sign in" button in the chat: ?url= is where the
+  // agent hit a login, ?from=chat means a chat tab is waiting on the result.
+  const params = new URLSearchParams(location.search);
+  const ASK_URL = (params.get('url') || '').trim();
+  const FROM_CHAT = params.get('from') === 'chat';
+  // Tells the chat tab a login was saved, so its card can say so without the
+  // user having to come back and report it. Absent on very old browsers; the
+  // card's own "continue" button still works without it.
+  let channel = null;
+  try { channel = new BroadcastChannel('freeclaw-browser'); } catch (e) { /* unsupported */ }
+
+  function announceSaved(domains) {
+    if (channel) {
+      try { channel.postMessage({ type: 'saved', user: USER, domains: domains }); } catch (e) { /* best effort */ }
+    }
+    if (FROM_CHAT) {
+      el('chat-link').textContent = 'Back to chat →';
+      el('chat-link').classList.add('ready');
+    }
+  }
 
   function say(text, kind) {
     msg.textContent = text || '';
@@ -398,6 +421,7 @@
       // gives that its own 30s, so the client must not give up first.
       const info = await api('save', { method: 'POST' }, 40000);
       renderDomains(info.saved_domains || []);
+      announceSaved(info.saved_domains || []);
       say('Saved — the agent can use these now.', 'ok');
     } catch (e) { say(e.message, 'err'); }
   });
@@ -407,8 +431,10 @@
     try {
       const info = await api('finish', { method: 'POST' }, 40000);
       setRunning(false);
-      showOverlay('Browser closed. Type an address to open it again.', false);
+      showOverlay(FROM_CHAT ? 'Saved. Head back to the chat — the agent is signed in now.'
+                            : 'Browser closed. Type an address to open it again.', false);
       renderDomains(info.saved_domains || []);
+      announceSaved(info.saved_domains || []);
       say('Saved and closed.', 'ok');
     } catch (e) { say(e.message, 'err'); }
   });
@@ -491,6 +517,43 @@
     setTimeout(poll, 2000);
   }
   poll();
+
+  // The chat button opened this in a tab of its own, and the chat is still
+  // open in the one behind it — so going back means closing this one, not
+  // loading a second copy of the chat. window.close() is refused for a tab
+  // the page didn't open by script on some browsers; fall back to navigating.
+  if (FROM_CHAT) {
+    el('chat-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      const href = el('chat-link').href;
+      window.close();
+      setTimeout(() => { location.href = href; }, 250);
+    });
+  }
+
+  // Opens the address the agent asked about — steering the browser that's
+  // already open if there is one, rather than tearing it down, so a user
+  // mid-way through another sign-in doesn't lose it.
+  async function openRequested() {
+    if (!ASK_URL) return;
+    // Consumed once: a reload of this page shouldn't yank the browser back to
+    // the login page after the user has moved on from it.
+    params.delete('url');
+    history.replaceState(null, '', location.pathname + '?' + params.toString());
+    let host = ASK_URL;
+    try { host = new URL(ASK_URL.includes('://') ? ASK_URL : 'https://' + ASK_URL).hostname; } catch (e) { /* show it raw */ }
+    el('note').textContent = 'The agent needs you to sign in to ' + host + '. Sign in below, then press '
+      + 'Save & close — ' + USER + '\'s agent picks it up from there.';
+    el('note').classList.remove('hidden');
+    el('addr').value = ASK_URL;
+    addrDirty = true;
+    try {
+      const info = await api('status');
+      if (info.running && !running) setRunning(true);
+    } catch (e) { /* go() reports anything that matters */ }
+    go();
+  }
+  openRequested();
 })();
 </script>
 </body>

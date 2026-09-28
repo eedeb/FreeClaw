@@ -801,10 +801,12 @@ def browser_page():
     name = _requested_user()
     # No user named: send them to the one whose chat is open rather than making
     # them pick again, and fall back to a picker when there isn't one.
+    # The rest of the query rides along: a sign-in button from the chat carries
+    # the address to open (?url=…) and where to go back to (?from=chat).
     if not name:
         fallback = current_user()
         if fallback:
-            return redirect(url_for('browser_page', user=fallback))
+            return redirect(url_for('browser_page', **{**request.args.to_dict(), 'user': fallback}))
     valid = bool(name) and user_exists(name)
     return render_template(
         'browser.html',

@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 import models.run_model as Classy
 import httpx
@@ -2103,6 +2104,53 @@ def build_utility_tools():
     ]
 
 
+# The agent's browser starts signed out, and a login form is the one thing it
+# must never fill in itself. This hands that step to the user: the chat renders
+# the call as a button onto /browser at this address, and whatever they save
+# there reaches the agent's browser on its next call (Flask/main.py drops the
+# cached MCP child on save). Offered only alongside a working browser server —
+# see _build_catalogue.
+SIGN_IN_TOOL_NAME = "request_sign_in"
+
+
+def build_sign_in_tools():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": SIGN_IN_TOOL_NAME,
+                "description": (
+                    "Shows the user a button to sign in to a site in their FreeClaw browser, "
+                    "for a page you need that's behind a login. Never fill in a login yourself. "
+                    "End your turn after calling it."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": { "url": { "type": "string" } },
+                    "required": ["url"]
+                }
+            }
+        }
+    ]
+
+
+def _sign_in_url(raw):
+    """(url, host) for a sign-in request, or (None, None) if it isn't a web
+    address. Same normalising as the /browser routes, so the button opens
+    exactly what they would accept."""
+    url = (raw or "").strip()
+    if url and "://" not in url:
+        url = "https://" + url
+    if not url.lower().startswith(("http://", "https://")):
+        return None, None
+    try:
+        parsed = urlparse(url)
+        parsed.port             # raises on "https://javascript:alert(1)" and kin
+    except ValueError:
+        return None, None
+    return (url, parsed.hostname) if parsed.hostname else (None, None)
+
+
 # ── sub-agents ───────────────────────────────────────────────
 #
 # A sub-agent is a second conversation, run to completion inside one tool call
@@ -2335,6 +2383,11 @@ PROVISIONAL_CATALOGUE_TTL = 30.0
 def _build_catalogue(user):
     """One user's tool list and MCP registry, built from scratch."""
     mcp_tools, registry, complete = load_mcp_tools(user)
+    # Filed with the MCP tools although it's built in: it's only any use next
+    # to the browser, and this way it rides in exactly the trimmed modes that
+    # keep the browser, and is absent whenever the browser is.
+    if any(e["server"].get("needs_browser") for e in registry.values()):
+        mcp_tools = mcp_tools + build_sign_in_tools()
     return {
         "tools": (build_file_tools() + build_context_tools() + build_search_tools()
                   + build_utility_tools() + build_time_tools() + mcp_tools),
@@ -2858,6 +2911,16 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 
     if command_name == SUBAGENT_TOOL_NAME:
         return _run_subagent(args_dict.get('task'))
+
+    if command_name == SIGN_IN_TOOL_NAME:
+        # Nothing to do server-side: the chat turns this call into the button.
+        # The result tells the model to stop, because nothing it does before
+        # the user comes back can reach the site.
+        url, host = _sign_in_url(args_dict.get('url'))
+        if not url:
+            return "Error: url must be an http:// or https:// web address."
+        return (f"The user now has a button to sign in at {host}. End your turn: tell them to "
+                f"press it and say when they're done. Your browser is signed in once they save.")
 
     registry = registry_for(_tools_user())
     if command_name in registry:
