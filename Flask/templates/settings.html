@@ -8,6 +8,11 @@
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <script>
+    // Opened as a window on the chat desktop: the desktop is the navigation
+    // there, so this page drops its own header.
+    if (window.self !== window.top) document.documentElement.classList.add('embedded');
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -201,6 +206,9 @@
       padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
     }
     .modal input:focus { outline: none; border-color: var(--accent-dim); }
+    html.embedded { color-scheme: dark; }
+    html.embedded header { display: none; }
+    html.embedded .wrap { padding-top: 14px; }
   </style>
 </head>
 <body>
@@ -1159,6 +1167,27 @@
 
   // Initial load
   loadProviders().then(loadVisionModel); loadMcp(); loadBashApprovals(); loadEnv(); loadUpdate();
+</script>
+<script>
+  // Inside a desktop window: raise the window on any press, and hand links to
+  // the other apps (or away from the desktop) back to the page around us
+  // instead of loading them into this frame.
+  if (window.self !== window.top) {
+    const desk = window.parent;
+    document.addEventListener('pointerdown', () => {
+      desk.postMessage({ type: 'freeclaw-focus' }, location.origin);
+    }, true);
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (!a || e.defaultPrevented || a.target === '_blank') return;
+      const u = new URL(a.href, location.href);
+      if (u.origin !== location.origin || u.pathname === location.pathname) return;
+      const app = { '/browser': 'browser', '/settings': 'settings' }[u.pathname];
+      e.preventDefault();
+      if (app) desk.postMessage({ type: 'freeclaw-open', app: app }, location.origin);
+      else window.top.location.href = u.href;
+    });
+  }
 </script>
 </body>
 </html>

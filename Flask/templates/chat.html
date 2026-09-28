@@ -42,6 +42,7 @@
 
     html, body {
       height: 100%;
+      color-scheme: dark;
       background: var(--bg);
       color: var(--text);
       font-family: var(--sans);
@@ -64,38 +65,83 @@
       z-index: 0;
     }
 
-    /* ── Full-screen app shell ── */
-    #app {
+    /* ── Desktop shell ──
+       The page is a desktop: a menu bar along the top, app icons scattered
+       over the wallpaper, the chat thread in a centre column that grows up
+       from the composer at the bottom, and apps opening in windows above it
+       all. Stacking, bottom to top: wallpaper, icons, chat, windows, menu bar. */
+    :root {
+      --topbar-h: calc(38px + env(safe-area-inset-top));
+      /* Where the chat column starts. Pushed down by the script when the
+         icons have nowhere else to go and line up under the menu bar. */
+      --chat-top: var(--topbar-h);
+      --chat-w: min(820px, calc(100vw - 24px));
+      --icon-w: 86px;
+    }
+
+    #desktop {
       position: fixed;
       inset: 0;
       z-index: 1;
-      display: flex;
-      flex-direction: column;
-      padding-top: env(safe-area-inset-top);
-      /* No bottom padding here — handled in #input-area only */
       padding-left: env(safe-area-inset-left);
       padding-right: env(safe-area-inset-right);
-      max-width: 860px;
-      margin: 0 auto;
     }
 
-    /* ── Header ── */
-    header {
+    /* Wallpaper mark — stands in for the old empty-state placeholder, and
+       the thread rises up over it once there is one. */
+    #wallpaper {
+      position: absolute;
+      left: 50%;
+      top: 42%;
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      text-align: center;
+      pointer-events: none;
+      transition: opacity 0.45s ease, transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+      z-index: 0;
+    }
+    #wallpaper .eagle-wrap {
+      width: 84px; height: 84px;
+      border-radius: 20px;
+      overflow: hidden;
+      opacity: 0.18;
+      border: 1px solid rgba(200,240,74,0.15);
+    }
+    #wallpaper .eagle-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    #wallpaper .empty-name {
+      font-size: 15px; font-weight: 700; letter-spacing: 0.2em;
+      text-transform: uppercase; color: var(--muted); opacity: 0.45;
+    }
+    #wallpaper .empty-sub {
+      font-family: var(--mono); font-size: 11px; color: var(--muted);
+      line-height: 1.9; opacity: 0.4;
+    }
+    body.thread #wallpaper { opacity: 0; transform: translate(-50%, -62%); }
+
+    /* ── Menu bar ── */
+    #topbar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: var(--topbar-h);
+      padding: env(safe-area-inset-top) calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left));
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 12px 16px 11px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-      background: rgba(13,13,15,0.97);
+      background: rgba(13,13,15,0.82);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
-      min-height: 52px;
+      border-bottom: 1px solid var(--border);
+      z-index: 5000;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     .header-icon {
-      width: 30px; height: 30px;
-      border-radius: 7px;
+      width: 22px; height: 22px;
+      border-radius: 6px;
       overflow: hidden;
       flex-shrink: 0;
       border: 1px solid rgba(200,240,74,0.2);
@@ -117,13 +163,14 @@
 
     .header-title {
       display: flex;
-      flex-direction: column;
-      gap: 1px;
+      align-items: baseline;
+      gap: 9px;
       min-width: 0; /* allow text to truncate */
+      flex-shrink: 1;
     }
     .header-title h1 {
       font-family: var(--sans);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       letter-spacing: 0.12em;
       text-transform: uppercase;
@@ -133,21 +180,62 @@
     }
     .header-tagline {
       font-family: var(--mono);
-      font-size: 9px;
+      font-size: 10px;
       color: var(--muted);
       letter-spacing: 0.03em;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      max-width: 260px;
     }
+    @media (max-width: 560px) { .header-tagline { display: none; } }
+
+    /* Open windows, like a taskbar folded into the menu bar. */
+    #tasks {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      justify-content: center;
+      gap: 4px;
+      overflow: hidden;
+    }
+    .task {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 150px;
+      background: none;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.04em;
+      padding: 4px 9px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+    .task svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .task:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+    .task.active { color: var(--accent); border-color: rgba(200,240,74,0.25); background: rgba(200,240,74,0.06); }
+    .task.minimized { opacity: 0.55; }
+    @media (max-width: 560px) { .task span { display: none; } }
 
     .header-right {
-      margin-left: auto;
       display: flex;
       align-items: center;
       gap: 10px;
       flex-shrink: 0;
     }
+    #clock {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--text);
+      opacity: 0.75;
+      white-space: nowrap;
+    }
+    @media (max-width: 420px) { #clock { display: none; } }
 
     #token-count {
       font-family: var(--mono);
@@ -167,10 +255,10 @@
       border-radius: var(--radius);
       color: var(--muted);
       font-family: var(--mono);
-      font-size: 10px;
+      font-size: 9.5px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      padding: 7px 11px;
+      padding: 4px 9px;
       cursor: pointer;
       transition: border-color 0.15s, color 0.15s;
       -webkit-user-select: none;
@@ -178,41 +266,118 @@
       white-space: nowrap;
       flex-shrink: 0;
     }
+    #reset-btn:hover { border-color: rgba(192,57,57,0.5); color: #e05555; }
     #reset-btn:active { border-color: rgba(192,57,57,0.5); color: #e05555; transform: scale(0.96); }
 
-    #home-btn, #settings-btn, #browser-btn, #context-btn {
+    /* ── Desktop icons ──
+       Absolutely placed and moved with transform, so being shoved out of the
+       thread's way (or dragged somewhere new) animates for free. */
+    #icons {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+    }
+    .app-icon {
+      position: absolute;
+      left: 0; top: 0;
+      width: var(--icon-w);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 4px 6px;
       background: none;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
-      font-size: 13px;
-      padding: 6px 10px;
-      cursor: pointer;
-      transition: border-color 0.15s, color 0.15s;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      color: var(--text);
+      cursor: default;
+      pointer-events: auto;
+      touch-action: none;
       -webkit-user-select: none;
       user-select: none;
-      flex-shrink: 0;
-      text-decoration: none;
-      line-height: 1;
-      display: inline-flex;
-      align-items: center;
+      transition: transform 0.55s cubic-bezier(0.2, 0.85, 0.25, 1), opacity 0.3s ease,
+                  background 0.15s, border-color 0.15s;
+      will-change: transform;
     }
-    #home-btn:active, #settings-btn:active, #browser-btn:active, #context-btn:active { border-color: var(--accent-dim); color: var(--accent); transform: scale(0.96); }
-    #settings-btn:hover, #browser-btn:hover, #context-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+    .app-icon[hidden] { display: none; }
+    .app-icon:focus-visible { outline: none; border-color: rgba(200,240,74,0.4); }
+    .app-icon.dragging { transition: none; z-index: 5; opacity: 0.85; }
+    .app-icon.selected { background: rgba(200,240,74,0.07); border-color: rgba(200,240,74,0.22); }
+    .app-tile {
+      width: 54px; height: 54px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(160deg, var(--tile-a, #1d1d22), var(--tile-b, #121215));
+      border: 1px solid rgba(255,255,255,0.07);
+      box-shadow: 0 8px 22px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
+      color: var(--accent);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .app-tile svg { width: 26px; height: 26px; }
+    .app-icon:hover .app-tile { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08); }
+    .app-icon:active .app-tile { transform: scale(0.94); }
+    .app-label {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.04em;
+      padding: 1px 6px;
+      border-radius: 4px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+      white-space: nowrap;
+    }
+    .app-icon.selected .app-label { background: rgba(200,240,74,0.85); color: #10100c; text-shadow: none; }
+    /* Lined up under the menu bar on screens too narrow to step aside. */
+    .app-icon.compact { gap: 4px; padding: 4px 2px; }
+    .app-icon.compact .app-tile { width: 38px; height: 38px; border-radius: 11px; }
+    .app-icon.compact .app-tile svg { width: 19px; height: 19px; }
+    .app-icon.compact .app-label { font-size: 9px; }
+
+    #icon-browser  { --tile-a: #1a2531; --tile-b: #10151c; }
+    #icon-files    { --tile-a: #2a2516; --tile-b: #17140c; }
+    #icon-settings { --tile-a: #22222b; --tile-b: #131318; }
+    #icon-home     { --tile-a: #1d2512; --tile-b: #11150a; }
+
+    /* ── Chat column ──
+       Spans the whole height but only its thread and composer take clicks,
+       so icons beside or above a short thread stay usable. The thread is
+       bottom-anchored: it starts just above the composer and climbs. */
+    #chat {
+      position: absolute;
+      left: 50%;
+      width: var(--chat-w);
+      top: var(--chat-top);
+      bottom: 0;
+      transform: translateX(-50%);
+      z-index: 3;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      pointer-events: none;
+      transition: top 0.45s cubic-bezier(0.2, 0.85, 0.25, 1);
+    }
 
     /* ── Messages ── */
     #messages {
-      flex: 1;
+      flex: 0 1 auto;
+      min-height: 0;
+      pointer-events: auto;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: 18px 16px;
+      padding: 18px 6px 12px;
       display: flex;
       flex-direction: column;
       gap: 2px;
       scroll-behavior: smooth;
       -webkit-overflow-scrolling: touch;
       overscroll-behavior: contain;
+      /* Older messages fade out as they pass under the menu bar / icons. */
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px);
+      mask-image: linear-gradient(to bottom, transparent 0, #000 22px);
     }
+    body:not(.thread) #messages { padding: 0; }
 
     #messages::-webkit-scrollbar { width: 3px; }
     #messages::-webkit-scrollbar-track { background: transparent; }
@@ -301,53 +466,24 @@
       40% { opacity: 1; transform: scale(1); }
     }
 
-    /* Empty state */
-    #empty-state {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 14px;
-      pointer-events: none;
-      text-align: center;
-      padding: 0 32px;
-    }
-    #empty-state .eagle-wrap {
-      width: 68px; height: 68px;
-      border-radius: 16px;
-      overflow: hidden;
-      opacity: 0.2;
-      border: 1px solid rgba(200,240,74,0.15);
-    }
-    #empty-state .eagle-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    #empty-state .empty-name {
-      font-family: var(--sans);
-      font-size: 14px;
-      font-weight: 700;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--muted);
-      opacity: 0.45;
-    }
-    #empty-state .empty-sub {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-      line-height: 1.9;
-      opacity: 0.4;
-    }
+    /* Empty state — still how the script marks an empty thread, but the
+       wallpaper draws the placeholder now, so it takes no room here. */
+    #empty-state { display: none; }
 
-    /* ── Input area ── */
+    /* ── Input area ── a floating composer, docked at the bottom. */
     #input-area {
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
-      padding: 12px 16px 10px;
-      border-top: 1px solid var(--border);
-      background: rgba(13,13,15,0.97);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
+      pointer-events: auto;
+      margin-bottom: calc(12px + env(safe-area-inset-bottom));
+      padding: 9px;
+      border: 1px solid #2a2a31;
+      border-radius: 14px;
+      background: rgba(20,20,23,0.86);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 14px 44px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
     }
 
     #input-row {
@@ -724,45 +860,169 @@
     .signin.past { border-color: var(--border); border-left-color: var(--muted); background: transparent; }
     .signin.past .approval-head { color: var(--muted); }
 
-    /* ── files side panel ──
-       Everything in this user's files folder — the agent's memory and
-       schedule at the top, then whatever it wrote or was given. Opened from
-       the header: a list, and one file at a time viewed or edited in place.
-       Lives outside #app (which is capped at 860px and centred) so it can sit
-       flush against the right edge of the window at any width. */
-    #context-backdrop {
+    /* ── Windows ──
+       Apps open in these: dragged by the title bar, resized from the corner,
+       brought to the front on any press. On a phone there's no room to
+       arrange anything, so every window simply fills the screen. */
+    #windows {
       position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.55);
-      opacity: 0;
+      left: 0; right: 0; bottom: 0;
+      top: var(--topbar-h);
+      z-index: 10;
       pointer-events: none;
-      transition: opacity 0.2s ease;
-      z-index: 60;
     }
-    #context-backdrop.open { opacity: 1; pointer-events: auto; }
-
-    #context-panel {
-      position: fixed;
-      top: 0; right: 0; bottom: 0;
-      width: min(460px, 100%);
-      background: var(--surface);
-      border-left: 1px solid var(--border);
+    .win {
+      position: absolute;
       display: flex;
       flex-direction: column;
-      transform: translateX(100%);
-      transition: transform 0.22s ease;
-      z-index: 61;
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-      padding-right: env(safe-area-inset-right);
+      min-width: 300px;
+      min-height: 200px;
+      background: var(--surface);
+      border: 1px solid #26262d;
+      border-radius: 11px;
+      overflow: hidden;
+      pointer-events: auto;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,0,0,0.35);
+      transition: box-shadow 0.2s, border-color 0.2s;
     }
-    #context-panel.open { transform: translateX(0); }
+    .win[hidden], .win.minimized { display: none; }
+    .win.focused {
+      border-color: #33333c;
+      box-shadow: 0 28px 70px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,0,0,0.35), 0 0 0 1px rgba(200,240,74,0.05) inset;
+    }
+    .win.opening { animation: winIn 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.1); }
+    .win.closing { animation: winOut 0.14s ease-in forwards; pointer-events: none; }
+    @keyframes winIn  { from { opacity: 0; transform: scale(0.94) translateY(10px); } to { opacity: 1; transform: none; } }
+    @keyframes winOut { to   { opacity: 0; transform: scale(0.96) translateY(6px); } }
+
+    .win.max {
+      left: 0 !important; top: 0 !important;
+      width: 100% !important; height: 100% !important;
+      border-radius: 0;
+      border-width: 1px 0 0;
+    }
+    @media (max-width: 719px) {
+      .win {
+        left: 0 !important; top: 0 !important;
+        width: 100% !important; height: 100% !important;
+        min-width: 0;
+        border-radius: 0;
+        border-width: 1px 0 0;
+      }
+      .win-resize, .wl.max { display: none; }
+    }
+
+    .win-bar {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 36px;
+      padding: 0 12px;
+      flex-shrink: 0;
+      background: linear-gradient(#1c1c21, #16161a);
+      border-bottom: 1px solid var(--border);
+      cursor: grab;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .win.max .win-bar { cursor: default; }
+    body.wm-drag, body.wm-drag * { cursor: grabbing !important; }
+    body.wm-resize, body.wm-resize * { cursor: nwse-resize !important; }
+    /* An iframe under the pointer would swallow the move events mid-drag. */
+    body.wm-drag iframe, body.wm-resize iframe { pointer-events: none; }
+    body.wm-drag, body.wm-resize { -webkit-user-select: none; user-select: none; }
+
+    .win-lights { display: flex; gap: 7px; position: relative; z-index: 1; }
+    .wl {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      border: none;
+      padding: 0;
+      background: #34343c;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(0,0,0,0.6);
+      font-size: 9px;
+      line-height: 1;
+      transition: background 0.15s;
+    }
+    .wl::after { content: attr(data-glyph); opacity: 0; font-weight: 700; }
+    .win-lights:hover .wl::after { opacity: 1; }
+    .win.focused .wl.close, .win-lights:hover .wl.close { background: #e05555; }
+    .win.focused .wl.min,   .win-lights:hover .wl.min   { background: #e0b43c; }
+    .win.focused .wl.max,   .win-lights:hover .wl.max   { background: var(--accent-dim); }
+    .win-title {
+      position: absolute;
+      left: 80px; right: 80px;
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    .win-title svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .win.focused .win-title { color: var(--text); }
+    .win.focused .win-title svg { color: var(--accent); }
+
+    .win-body {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+    }
+    .win-body iframe {
+      flex: 1;
+      width: 100%;
+      border: 0;
+      display: block;
+      background: var(--bg);
+    }
+    .win-resize {
+      position: absolute;
+      right: 0; bottom: 0;
+      width: 18px; height: 18px;
+      cursor: nwse-resize;
+      touch-action: none;
+      z-index: 2;
+      background:
+        linear-gradient(135deg, transparent 0 55%, var(--muted) 55% 61%, transparent 61% 72%, var(--muted) 72% 78%, transparent 78%);
+      opacity: 0.45;
+    }
+    .win-resize:hover { opacity: 0.9; }
+    .win.max .win-resize { display: none; }
+
+    /* ── Files window ──
+       Everything in this user's files folder — the agent's memory and
+       schedule at the top, then whatever it wrote or was given. A list, and
+       one file at a time viewed or edited in place. */
+    #context-panel {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
 
     .ctx-head {
       display: flex;
       align-items: baseline;
       gap: 9px;
-      padding: 14px 16px 12px;
+      padding: 11px 16px 10px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
@@ -781,21 +1041,6 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    #ctx-close {
-      margin-left: auto;
-      background: none;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1;
-      padding: 6px 9px;
-      cursor: pointer;
-      flex-shrink: 0;
-      transition: border-color 0.15s, color 0.15s;
-    }
-    #ctx-close:hover { border-color: var(--accent-dim); color: var(--accent); }
-
     #ctx-text {
       flex: 1;
       width: 100%;
@@ -943,6 +1188,13 @@
     #ctx-delete:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
     #ctx-delete:disabled { opacity: 0.35; cursor: default; }
 
+    /* Softer corners inside the floating composer. */
+    #user-input, #send-btn, #stop-btn, #upload-btn, #file-preview { border-radius: 9px; }
+    #user-input { background: rgba(13,13,15,0.7); }
+
+    /* Leaving for the user picker. */
+    body.leaving #desktop, body.leaving #windows { opacity: 0; transform: scale(0.985); transition: opacity 0.2s ease, transform 0.2s ease; }
+
   </style>
 </head>
 <body>
@@ -953,92 +1205,171 @@
   <div class="splash-sub">an AI agent that doesn't burn your money</div>
 </div>
 
-<div id="app">
-  <header>
-    <div class="header-icon">
-      <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
-    </div>
-    <div class="header-dot"></div>
-    <div class="header-title">
-      <h1 id="chat-user-name">FreeClaw</h1>
-      <span class="header-tagline" id="chat-title">an AI agent that doesn't burn your money</span>
-    </div>
-    <div class="header-right">
-      <span id="token-count">~0 tokens</span>
-      <a id="browser-btn" href="/browser" title="Browser" style="display:none">🌐</a>
-      <button id="context-btn" title="Files">🗂</button>
-      <a id="settings-btn" href="/settings" title="Settings">⚙</a>
-      <button id="home-btn" title="Back to users">⌂</button>
-      <button id="reset-btn">reset</button>
-    </div>
-  </header>
+<!-- App glyphs, drawn once and reused by the icons, window titles and task pills. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-browser" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.4 5.6 12 3z"/>
+  </symbol>
+  <symbol id="i-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.2h7.5A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M3 10.5h18"/>
+  </symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>
+  </symbol>
+  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5.5h4V20"/>
+  </symbol>
+</svg>
 
-  <div id="messages">
-    <div id="empty-state">
-      <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
-      <div class="empty-name">FreeClaw</div>
-      <div class="empty-sub">search the web · run bash<br>connect MCP tools · write files</div>
-    </div>
+<header id="topbar">
+  <div class="header-icon">
+    <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
+  </div>
+  <div class="header-dot"></div>
+  <div class="header-title">
+    <h1 id="chat-user-name">FreeClaw</h1>
+    <span class="header-tagline" id="chat-title">an AI agent that doesn't burn your money</span>
+  </div>
+  <nav id="tasks" aria-label="Open windows"></nav>
+  <div class="header-right">
+    <span id="token-count">~0 tokens</span>
+    <button id="reset-btn">reset</button>
+    <span id="clock"></span>
+  </div>
+</header>
+
+<div id="desktop">
+  <div id="wallpaper" aria-hidden="true">
+    <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+    <div class="empty-name">FreeClaw</div>
+    <div class="empty-sub">search the web · run bash<br>connect MCP tools · write files</div>
   </div>
 
-  <div id="input-area">
-    <div id="file-preview">
-      <div id="file-preview-bar"></div>
-      <span id="file-preview-name">filename.txt</span>
-      <span id="file-preview-status">ready</span>
-      <button id="file-remove-btn" title="Remove file">✕</button>
+  <!-- Double-click to open (a tap on touch screens); drag to rearrange. -->
+  <div id="icons">
+    <button class="app-icon" id="icon-browser" data-app="browser" title="Browser" hidden>
+      <span class="app-tile"><svg><use href="#i-browser"/></svg></span>
+      <span class="app-label">Browser</span>
+    </button>
+    <button class="app-icon" id="icon-files" data-app="files" title="Files">
+      <span class="app-tile"><svg><use href="#i-files"/></svg></span>
+      <span class="app-label">Files</span>
+    </button>
+    <button class="app-icon" id="icon-settings" data-app="settings" title="Settings">
+      <span class="app-tile"><svg><use href="#i-settings"/></svg></span>
+      <span class="app-label">Settings</span>
+    </button>
+    <button class="app-icon" id="icon-home" data-app="home" title="Back to users">
+      <span class="app-tile"><svg><use href="#i-home"/></svg></span>
+      <span class="app-label">Home</span>
+    </button>
+  </div>
+
+  <div id="chat">
+    <div id="messages">
+      <div id="empty-state"></div>
     </div>
-    <div id="input-row">
-      <button id="upload-btn" title="Attach file">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="5" x2="12" y2="19"/>
-          <line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-      </button>
-      <input type="file" id="file-input" style="display:none"/>
-      <textarea id="user-input" placeholder="Ask anything…" rows="1"></textarea>
-      <button id="send-btn" title="Send">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#0d0d0f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="19" x2="12" y2="5"/>
-          <polyline points="5 12 12 5 19 12"/>
-        </svg>
-      </button>
-      <button id="stop-btn" title="Stop generating">
-        <svg viewBox="0 0 24 24" fill="#0d0d0f" aria-hidden="true">
-          <rect x="7" y="7" width="10" height="10" rx="1.5"/>
-        </svg>
-      </button>
+
+    <div id="input-area">
+      <div id="file-preview">
+        <div id="file-preview-bar"></div>
+        <span id="file-preview-name">filename.txt</span>
+        <span id="file-preview-status">ready</span>
+        <button id="file-remove-btn" title="Remove file">✕</button>
+      </div>
+      <div id="input-row">
+        <button id="upload-btn" title="Attach file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+        <input type="file" id="file-input" style="display:none"/>
+        <textarea id="user-input" placeholder="Ask anything…" rows="1"></textarea>
+        <button id="send-btn" title="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#0d0d0f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="19" x2="12" y2="5"/>
+            <polyline points="5 12 12 5 19 12"/>
+          </svg>
+        </button>
+        <button id="stop-btn" title="Stop generating">
+          <svg viewBox="0 0 24 24" fill="#0d0d0f" aria-hidden="true">
+            <rect x="7" y="7" width="10" height="10" rx="1.5"/>
+          </svg>
+        </button>
+      </div>
     </div>
   </div>
 </div>
 
-<div id="context-backdrop"></div>
-<aside id="context-panel" aria-hidden="true" aria-label="Files">
-  <div class="ctx-head">
-    <button id="ctx-back" title="Back to files" hidden>←</button>
-    <span class="ctx-title" id="ctx-title">files</span>
-    <span class="ctx-user" id="ctx-user"></span>
-    <button id="ctx-close" title="Close">✕</button>
-  </div>
+<div id="windows">
+  <!-- Browser and Settings are their own pages, loaded into a frame the first
+       time the window opens and dropped again when it closes. -->
+  <section class="win" id="win-browser" data-app="browser" hidden aria-label="Browser">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-browser"/></svg>Browser</div>
+    </div>
+    <div class="win-body"></div>
+    <div class="win-resize"></div>
+  </section>
 
-  <div id="ctx-list-view">
-    <ul id="ctx-list"></ul>
-    <div id="ctx-list-empty" hidden></div>
-  </div>
+  <section class="win" id="win-settings" data-app="settings" hidden aria-label="Settings">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-settings"/></svg>Settings</div>
+    </div>
+    <div class="win-body"></div>
+    <div class="win-resize"></div>
+  </section>
 
-  <div id="ctx-file-view" hidden>
-    <textarea id="ctx-text" spellcheck="false" autocapitalize="off" autocorrect="off"
-              placeholder="Loading…" hidden></textarea>
-    <div id="ctx-image-wrap" hidden><img id="ctx-image" alt=""/></div>
-    <div id="ctx-binary" hidden></div>
-  </div>
+  <section class="win" id="win-files" data-app="files" hidden aria-label="Files">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-files"/></svg>Files</div>
+    </div>
+    <div class="win-body">
+      <div id="context-panel">
+        <div class="ctx-head">
+          <button id="ctx-back" title="Back to files" hidden>←</button>
+          <span class="ctx-title" id="ctx-title">files</span>
+          <span class="ctx-user" id="ctx-user"></span>
+        </div>
 
-  <div class="ctx-foot">
-    <span id="ctx-status"></span>
-    <button id="ctx-delete" hidden>delete</button>
-    <button id="ctx-save" hidden>save</button>
-  </div>
-</aside>
+        <div id="ctx-list-view">
+          <ul id="ctx-list"></ul>
+          <div id="ctx-list-empty" hidden></div>
+        </div>
+
+        <div id="ctx-file-view" hidden>
+          <textarea id="ctx-text" spellcheck="false" autocapitalize="off" autocorrect="off"
+                    placeholder="Loading…" hidden></textarea>
+          <div id="ctx-image-wrap" hidden><img id="ctx-image" alt=""/></div>
+          <div id="ctx-binary" hidden></div>
+        </div>
+
+        <div class="ctx-foot">
+          <span id="ctx-status"></span>
+          <button id="ctx-delete" hidden>delete</button>
+          <button id="ctx-save" hidden>save</button>
+        </div>
+      </div>
+    </div>
+    <div class="win-resize"></div>
+  </section>
+</div>
 
 <script>
   const messagesEl  = document.getElementById('messages');
@@ -1047,7 +1378,6 @@
   const stopBtn     = document.getElementById('stop-btn');
   const countEl     = document.getElementById('token-count');
   const resetBtn    = document.getElementById('reset-btn');
-  const homeBtn     = document.getElementById('home-btn');
   const chatUserEl  = document.getElementById('chat-user-name');
   const chatTitleEl = document.getElementById('chat-title');
   const splash      = document.getElementById('splash');
@@ -1557,6 +1887,13 @@
     open.target = '_blank';
     open.rel = 'noopener';
     open.textContent = 'Sign in ↗';
+    // On the desktop it opens in the Browser window instead. The href stays
+    // real, so a middle-click or ctrl-click still gets a tab of its own.
+    open.addEventListener('click', (e) => {
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      openApp('browser', { src: open.getAttribute('href') });
+    });
     actions.appendChild(open);
 
     if (pending) {
@@ -2094,31 +2431,31 @@
     showEmptyState();
   });
 
-  homeBtn.addEventListener('click', () => { window.location.href = '/'; });
-
   // ── Load the conversation this session is currently pointed at ───
   let lastUpdatedAt = null;
 
-  // The browser link is only useful once the shadow-web server is switched on
+  // The browser app is only useful once the shadow-web server is switched on
   // *and* its Chromium has finished downloading — before that the page it
-  // points at can't open anything. Checked once per load rather than polled:
-  // enabling the server is a Settings action, and Settings reloads this page.
+  // opens can't show anything. Checked once per load rather than polled, and
+  // again whenever the Settings window closes, since that's where it's
+  // switched on.
   let browserLinkChecked = false;
   async function showBrowserLink(user) {
     if (browserLinkChecked || !user) return;
     browserLinkChecked = true;
-    const btn = document.getElementById('browser-btn');
-    if (!btn) return;
+    const icon = document.getElementById('icon-browser');
+    if (!icon) return;
     try {
       const res = await fetch('/api/mcp');
       if (!res.ok) return;
       const servers = (await res.json()).servers || [];
       const ready = servers.some(s => s.browser && s.enabled !== false
                                    && s.browser.status === 'ready');
-      if (!ready) return;
-      btn.href = '/browser?user=' + encodeURIComponent(user);
-      btn.style.display = '';
-    } catch (e) { /* the link is a convenience; never break the chat over it */ }
+      if (icon.hidden === ready) {
+        icon.hidden = !ready;
+        layoutIcons();
+      }
+    } catch (e) { /* the icon is a convenience; never break the chat over it */ }
   }
 
   function applyConversation(data) {
@@ -2199,10 +2536,6 @@
   // Saving context.md goes through /api/users/<name>/files/context.md, which
   // refreshes the running conversation's system message on the way, so an
   // edit lands on the very next turn rather than waiting for a reset.
-  const ctxBtn       = document.getElementById('context-btn');
-  const ctxPanel     = document.getElementById('context-panel');
-  const ctxBackdrop  = document.getElementById('context-backdrop');
-  const ctxClose     = document.getElementById('ctx-close');
   const ctxBack      = document.getElementById('ctx-back');
   const ctxHeading   = document.getElementById('ctx-title');
   const ctxListView  = document.getElementById('ctx-list-view');
@@ -2444,33 +2777,26 @@
   }
 
   // ── open / close ──
+  // The Files window's own lifecycle hooks, called by the window manager
+  // below: a fresh list each time it opens, and a chance to keep unsaved
+  // text before it closes.
   function ctxConfirmLeave() {
     return !ctxDirty()
       || confirm('Discard unsaved changes to ' + ctxOpenFile.name + '?');
   }
 
   function ctxOpen() {
-    ctxPanel.classList.add('open');
-    ctxBackdrop.classList.add('open');
-    ctxPanel.setAttribute('aria-hidden', 'false');
     ctxShowList();
   }
 
   function ctxClosePanel() {
-    if (!ctxConfirmLeave()) return;
-    ctxPanel.classList.remove('open');
-    ctxBackdrop.classList.remove('open');
-    ctxPanel.setAttribute('aria-hidden', 'true');
+    if (!ctxConfirmLeave()) return false;
     ctxImage.removeAttribute('src');
     ctxOpenFile = null;
     ctxOriginal = '';
+    return true;
   }
 
-  ctxBtn.addEventListener('click', () => {
-    if (ctxPanel.classList.contains('open')) ctxClosePanel(); else ctxOpen();
-  });
-  ctxClose.addEventListener('click', ctxClosePanel);
-  ctxBackdrop.addEventListener('click', ctxClosePanel);
   ctxBack.addEventListener('click', () => { if (ctxConfirmLeave()) ctxShowList(); });
   ctxSave.addEventListener('click', ctxDoSave);
   ctxDelete.addEventListener('click', ctxDoDelete);
@@ -2481,11 +2807,12 @@
   ctxText.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); ctxDoSave(); }
   });
-  // Escape backs out one level at a time: open file → list → closed.
+  // Escape backs out one level at a time: open file → list → closed. Only
+  // while Files is the window in front.
   document.addEventListener('keydown', e => {
-    if (e.key !== 'Escape' || !ctxPanel.classList.contains('open')) return;
+    if (e.key !== 'Escape' || wm.focused !== 'files') return;
     if (ctxOpenFile) { if (ctxConfirmLeave()) ctxShowList(); }
-    else ctxClosePanel();
+    else closeApp('files');
   });
   // Nothing else on the page can move these files mid-edit except the agent
   // itself (add_context, edit_file), and clobbering that silently would lose
@@ -2498,8 +2825,483 @@
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', () => {
       messagesEl.scrollTop = messagesEl.scrollHeight;
+      scheduleLayout();
     });
   }
+
+  // ══ Desktop ═══════════════════════════════════════════════════════
+  // Purely presentation: app icons on the wallpaper, apps in windows. Nothing
+  // below talks to the server except by loading the Browser and Settings
+  // pages into frames.
+
+  const iconsEl   = document.getElementById('icons');
+  const chatEl    = document.getElementById('chat');
+  const inputArea = document.getElementById('input-area');
+  const tasksEl   = document.getElementById('tasks');
+  const clockEl   = document.getElementById('clock');
+  const rootStyle = document.documentElement.style;
+
+  // Small wrappers: storage can be missing or throw (private windows,
+  // blocked site data), and nothing here is worth failing over.
+  function loadPref(key) {
+    try { return JSON.parse(localStorage.getItem(key) || 'null') || {}; } catch (_) { return {}; }
+  }
+  function savePref(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* per-browser nicety only */ }
+  }
+
+  // ── Menu bar clock ──
+  function tickClock() {
+    clockEl.textContent = new Date().toLocaleString([], {
+      weekday: 'short', hour: 'numeric', minute: '2-digit',
+    });
+  }
+  tickClock();
+  setInterval(tickClock, 15000);
+
+  // ── Icons ──────────────────────────────────────────────────────────
+  // Each icon has a home spot — scattered by default, or wherever it was last
+  // dragged — stored as fractions of the desktop so it survives a resize.
+  // When the thread grows over an icon, the icon steps aside into the margin
+  // next to the chat column; when there's no margin wide enough (a phone),
+  // all the icons line up in a row under the menu bar instead and the chat
+  // column starts below them.
+  const ICON_HOME = {
+    browser:  [0.22, 0.20],
+    files:    [0.76, 0.16],
+    settings: [0.31, 0.50],
+    home:     [0.69, 0.46],
+  };
+  // A phone has no room around the wallpaper mark, so the corners.
+  const ICON_HOME_NARROW = {
+    browser:  [0.20, 0.10],
+    files:    [0.80, 0.14],
+    settings: [0.22, 0.86],
+    home:     [0.78, 0.82],
+  };
+  const iconPos = loadPref('fc-icon-pos');
+  const ICON_GAP = 12;
+
+  const iconEls = () => [...iconsEl.querySelectorAll('.app-icon')].filter(el => !el.hidden);
+
+  function setIconXY(el, x, y) {
+    el._x = x; el._y = y;
+    el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  }
+
+  const overlaps = (a, b, pad) =>
+    a.x < b.x + b.w + pad && a.x + a.w + pad > b.x &&
+    a.y < b.y + b.h + pad && a.y + a.h + pad > b.y;
+
+  let layoutQueued = false;
+  function scheduleLayout() {
+    if (layoutQueued) return;
+    layoutQueued = true;
+    requestAnimationFrame(() => { layoutQueued = false; layoutIcons(); });
+  }
+
+  function layoutIcons() {
+    const icons = iconEls();
+    if (!icons.length) return;
+    const topbarH = document.getElementById('topbar').offsetHeight;
+    const W = window.innerWidth;
+    const iw = icons[0].offsetWidth || 86;
+    const hasThread = document.body.classList.contains('thread');
+    const colW = chatEl.offsetWidth;
+    const gutter = (W - colW) / 2;
+    const stepAside = gutter >= iw + 16;
+
+    // No room beside the column: a tidy row under the menu bar, and the chat
+    // column starts beneath it so nothing is ever underneath the thread.
+    const strip = hasThread && !stepAside;
+    icons.forEach(el => el.classList.toggle('compact', strip));
+    if (strip) {
+      const w = icons[0].offsetWidth, h = icons[0].offsetHeight;
+      const gap = 6;
+      const total = icons.length * w + (icons.length - 1) * gap;
+      let x = Math.max(8, (W - total) / 2);
+      icons.forEach(el => { setIconXY(el, x, topbarH + 6); x += w + gap; });
+      rootStyle.setProperty('--chat-top', (topbarH + h + 10) + 'px');
+      return;
+    }
+    rootStyle.setProperty('--chat-top', 'var(--topbar-h)');
+
+    const ih = icons[0].offsetHeight;
+    const b = {
+      left: 8, right: W - 8,
+      top: topbarH + 10,
+      bottom: inputArea.getBoundingClientRect().top - 10,
+    };
+    const clampX = x => Math.min(Math.max(x, b.left), b.right - iw);
+    const clampY = y => Math.min(Math.max(y, b.top), Math.max(b.top, b.bottom - ih));
+
+    // Home spots first.
+    const defaults = W < 720 ? ICON_HOME_NARROW : ICON_HOME;
+    const placed = icons.map(el => {
+      const [fx, fy] = iconPos[el.dataset.app] || defaults[el.dataset.app] || [0.5, 0.5];
+      return {
+        el,
+        x: clampX(b.left + fx * (b.right - b.left) - iw / 2),
+        y: clampY(b.top + fy * (b.bottom - b.top) - ih / 2),
+        w: iw, h: ih,
+      };
+    });
+
+    // Then out of the thread's way: into the margin on whichever side of the
+    // column the icon was already nearer.
+    if (hasThread) {
+      const col = chatEl.getBoundingClientRect();
+      const msg = messagesEl.getBoundingClientRect();
+      const thread = { x: col.left, y: msg.top, w: col.width, h: b.bottom - msg.top + 10 };
+      for (const p of placed) {
+        if (!overlaps(p, thread, ICON_GAP)) continue;
+        p.x = (p.x + iw / 2 < W / 2)
+          ? Math.max(b.left, col.left - iw - 18)
+          : Math.min(b.right - iw, col.right + 18);
+      }
+    }
+
+    // Finally, no two icons on top of each other: sweep top to bottom pushing
+    // later ones down, and if that runs off the bottom, back up again.
+    placed.sort((a, c) => a.y - c.y);
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = 0; i < placed.length; i++) {
+        for (let j = 0; j < i; j++) {
+          const a = placed[j], c = placed[i];
+          if (overlaps(a, c, 4)) c.y = a.y + a.h + 8;
+        }
+        if (placed[i].y > b.bottom - ih) {
+          placed[i].y = b.bottom - ih;
+          for (let j = i - 1; j >= 0; j--) {
+            const a = placed[j], c = placed[j + 1];
+            if (overlaps(a, c, 4)) a.y = Math.max(b.top, c.y - a.h - 8);
+          }
+        }
+      }
+    }
+    placed.forEach(p => setIconXY(p.el, p.x, p.y));
+  }
+
+  // Whether there's a thread to make room for. showEmptyState() leaves only
+  // the #empty-state marker behind; anything else means a conversation.
+  function syncThreadState() {
+    const has = [...messagesEl.children].some(c => c.id !== 'empty-state');
+    if (document.body.classList.contains('thread') !== has) {
+      document.body.classList.toggle('thread', has);
+    }
+    scheduleLayout();
+  }
+  new MutationObserver(syncThreadState).observe(messagesEl, { childList: true });
+  if (window.ResizeObserver) {
+    // The thread climbing as replies stream in, the composer growing a line.
+    const ro = new ResizeObserver(scheduleLayout);
+    ro.observe(messagesEl);
+    ro.observe(inputArea);
+  }
+  window.addEventListener('resize', () => { scheduleLayout(); clampAllWindows(); });
+
+  // Click selects, double-click opens — a tap opens straight away on touch.
+  // Drag to move; the new spot is remembered in this browser.
+  function selectIcon(el) {
+    iconsEl.querySelectorAll('.app-icon.selected').forEach(i => { if (i !== el) i.classList.remove('selected'); });
+    if (el) el.classList.add('selected');
+  }
+  document.getElementById('desktop').addEventListener('pointerdown', e => {
+    if (!e.target.closest('.app-icon') && !e.target.closest('#chat > *')) selectIcon(null);
+  });
+
+  iconsEl.querySelectorAll('.app-icon').forEach(el => {
+    let start = null;   // { px, py, x, y, pointerType } while pressed
+    let moved = false;
+
+    el.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      start = { px: e.clientX, py: e.clientY, x: el._x || 0, y: el._y || 0, type: e.pointerType };
+      moved = false;
+      el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', e => {
+      if (!start) return;
+      const dx = e.clientX - start.px, dy = e.clientY - start.py;
+      if (!moved && Math.hypot(dx, dy) < 5) return;
+      moved = true;
+      el.classList.add('dragging');
+      el.style.transform = `translate(${start.x + dx}px, ${start.y + dy}px)`;
+    });
+    const release = e => {
+      if (!start) return;
+      const s = start;
+      start = null;
+      el.classList.remove('dragging');
+      if (!moved) {
+        if (s.type === 'touch' || s.type === 'pen') openApp(el.dataset.app);
+        else selectIcon(el);
+        return;
+      }
+      // Remember the drop point as the new home. layoutIcons() re-clamps it
+      // and steps it aside again if it was dropped on the thread.
+      const topbarH = document.getElementById('topbar').offsetHeight;
+      const top = topbarH + 10, bottom = inputArea.getBoundingClientRect().top - 10;
+      const x = s.x + (e.clientX - s.px), y = s.y + (e.clientY - s.py);
+      iconPos[el.dataset.app] = [
+        Math.min(1, Math.max(0, (x + el.offsetWidth / 2 - 8) / (window.innerWidth - 16))),
+        Math.min(1, Math.max(0, (y + el.offsetHeight / 2 - top) / Math.max(1, bottom - top))),
+      ];
+      savePref('fc-icon-pos', iconPos);
+      selectIcon(el);
+      layoutIcons();
+    };
+    el.addEventListener('pointerup', release);
+    el.addEventListener('pointercancel', release);
+    el.addEventListener('dblclick', () => { if (!moved) openApp(el.dataset.app); });
+    el.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openApp(el.dataset.app); }
+    });
+  });
+
+  // ── Windows ────────────────────────────────────────────────────────
+  const APPS = {
+    browser:  { w: 1000, h: 700, src: () => '/browser' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
+    settings: { w: 820,  h: 660, src: () => '/settings' },
+    files:    { w: 520,  h: 560, onOpen: ctxOpen, onClose: ctxClosePanel },
+  };
+  const wm = { z: 20, focused: null, order: [] };   // order: open apps, oldest first
+  const winGeo = loadPref('fc-win-geo');
+  const winEl = app => document.getElementById('win-' + app);
+  const isOpen = app => { const w = winEl(app); return !!w && !w.hidden; };
+  const deskRect = () => document.getElementById('windows').getBoundingClientRect();
+
+  function placeWindow(win, g) {
+    const d = deskRect();
+    const w = Math.min(Math.max(g.w, 300), d.width - 16);
+    const h = Math.min(Math.max(g.h, 200), d.height - 16);
+    // Keep at least the title bar somewhere it can be grabbed.
+    const x = Math.min(Math.max(g.x, 80 - w), d.width - 80);
+    const y = Math.min(Math.max(g.y, 0), d.height - 36);
+    Object.assign(win.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+  }
+
+  function currentGeo(win) {
+    return { x: win.offsetLeft, y: win.offsetTop, w: win.offsetWidth, h: win.offsetHeight };
+  }
+
+  function rememberGeo(app) {
+    const win = winEl(app);
+    if (!win || win.hidden || win.classList.contains('max') || window.innerWidth < 720) return;
+    winGeo[app] = currentGeo(win);
+    savePref('fc-win-geo', winGeo);
+  }
+
+  function clampAllWindows() {
+    if (window.innerWidth < 720) return;   // phones: CSS makes every window full-screen
+    document.querySelectorAll('.win:not([hidden]):not(.max)').forEach(win => placeWindow(win, currentGeo(win)));
+  }
+
+  function focusApp(app) {
+    const win = winEl(app);
+    if (!win || win.hidden) return;
+    win.style.zIndex = ++wm.z;
+    document.querySelectorAll('.win.focused').forEach(w => { if (w !== win) w.classList.remove('focused'); });
+    win.classList.add('focused');
+    wm.focused = app;
+    renderTasks();
+  }
+
+  // Hand focus to whichever visible window is on top, if any.
+  function focusTopmost() {
+    const top = [...document.querySelectorAll('.win:not([hidden]):not(.minimized):not(.closing)')]
+      .sort((a, b) => (+b.style.zIndex || 0) - (+a.style.zIndex || 0))[0];
+    document.querySelectorAll('.win.focused').forEach(w => w.classList.remove('focused'));
+    wm.focused = null;
+    if (top) focusApp(top.dataset.app); else renderTasks();
+  }
+
+  function ensureFrame(app, src) {
+    const body = winEl(app).querySelector('.win-body');
+    let frame = body.querySelector('iframe');
+    if (!frame) {
+      frame = document.createElement('iframe');
+      frame.title = app;
+      body.appendChild(frame);
+      frame.src = src || APPS[app].src();
+    } else if (src) {
+      frame.src = src;
+    }
+  }
+
+  function openApp(app, opts) {
+    opts = opts || {};
+    if (app === 'home') {
+      document.body.classList.add('leaving');
+      setTimeout(() => { window.location.href = '/'; }, 180);
+      return;
+    }
+    const spec = APPS[app];
+    const win = winEl(app);
+    if (!spec || !win) return;
+    selectIcon(null);
+
+    if (spec.src) ensureFrame(app, opts.src);
+
+    if (win.hidden) {
+      const d = deskRect();
+      const n = wm.order.length;
+      const g = winGeo[app] || {
+        w: spec.w, h: spec.h,
+        x: (d.width - Math.min(spec.w, d.width - 16)) / 2 + n * 26,
+        y: Math.max(12, (d.height - Math.min(spec.h, d.height - 16)) / 2 - 40) + n * 26,
+      };
+      win.hidden = false;
+      win.classList.remove('minimized', 'closing');
+      placeWindow(win, g);
+      win.classList.remove('opening');
+      void win.offsetWidth;          // restart the open animation
+      win.classList.add('opening');
+      wm.order.push(app);
+      if (spec.onOpen) spec.onOpen();
+    } else if (win.classList.contains('minimized')) {
+      win.classList.remove('minimized');
+      win.classList.remove('opening');
+      void win.offsetWidth;
+      win.classList.add('opening');
+    }
+    focusApp(app);
+  }
+
+  function closeApp(app) {
+    const spec = APPS[app];
+    const win = winEl(app);
+    if (!win || win.hidden) return;
+    if (spec.onClose && spec.onClose() === false) return;
+    rememberGeo(app);
+    win.classList.remove('opening');
+    win.classList.add('closing');
+    wm.order = wm.order.filter(a => a !== app);
+    setTimeout(() => {
+      win.hidden = true;
+      win.classList.remove('closing', 'focused', 'max');
+      // Frames go with the window, like closing a tab: the Browser page stops
+      // streaming frames and Settings starts fresh next time.
+      const frame = win.querySelector('.win-body iframe');
+      if (frame) frame.remove();
+      if (app === 'settings' && currentUser) {
+        // It may have just switched the browser on (or off).
+        browserLinkChecked = false;
+        showBrowserLink(currentUser);
+      }
+    }, 140);
+    if (wm.focused === app) wm.focused = null;
+    focusTopmost();
+  }
+
+  function minimizeApp(app) {
+    const win = winEl(app);
+    if (!win || win.hidden) return;
+    win.classList.add('minimized');
+    win.classList.remove('focused');
+    if (wm.focused === app) wm.focused = null;
+    focusTopmost();
+  }
+
+  function toggleMaxApp(app) {
+    const win = winEl(app);
+    if (!win || window.innerWidth < 720) return;
+    if (!win.classList.contains('max')) rememberGeo(app);
+    win.classList.toggle('max');
+    focusApp(app);
+  }
+
+  // ── Menu bar task pills ──
+  const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings' };
+  function renderTasks() {
+    tasksEl.innerHTML = '';
+    for (const app of wm.order) {
+      const win = winEl(app);
+      const btn = document.createElement('button');
+      const min = win.classList.contains('minimized');
+      btn.className = 'task' + (wm.focused === app && !min ? ' active' : '') + (min ? ' minimized' : '');
+      btn.type = 'button';
+      btn.title = APP_LABEL[app];
+      btn.innerHTML = `<svg><use href="#i-${app}"/></svg><span>${APP_LABEL[app]}</span>`;
+      btn.addEventListener('click', () => {
+        if (min) openApp(app);
+        else if (wm.focused === app) minimizeApp(app);
+        else focusApp(app);
+      });
+      tasksEl.appendChild(btn);
+    }
+  }
+
+  // ── Dragging, resizing, focusing ──
+  document.querySelectorAll('.win').forEach(win => {
+    const app = win.dataset.app;
+    const bar = win.querySelector('.win-bar');
+    const grip = win.querySelector('.win-resize');
+
+    win.addEventListener('pointerdown', () => { if (wm.focused !== app) focusApp(app); }, true);
+    win.querySelector('.wl.close').addEventListener('click', () => closeApp(app));
+    win.querySelector('.wl.min').addEventListener('click', () => minimizeApp(app));
+    win.querySelector('.wl.max').addEventListener('click', () => toggleMaxApp(app));
+    bar.addEventListener('dblclick', e => { if (!e.target.closest('.wl')) toggleMaxApp(app); });
+
+    // One pointer-capture helper serves both the title bar and the grip.
+    function track(handle, cls, onMove) {
+      handle.addEventListener('pointerdown', e => {
+        if (e.button !== 0 || e.target.closest('.wl')) return;
+        if (win.classList.contains('max') || window.innerWidth < 720) return;
+        e.preventDefault();
+        const g0 = currentGeo(win), px = e.clientX, py = e.clientY;
+        handle.setPointerCapture(e.pointerId);
+        document.body.classList.add(cls);
+        const move = ev => onMove(g0, ev.clientX - px, ev.clientY - py);
+        const up = () => {
+          document.body.classList.remove(cls);
+          handle.removeEventListener('pointermove', move);
+          handle.removeEventListener('pointerup', up);
+          handle.removeEventListener('pointercancel', up);
+          rememberGeo(app);
+        };
+        handle.addEventListener('pointermove', move);
+        handle.addEventListener('pointerup', up);
+        handle.addEventListener('pointercancel', up);
+      });
+    }
+    track(bar, 'wm-drag', (g, dx, dy) => placeWindow(win, { ...g, x: g.x + dx, y: g.y + dy }));
+    track(grip, 'wm-resize', (g, dx, dy) => placeWindow(win, { ...g, w: g.w + dx, h: g.h + dy }));
+  });
+
+  // A click inside a framed app never reaches this page, but it does take
+  // focus away from it — which is how we know to raise that window.
+  window.addEventListener('blur', () => {
+    setTimeout(() => {
+      const f = document.activeElement;
+      if (f && f.tagName === 'IFRAME') {
+        const win = f.closest('.win');
+        if (win && wm.focused !== win.dataset.app) focusApp(win.dataset.app);
+      }
+    }, 0);
+  });
+
+  // Framed pages ask for another app rather than navigating inside their
+  // own window (Settings' "open browser →", say).
+  // They also report presses, since moving between two frames doesn't blur
+  // this page and so the trick above can't see it.
+  window.addEventListener('message', e => {
+    if (e.origin !== location.origin) return;
+    const d = e.data || {};
+    if (d.type === 'freeclaw-open' && (APPS[d.app] || d.app === 'home')) {
+      openApp(d.app, { src: d.src });
+    } else if (d.type === 'freeclaw-focus') {
+      const frame = [...document.querySelectorAll('.win iframe')].find(f => f.contentWindow === e.source);
+      const win = frame && frame.closest('.win');
+      if (win && wm.focused !== win.dataset.app) focusApp(win.dataset.app);
+    }
+  });
+
+  syncThreadState();
+  layoutIcons();
+  // Web fonts change the label widths; settle once they're in.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleLayout);
 
 </script>
 </body>
