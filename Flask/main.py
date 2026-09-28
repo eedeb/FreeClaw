@@ -23,6 +23,7 @@ import atexit
 import uuid
 import json
 import re
+import struct
 import time
 import threading
 import shutil
@@ -875,8 +876,79 @@ def api_browser_frame():
     return response
 
 
+# The stream sends a zero-length frame this often when the page is still, so
+# the page can tell a quiet browser from a dead connection — and so a viewer
+# that has gone away is noticed at the next write rather than never.
+_STREAM_KEEPALIVE = 5.0
+
+
+@app.route('/api/browser/stream', methods=['GET'])
+def api_browser_stream():
+    """Every frame as it's painted, on one long response: a 4-byte big-endian
+    length, then that many bytes of JPEG, repeated. Length 0 is a keepalive.
+
+    Pushed rather than polled so a still page costs nothing — the worker only
+    has a new frame when Chromium repainted (src/browser_takeover.py) — and
+    so there's one request per viewing instead of one per frame. Holds one
+    server thread while open, as the chat's own event stream does. Ends when
+    the browser does; the page reconnects if it's still meant to be open."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    sess = browser_takeover.get(name)
+    if sess is None or not sess.alive():
+        return jsonify({'error': 'No browser is open.'}), 404
+
+    def generate():
+        seq = 0
+        while sess.alive():
+            # Someone watching counts as using it, as the frame poll did, so
+            # the idle timeout doesn't close a browser mid-read.
+            sess.touch()
+            new_seq, frame = sess.wait_frame(seq, _STREAM_KEEPALIVE)
+            if frame is not None and new_seq != seq:
+                seq = new_seq
+                yield struct.pack('>I', len(frame)) + frame
+            else:
+                yield b'\0\0\0\0'
+
+    return Response(generate(), mimetype='application/octet-stream',
+                    headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+
+
+_INPUT_KINDS = ('click', 'text', 'key', 'scroll', 'nav', 'back', 'forward', 'reload')
+# A generous burst — a long paste arrives as one 'text', not a command per key.
+_INPUT_BATCH_LIMIT = 200
+
+
+def _checked_input(data):
+    """(command, error) for one input command from the page."""
+    if not isinstance(data, dict):
+        return None, 'Each input must be an object.'
+    kind = str(data.get('kind', '')).strip()
+    if kind not in _INPUT_KINDS:
+        return None, f'Unknown input kind {kind!r}.'
+    if kind == 'nav':
+        url = str(data.get('url', '')).strip()
+        if '://' not in url:
+            url = 'https://' + url
+        if not url.lower().startswith(_BROWSER_SCHEMES):
+            return None, 'Only http:// and https:// addresses can be opened here.'
+        data = {**data, 'url': url}
+    return {**data, 'kind': kind}, None
+
+
 @app.route('/api/browser/input', methods=['POST'])
 def api_browser_input():
+    """One command, or `{"batch": [...]}` of them applied in order.
+
+    The page batches because it can't otherwise keep order: one request per
+    keystroke means several in flight at once on a threaded server, and those
+    land in whatever order their threads get scheduled — a fast-typed password
+    arriving scrambled. A batch is queued by a single request thread, so it
+    reaches the worker exactly as typed."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
@@ -886,18 +958,19 @@ def api_browser_input():
     if sess is None or not sess.alive():
         return jsonify({'error': 'No browser is open.'}), 404
     data = request.get_json(silent=True) or {}
-    kind = str(data.get('kind', '')).strip()
-    if kind not in ('click', 'text', 'key', 'scroll', 'nav',
-                    'back', 'forward', 'reload'):
-        return jsonify({'error': f'Unknown input kind {kind!r}.'}), 400
-    if kind == 'nav':
-        url = str(data.get('url', '')).strip()
-        if '://' not in url:
-            url = 'https://' + url
-        if not url.lower().startswith(_BROWSER_SCHEMES):
-            return jsonify({'error': 'Only http:// and https:// addresses can be opened here.'}), 400
-        data = {**data, 'url': url}
-    sess.send({**data, 'kind': kind})
+    items = data.get('batch') if isinstance(data.get('batch'), list) else [data]
+    if len(items) > _INPUT_BATCH_LIMIT:
+        return jsonify({'error': 'Too many inputs in one batch.'}), 400
+    # All checked before any is queued, so a bad one can't leave half a burst
+    # of typing applied.
+    commands = []
+    for item in items:
+        command, problem = _checked_input(item)
+        if problem:
+            return jsonify({'error': problem}), 400
+        commands.append(command)
+    for command in commands:
+        sess.send(command)
     return jsonify({'ok': True})
 
 

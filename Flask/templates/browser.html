@@ -168,7 +168,7 @@
   </div>
 
   <div class="viewport">
-    <img id="screen" tabindex="0" alt="The remote browser"/>
+    <canvas id="screen" width="1280" height="800" tabindex="0" aria-label="The remote browser"></canvas>
     <div class="overlay" id="overlay">
       <div id="overlay-icon"></div>
       <div id="overlay-text">Type an address above to open the browser.</div>
@@ -204,8 +204,7 @@
   // image back into it, so the two must agree.
   let viewport = { width: 1280, height: 800 };
   let running = false;
-  let frameTimer = null;        // the frame loop's single pending tick
-  let gotFrame = false;         // has this session drawn anything yet
+  let gotFrame = false;        // has this session drawn anything yet
   let addrDirty = false;        // the address bar holds something the user typed
   let lastUrl = '';             // last page the server reported being on
   let lastNavError = '';        // so one failure is reported once, not every poll
@@ -283,7 +282,7 @@
       // spinner, which reads as "nothing happened".
       gotFrame = false;
       showOverlay('Loading the page…', true);
-      nextFrame();
+      startFrames();
     }
     if (!on) {
       gotFrame = false;
@@ -291,40 +290,159 @@
       lastUrl = '';
       lastNavError = '';
       navState('');
-      clearTimeout(frameTimer);
+      stopFrames();
+      outbox.length = 0;
     }
   }
 
-  // Self-clocking frame loop: ask for the next screenshot as soon as the last
-  // one finished decoding, so a slow link simply gets fewer frames instead of
-  // queueing requests it can't keep up with.
-  function scheduleFrame(delay) {
-    clearTimeout(frameTimer);
-    frameTimer = setTimeout(nextFrame, delay);
+  // ── frames ──
+  // One long response carrying every frame the server paints (see
+  // /api/browser/stream): [4-byte length][JPEG], length 0 a keepalive. A
+  // still page sends nothing but keepalives. Frames go onto a canvas, decoded
+  // one at a time and freed as soon as they're drawn, so memory stays at one
+  // frame however long the page is open — and if frames arrive faster than
+  // they decode, the ones in between are skipped rather than queued.
+  //
+  // If streaming can't work — a proxy in front that buffers whole responses,
+  // say — it falls back to fetching one frame at a time.
+  const ctx = screen.getContext('2d');
+  let streamCtl = null;         // AbortController of the open stream
+  let streamFailures = 0;       // streams in a row that ended without a frame
+  let polling = false;          // gave up on streaming; fetching frames singly
+  let pollTimer = null;
+  let drawing = false;          // a frame is decoding
+  let nextBlob = null;          // the newest frame waiting on that decode
+  const STREAM_STALL_MS = 12000;   // no bytes, not even a keepalive, for this long
+
+  function decodeFrame(blob) {
+    if (window.createImageBitmap) return createImageBitmap(blob);
+    return new Promise((resolve, reject) => {
+      const src = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(src); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(src); reject(new Error('bad frame')); };
+      img.src = src;
+    });
   }
 
-  function nextFrame() {
+  function drawFrame(blob) {
     if (!running) return;
-    // Watchdog. An <img> whose request never completes fires neither `load`
-    // nor `error`, and those two handlers are the only things that ask for the
-    // next frame — so one stalled request froze the stream permanently. Every
-    // path through here shares the single `frameTimer`, so a duplicate
-    // schedule replaces the pending tick rather than forking a second loop.
-    clearTimeout(frameTimer);
-    frameTimer = setTimeout(nextFrame, 20000);
-    screen.src = '/api/browser/frame?user=' + encodeURIComponent(USER) + '&t=' + Date.now();
+    if (drawing) { nextBlob = blob; return; }
+    drawing = true;
+    decodeFrame(blob).then((image) => {
+      if (!running) return;
+      // Resizing a canvas clears it, so only when the size actually changed.
+      if (screen.width !== viewport.width) screen.width = viewport.width;
+      if (screen.height !== viewport.height) screen.height = viewport.height;
+      ctx.drawImage(image, 0, 0, screen.width, screen.height);
+      if (!gotFrame) { gotFrame = true; overlay.classList.add('hidden'); }
+      if (image.close) image.close();
+    }).catch(() => { /* a torn frame; the next one replaces it */ }).finally(() => {
+      drawing = false;
+      if (nextBlob) { const b = nextBlob; nextBlob = null; drawFrame(b); }
+    });
   }
 
-  screen.addEventListener('load', () => {
-    if (!gotFrame) { gotFrame = true; overlay.classList.add('hidden'); }
-    scheduleFrame(60);
-  });
-  screen.addEventListener('error', () => scheduleFrame(400));
+  function startFrames() {
+    stopFrames();
+    if (polling || !window.ReadableStream) { polling = true; pollFrame(); }
+    else openStream();
+  }
+
+  function stopFrames() {
+    if (streamCtl) { streamCtl.abort(); streamCtl = null; }
+    clearTimeout(pollTimer);
+    nextBlob = null;
+  }
+
+  async function openStream() {
+    if (!running) return;
+    const ctl = new AbortController();
+    streamCtl = ctl;
+    let got = false;
+    let gone = false;             // answered, but there's no browser to stream
+    let stall = null;
+    const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), STREAM_STALL_MS); };
+    try {
+      arm();
+      const res = await fetch('/api/browser/stream?user=' + encodeURIComponent(USER),
+                              { signal: ctl.signal, cache: 'no-store' });
+      gone = res.status === 404;
+      if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+      const reader = res.body.getReader();
+      let buf = new Uint8Array(0);
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        arm();
+        if (buf.length) {
+          const joined = new Uint8Array(buf.length + value.length);
+          joined.set(buf); joined.set(value, buf.length);
+          buf = joined;
+        } else {
+          buf = value;
+        }
+        while (buf.length >= 4) {
+          const len = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(0);
+          if (buf.length < 4 + len) break;
+          if (len) {
+            got = true;
+            // Blob copies the bytes, so `buf` can move on past them.
+            drawFrame(new Blob([buf.subarray(4, 4 + len)], { type: 'image/jpeg' }));
+          }
+          buf = buf.subarray(4 + len);
+        }
+      }
+    } catch (e) { /* aborted, stalled, or the connection dropped */ }
+    clearTimeout(stall);
+    if (streamCtl !== ctl || !running) return;   // stopped, or replaced by a newer stream
+    streamCtl = null;
+    // It ends normally when the browser closes or is replaced; the status
+    // poll says which. Reconnect either way — and a 404 is that browser having
+    // closed, which the poll is about to notice, not streaming failing. Counted
+    // as a failure, it would leave the next session on the fallback.
+    if (gone) { setTimeout(openStream, 2000); return; }
+    streamFailures = got ? 0 : streamFailures + 1;
+    if (streamFailures >= 2) { polling = true; pollFrame(); return; }
+    setTimeout(openStream, got ? 250 : 1500);
+  }
+
+  async function pollFrame() {
+    if (!running || !polling) return;
+    try {
+      const opts = { cache: 'no-store' };
+      try { opts.signal = AbortSignal.timeout(20000); } catch (e) { /* older browser */ }
+      const res = await fetch('/api/browser/frame?user=' + encodeURIComponent(USER) + '&t=' + Date.now(), opts);
+      if (res.status === 200) drawFrame(await res.blob());
+    } catch (e) { /* transient; try again */ }
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(pollFrame, 150);
+  }
+
+  // ── input ──
+  // Sent in order, one request at a time: whatever piles up while one is in
+  // flight goes as the next batch. One request per keystroke raced on the
+  // server and could deliver a fast-typed password out of order.
+  const outbox = [];
+  let sending = false;
 
   function send(command) {
     if (!running) return;
-    api('input', { method: 'POST', body: JSON.stringify(command) })
-      .catch((e) => say(e.message, 'err'));
+    outbox.push(command);
+    flush();
+  }
+
+  async function flush() {
+    if (sending || !outbox.length) return;
+    sending = true;
+    // Not retried on failure: typing a password in twice is worse than once
+    // not at all, and the error says to try again.
+    const batch = outbox.splice(0, outbox.length);
+    try {
+      await api('input', { method: 'POST', body: JSON.stringify({ batch: batch }) });
+    } catch (e) { say(e.message, 'err'); }
+    sending = false;
+    flush();
   }
 
   // ── input forwarding ──

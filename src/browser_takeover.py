@@ -13,14 +13,16 @@ loads them (src/browser_mcp_shim.py).
 
 Two decisions worth knowing about:
 
-**Screenshots, not a remote desktop.** The obvious build is Xvfb + x11vnc +
-noVNC, or a CDP screencast; both are more code, and one of them is an
-unauthenticated remote desktop that must never be allowed near a public
-interface. `page.screenshot()` polled a few times a second is worse to *use*
-and hugely better to reason about: it's an image behind the same session check
-as every other route, on the port FreeClaw already listens on, with no second
-service and no new dependency. For the job — click a field, type a password,
-press a button — the latency doesn't matter.
+**A screencast, not a remote desktop.** The obvious build is Xvfb + x11vnc +
+noVNC, which is an unauthenticated remote desktop that must never be allowed
+near a public interface. Instead Chromium's own CDP screencast hands this
+thread a JPEG whenever the page actually repaints, and Flask streams those out
+behind the same session check as every other route, on the port FreeClaw
+already listens on — no second service, no new dependency. A page that isn't
+changing sends nothing, which is what a screenshot polled on a timer couldn't
+do: that paid a capture and a download several times a second to show the
+same login form. Screenshots remain as the fallback if the screencast can't be
+started.
 
 **Headful under Xvfb.** Google and Microsoft sign-in refuse browsers they can
 tell are automated, and that's the exact thing this feature exists to do. A
@@ -37,6 +39,7 @@ make this a threading problem. The sync API refuses to run inside a live
 asyncio loop, and a plain worker thread has none.
 """
 
+import base64
 import os
 import queue
 import shutil
@@ -51,8 +54,21 @@ from src.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-# How often the worker grabs a fresh frame when nothing is happening. Fast
-# enough that typing feels attached to the page, slow enough that an idle
+# Sync playwright only delivers events — screencast frames included — while
+# this thread is inside a playwright call, so the worker idles in a short
+# `wait_for_timeout` rather than blocking on its queue. Also the most a
+# queued click waits before it's applied.
+PUMP_INTERVAL = 0.03
+# Chromium sends the next screencast frame only once the last is acked, so the
+# ack is the frame-rate cap: a spinner or a video would otherwise be encoded,
+# decoded and shipped at the compositor's 60fps.
+MIN_FRAME_GAP = 1 / 20
+# How often the url/title in the status bar are refreshed. title() is a round
+# trip to the renderer, so it isn't asked on every pump.
+META_INTERVAL = 0.5
+
+# Screenshot fallback, for a browser the screencast couldn't be started on.
+# Fast enough that typing feels attached to the page, slow enough that an idle
 # session isn't screenshotting a browser 30 times a second for no reason.
 FRAME_INTERVAL = 0.35
 # A command (click/type) makes the page change, so grab a frame promptly after
@@ -165,8 +181,19 @@ class TakeoverSession:
 
         self._commands = queue.Queue()
         self._frame = None            # latest JPEG bytes
+        self._frame_seq = 0           # bumped per frame, so a stream can wait for the next
         self._meta = {"url": "", "title": ""}
         self._state_lock = threading.Lock()
+        self._frame_ready = threading.Condition(self._state_lock)
+
+        # Screencast state, touched only by the worker thread.
+        self._cast_ok = True          # False once it's failed; screenshots from then on
+        self._cast_page = None        # the page being cast
+        self._cdp = None              # its CDP session
+        self._pending_ack = None      # (cdp, sessionId) of the frame not yet acked
+        self._last_ack_at = 0.0
+        self._held_frame = None       # painted before the first page committed
+        self._published_at = 0.0      # when the last frame, of either kind, went out
 
         self.status = "starting"      # starting | running | saving | closed | error
         self.error = ""
@@ -202,6 +229,15 @@ class TakeoverSession:
     def frame(self):
         with self._state_lock:
             return self._frame
+
+    def wait_frame(self, after_seq, timeout):
+        """(seq, frame) for the first frame newer than `after_seq`, blocking up
+        to `timeout` seconds for one. On a timeout, or once the session ends,
+        returns the current pair as-is — the caller compares `seq` to tell."""
+        with self._frame_ready:
+            self._frame_ready.wait_for(
+                lambda: self._frame_seq != after_seq or not self.alive(), timeout)
+            return self._frame_seq, self._frame
 
     def meta(self):
         with self._state_lock:
@@ -263,14 +299,19 @@ class TakeoverSession:
             # page they can't see or reach. Registered after `_active` is set,
             # so a popup arriving mid-setup isn't immediately overwritten.
             context.on("page", self._on_new_page)
+            self._cast(page)
 
+            # See _wait_until: with the screencast up, navigations return as
+            # soon as the response starts, so the user watches the page load.
             self.navigating = True
             try:
-                page.goto(self.start_url, wait_until="domcontentloaded",
-                          timeout=45000)
+                page.goto(self.start_url, wait_until=self._wait_until(), timeout=45000)
             finally:
                 self.navigating = False
             self.status = "running"
+            if self._held_frame is not None:
+                self._publish(self._held_frame)
+                self._held_frame = None
             self._loop(context)
         except Exception as e:                    # noqa: BLE001 — reported to the UI
             logger.exception("Sign-in browser failed for %r", self.user)
@@ -290,6 +331,10 @@ class TakeoverSession:
                     pass
             if self.status != "error":
                 self.status = "closed"
+            # Wake any stream waiting on a frame, so it ends now rather than
+            # at its next keepalive.
+            with self._frame_ready:
+                self._frame_ready.notify_all()
             self._done.set()
             with _registry_lock:
                 if _sessions.get(self.user) is self:
@@ -319,6 +364,10 @@ class TakeoverSession:
         return self._active
 
     def _loop(self, context):
+        last_meta = last_shot = 0.0
+        # When the user last did something the screencast hasn't answered yet;
+        # 0 once it has. Starts armed so a page that never paints still shows.
+        nudge_at = time.time()
         while True:
             now = time.time()
             if now - self.touched_at > IDLE_TIMEOUT:
@@ -330,11 +379,17 @@ class TakeoverSession:
                 self._save(context, close=True)
                 return
 
+            # Follows a popup opening, or closing back to its opener.
+            page = self._current_page()
+            if self._cast_ok and page is not self._cast_page:
+                self._cast(page)
+
             acted = False
             try:
-                command = self._commands.get(timeout=FRAME_INTERVAL)
+                command = self._commands.get_nowait()
             except queue.Empty:
                 command = None
+                self._pump(page)
 
             if command is not None:
                 kind = command.get("kind")
@@ -370,20 +425,39 @@ class TakeoverSession:
                 for item in self._compact(batch):
                     self._apply(item)
                 acted = True
+                nudge_at = time.time()
 
-            if acted:
-                time.sleep(POST_COMMAND_DELAY)
-            self._capture()
+            self._ack_if_due()
+            now = time.time()
+            if self._cast_ok and nudge_at and now - nudge_at > 1.0:
+                # Safety net. A window Chromium decides is hidden can stop
+                # repainting, and then the screencast has nothing to send —
+                # while a screenshot forces a frame regardless. One per action,
+                # and only if the screencast has stayed silent since it.
+                if self._published_at < nudge_at:
+                    self._capture()
+                nudge_at = 0
+            if not self._cast_ok and (acted or now - last_shot >= FRAME_INTERVAL):
+                if acted:
+                    time.sleep(POST_COMMAND_DELAY)
+                self._capture()
+                last_shot = last_meta = time.time()
+            elif now - last_meta >= META_INTERVAL:
+                self._update_meta(page)
+                last_meta = now
 
     @staticmethod
     def _compact(batch):
-        """Drop navigations that a later one in the same batch supersedes.
+        """Drop navigations that a later one in the same batch supersedes, and
+        merge runs of scrolls into one.
 
-        `nav` blocks this thread until the page loads, so someone who retyped
-        an address — because the first attempt looked like it did nothing —
-        would otherwise wait out every attempt in turn, one whole page load
-        after another. Retrying made it strictly worse. Only the last address
-        can be the one they want.
+        `nav` blocks this thread until the response starts, so someone who
+        retyped an address — because the first attempt looked like it did
+        nothing — would otherwise wait out every attempt in turn. Retrying made
+        it strictly worse. Only the last address can be the one they want.
+
+        A flick of a trackpad is dozens of wheel events; summed, it's one
+        scroll to the same place and one repaint instead of dozens.
 
         `back`/`forward`/`reload` are deliberately left alone: two Backs mean
         go back twice, and collapsing them would swallow the second."""
@@ -391,10 +465,145 @@ class TakeoverSession:
         for i, item in enumerate(batch):
             if item.get("kind") == "nav":
                 last_nav = i
-        if last_nav < 0:
-            return batch
-        return [item for i, item in enumerate(batch)
-                if item.get("kind") != "nav" or i == last_nav]
+        out = []
+        for i, item in enumerate(batch):
+            kind = item.get("kind")
+            if kind == "nav" and i != last_nav:
+                continue
+            if kind == "scroll" and out and out[-1].get("kind") == "scroll":
+                try:
+                    out[-1] = {"kind": "scroll",
+                               "dy": float(out[-1].get("dy") or 0) + float(item.get("dy") or 0)}
+                except (TypeError, ValueError):
+                    out.append(item)
+                continue
+            out.append(item)
+        return out
+
+    # ── the screencast ──
+
+    def _cast(self, page):
+        """Point the screencast at `page`, stopping it on whatever page it was
+        on. Any failure turns it off for the rest of the session and the loop
+        falls back to screenshots — a picture that updates slowly beats none."""
+        self._stop_cast()
+        self._cast_page = page
+        if page is None:
+            return
+        try:
+            cdp = page.context.new_cdp_session(page)
+            # Bound to this session: frames still in flight from the page
+            # being left must not be acked against, or published over, the new
+            # one.
+            cdp.on("Page.screencastFrame",
+                   lambda params, c=cdp: self._on_cast_frame(c, params))
+            cdp.send("Page.startScreencast", {
+                "format": "jpeg", "quality": FRAME_QUALITY,
+                "maxWidth": VIEWPORT["width"], "maxHeight": VIEWPORT["height"],
+            })
+            self._cdp = cdp
+        except Exception:                         # noqa: BLE001 — fall back, don't die
+            self._cdp = None
+            # A popup that closed itself while this attached isn't a reason to
+            # give up on the screencast; the loop moves on to the next page.
+            try:
+                closed = page.is_closed()
+            except Exception:                     # noqa: BLE001
+                closed = True
+            if not closed:
+                logger.warning("Screencast unavailable for %r; using screenshots",
+                               self.user, exc_info=True)
+                self._cast_ok = False
+
+    def _stop_cast(self):
+        cdp, self._cdp, self._pending_ack = self._cdp, None, None
+        if cdp is None:
+            return
+        # Both best-effort: the page may already be closed, taking the session
+        # with it.
+        for call in (lambda: cdp.send("Page.stopScreencast"), cdp.detach):
+            try:
+                call()
+            except Exception:                     # noqa: BLE001
+                pass
+
+    def _on_cast_frame(self, cdp, params):
+        """A repaint. Runs on this thread, from inside whatever playwright call
+        it's in. Publishes the frame; the ack — which asks for the next one —
+        waits for the loop, so it can be spaced out to MIN_FRAME_GAP."""
+        if cdp is not self._cdp:
+            return
+        self._pending_ack = (cdp, params.get("sessionId"))
+        try:
+            frame = base64.b64decode(params.get("data") or "")
+        except (ValueError, TypeError):
+            return
+        # Held back until the first page has actually started arriving: before
+        # that the page is about:blank, and a white frame would take down the
+        # page's "Loading" overlay to show the user nothing. Kept rather than
+        # dropped, because a page that painted once and never again would
+        # otherwise leave the overlay up for good (see _run).
+        if self.status == "starting":
+            self._held_frame = frame
+            return
+        self._publish(frame)
+        # Straight away when the gap allows; waiting for the loop's next pass
+        # instead roughly halved the frame rate an animating page got.
+        self._ack_if_due()
+
+    def _ack_if_due(self):
+        if self._pending_ack is None or time.time() - self._last_ack_at < MIN_FRAME_GAP:
+            return
+        cdp, session_id = self._pending_ack
+        self._pending_ack = None
+        self._last_ack_at = time.time()
+        try:
+            cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
+        except Exception:                         # noqa: BLE001 — page went away
+            pass
+
+    def _pump(self, page):
+        """Idle for PUMP_INTERVAL inside playwright, which is what lets
+        screencast events reach this thread at all. Shorter when an ack is
+        waiting: sleeping past the moment it falls due is time the screencast
+        sits stopped, and cost an animating page about half its frames."""
+        wait = PUMP_INTERVAL
+        if self._pending_ack is not None:
+            due = self._last_ack_at + MIN_FRAME_GAP - time.time()
+            wait = min(wait, max(due, 0.005))
+        if page is not None:
+            try:
+                page.wait_for_timeout(wait * 1000)
+                return
+            except Exception:                     # noqa: BLE001 — closed mid-wait
+                pass
+        time.sleep(wait)
+
+    def _publish(self, frame):
+        self._published_at = time.time()
+        with self._frame_ready:
+            self._frame = frame
+            self._frame_seq += 1
+            self._frame_ready.notify_all()
+
+    def _update_meta(self, page):
+        if page is None:
+            return
+        try:
+            meta = {"url": page.url, "title": page.title()}
+        except Exception:                         # noqa: BLE001 — mid-navigation
+            return
+        with self._state_lock:
+            self._meta = meta
+
+    def _wait_until(self):
+        """How long a navigation blocks this thread. With the screencast up,
+        only until the response starts: returning then is what lets the loop
+        get back to pumping frames, so the user watches the page load instead
+        of a frozen picture of the one being left — and a bad address still
+        fails before commit. The screenshot fallback has no frames to pump, and
+        a capture of a page that has only just committed is a blank one."""
+        return "commit" if self._cast_ok else "domcontentloaded"
 
     def _apply(self, command):
         """One input command against the active page. Every failure here is
@@ -433,14 +642,14 @@ class TakeoverSession:
             elif kind == "scroll":
                 page.mouse.wheel(0, float(command.get("dy") or 0))
             elif kind == "nav":
-                page.goto(command.get("url") or "", wait_until="domcontentloaded",
+                page.goto(command.get("url") or "", wait_until=self._wait_until(),
                           timeout=45000)
             elif kind == "back":
-                page.go_back(wait_until="domcontentloaded", timeout=30000)
+                page.go_back(wait_until=self._wait_until(), timeout=30000)
             elif kind == "forward":
-                page.go_forward(wait_until="domcontentloaded", timeout=30000)
+                page.go_forward(wait_until=self._wait_until(), timeout=30000)
             elif kind == "reload":
-                page.reload(wait_until="domcontentloaded", timeout=30000)
+                page.reload(wait_until=self._wait_until(), timeout=30000)
         except Exception as e:                    # noqa: BLE001 — see docstring
             if moving:
                 # Playwright's messages are several lines of stack-ish detail;
@@ -464,8 +673,8 @@ class TakeoverSession:
             # the previous frame is better than blanking the user's view.
             return
         with self._state_lock:
-            self._frame = shot
             self._meta = meta
+        self._publish(shot)
 
     def _save(self, context, close):
         """Write storage_state out. `close` decides whether this was the end of
