@@ -44,6 +44,23 @@ VIEWPORT = {"width": 1280, "height": 800}
 
 LOCALE = "en-US"
 
+# Playwright launches Chromium with --enable-automation, which is what sets
+# navigator.webdriver = true — the first thing a sign-in page checks, and
+# the reason Google answers "This browser or app may not be secure". Dropping
+# the flag and the matching Blink feature makes it read false again. Shared by
+# both browsers: the site should see the same one sign in and come back.
+IGNORE_DEFAULT_ARGS = ["--enable-automation"]
+LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled"]
+
+
+def launch_kwargs(headless, channel=None):
+    """The `chromium.launch()` arguments both browsers share."""
+    kwargs = {"headless": headless, "ignore_default_args": list(IGNORE_DEFAULT_ARGS),
+              "args": list(LAUNCH_ARGS)}
+    if channel:
+        kwargs["channel"] = channel
+    return kwargs
+
 
 def _log(message):
     """Stderr, never stdout — see the module docstring."""
@@ -164,7 +181,7 @@ def _install_browser_hook(sw):
 
         state = _state_path()
         pw = await async_playwright().start()
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(**launch_kwargs(headless=True))
         try:
             context = await browser.new_context(**context_kwargs(browser, state))
         except Exception as e:                    # noqa: BLE001 — degrade, don't die

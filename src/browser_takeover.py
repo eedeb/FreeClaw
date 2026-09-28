@@ -49,7 +49,7 @@ import threading
 import time
 
 import src.browser_profiles as profiles
-from src.browser_mcp_shim import VIEWPORT, context_kwargs
+from src.browser_mcp_shim import VIEWPORT, context_kwargs, launch_kwargs
 from src.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -283,7 +283,7 @@ class TakeoverSession:
         playwright = browser = context = None
         try:
             playwright = sync_playwright().start()
-            browser = playwright.chromium.launch(headless=not headful)
+            browser = playwright.chromium.launch(**launch_kwargs(headless=not headful))
 
             # Start from whatever this user is already signed into, so adding a
             # second site doesn't silently drop the first — storage_state is
