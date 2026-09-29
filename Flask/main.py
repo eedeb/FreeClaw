@@ -10,6 +10,7 @@ import src.browser_setup as browser_setup
 import src.browser_takeover as browser_takeover
 import src.cancellation as cancellation
 import src.mcp_client as mcp_client
+import src.mcp_catalog as mcp_catalog
 import src.session as sessions
 import src.telemetry as telemetry
 from src.users import (
@@ -34,6 +35,8 @@ from datetime import datetime
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 from dotenv import load_dotenv, dotenv_values
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote, urljoin
+import requests
 import os
 import sys
 load_dotenv()
@@ -227,6 +230,13 @@ def settings_page():
     if not logged_in():
         return redirect(url_for('login'))
     return render_template('settings.html')
+
+
+@app.route('/appstore')
+def appstore_page():
+    if not logged_in():
+        return redirect(url_for('login'))
+    return render_template('appstore.html')
 
 
 # ── USER / CONVERSATION API ──────────────────────────────────
@@ -1472,6 +1482,32 @@ _MCP_BAD_CHARS = ("'", '"', '\n', '\r')
 # value, so it's still out.
 _MCP_BAD_COMMAND_CHARS = ("'", '\n', '\r')
 
+# The optional extras an App Store install can carry (EXTRA_FIELDS in
+# src/mcp_client.py): a header to send the token in, env vars for a stdio
+# child, and the vendor's site for the icon.
+_HEADER_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
+_ENV_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,63}$')
+_SITE_RE = re.compile(r'^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
+
+
+# A query parameter whose name says it holds a credential — how Exa and Tavily
+# take their API keys. Masked on the way out like a token is.
+_SECRET_PARAM_RE = re.compile(r'(key|token|secret|auth)', re.IGNORECASE)
+
+
+def _redact_url(url):
+    """`url` with any credential-looking query values replaced by dots."""
+    if not url or '?' not in url:
+        return url
+    try:
+        parts = urlsplit(url)
+        query = '&'.join(
+            f"{quote(k)}={'•••' if _SECRET_PARAM_RE.search(k) and v else quote(v)}"
+            for k, v in parse_qsl(parts.query, keep_blank_values=True))
+        return urlunsplit(parts._replace(query=query))
+    except ValueError:
+        return url
+
 
 def _mcp_server_public(s):
     """Shape a stored server for the client. The token is write-only — we only
@@ -1485,12 +1521,21 @@ def _mcp_server_public(s):
     in place of the command."""
     out = {
         'name': s.get('name', ''),
-        'url': s.get('url', ''),
+        'url': _redact_url(s.get('url', '')),
         'has_token': bool((s.get('token') or '').strip()),
         'enabled': s.get('enabled', True),
         'transport': s.get('transport') or mcp_client.HTTP,
         'command': s.get('command', ''),
     }
+    # The header's *name* and the env var *names* aren't secrets and say what
+    # a server is set up with; their values are, and stay server-side.
+    if s.get('header'):
+        out['header'] = s['header']
+    if s.get('env') and not s.get('builtin'):
+        out['env_keys'] = sorted(s['env'])
+    for key in ('site', 'catalog'):
+        if s.get(key):
+            out[key] = s[key]
     if s.get('builtin'):
         out['builtin'] = True
         out['description'] = s.get('description', '')
@@ -1554,6 +1599,14 @@ def api_add_mcp():
     token = str(data.get('token', '')).strip()
     transport = str(data.get('transport', '') or mcp_client.HTTP).strip().lower()
     command = str(data.get('command', '')).strip()
+    header = str(data.get('header', '') or '').strip()
+    site = str(data.get('site', '') or '').strip().lower()
+    catalog = str(data.get('catalog', '') or '').strip()
+    raw_env = data.get('env') or {}
+    if not isinstance(raw_env, dict):
+        return jsonify({'error': 'env must be an object of NAME: value pairs.'}), 400
+    env = {str(k).strip(): str(v if v is not None else '').strip() for k, v in raw_env.items()}
+    env = {k: v for k, v in env.items() if k and v}
 
     if transport not in mcp_client.TRANSPORTS:
         return jsonify({'error': f"Transport must be one of: {', '.join(mcp_client.TRANSPORTS)}."}), 400
@@ -1570,12 +1623,30 @@ def api_add_mcp():
         if any(c in command for c in _MCP_BAD_COMMAND_CHARS):
             return jsonify({'error': 'The command cannot contain single quotes or newlines. '
                                      'Use double quotes to wrap a path with spaces.'}), 400
+        header = ''
+        for key, val in env.items():
+            if not _ENV_NAME_RE.match(key):
+                return jsonify({'error': f"'{key}' isn't a valid environment variable name."}), 400
+            if any(c in val for c in _MCP_BAD_CHARS):
+                return jsonify({'error': f'The value for {key} contains unsupported characters (quotes or newlines).'}), 400
     else:
         command = ''
+        # Environment variables mean nothing to a server we only reach over
+        # the network.
+        env = {}
+        if header and not _HEADER_NAME_RE.match(header):
+            return jsonify({'error': 'The header name can only contain letters, digits, dashes and underscores.'}), 400
+        if header.lower() in ('content-type', 'accept', 'mcp-protocol-version', 'mcp-session-id'):
+            return jsonify({'error': f"'{header}' is set by FreeClaw itself and can't carry the key."}), 400
         if not url:
             return jsonify({'error': 'A URL is required for an HTTP server.'}), 400
         if not re.match(r'^https?://', url, re.IGNORECASE):
             return jsonify({'error': 'URL must start with http:// or https://.'}), 400
+
+    if site and not _SITE_RE.match(site):
+        return jsonify({'error': 'The site must be a bare domain like example.com.'}), 400
+    if catalog and not re.match(r'^[a-z0-9-]{1,40}$', catalog):
+        catalog = ''
 
     for field, val in (('name', name), ('URL', url), ('token', token)):
         if any(c in val for c in _MCP_BAD_CHARS):
@@ -1583,6 +1654,9 @@ def api_add_mcp():
 
     entry = {'name': name, 'url': url, 'token': token, 'enabled': True,
              'transport': transport, 'command': command}
+    for key, val in (('header', header), ('env', env), ('site', site), ('catalog', catalog)):
+        if val:
+            entry[key] = val
 
     with config_lock:
         servers = mcp_client.read_servers()
@@ -1732,6 +1806,142 @@ def api_delete_mcp(name):
     return jsonify({'ok': True, 'user': view_user, 'users': list_users(),
                     'servers': [_mcp_server_public(s)
                                 for s in mcp_client.read_servers(view_user)]})
+
+
+# ── APP STORE ────────────────────────────────────────────────
+#
+# The store itself is a page (templates/appstore.html) over the MCP routes
+# above: installing is POST /api/mcp, removing is DELETE. What it adds is the
+# catalog, and the icons the desktop shows for each installed server.
+
+@app.route('/api/appstore/catalog', methods=['GET'])
+def api_appstore_catalog():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    return jsonify({'catalog': mcp_catalog.CATALOG})
+
+
+# host -> (fetched_at, (bytes, mimetype) or None). A miss is retried after an
+# hour; a hit is kept for the life of the process.
+_icon_cache = {}
+_ICON_MISS_TTL = 3600
+_ICON_MAX_BYTES = 256 * 1024
+_ICON_LINK_RE = re.compile(r'<link\b[^>]*>', re.IGNORECASE)
+# Quoted or bare — plenty of generated sites write `rel=icon href=/x.ico`.
+_ICON_ATTR_RE = re.compile(r"""\b(rel|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.IGNORECASE)
+
+
+def _icon_hosts():
+    """Hosts this server will fetch an icon for: the catalog's sites, and the
+    site or URL host of every configured MCP server. Nothing else — a free
+    `?host=` would let any logged-in page make this machine fetch any address
+    on its network."""
+    hosts = set(mcp_catalog.SITES)
+    for srv in mcp_client.read_servers():
+        if srv.get('site'):
+            hosts.add(srv['site'].lower())
+        if srv.get('url'):
+            try:
+                host = urlsplit(srv['url']).hostname
+            except ValueError:
+                host = None
+            if host:
+                hosts.add(host.lower())
+    return hosts
+
+
+def _get_icon_bytes(url):
+    resp = requests.get(url, timeout=(3, 4), stream=True,
+                        headers={'User-Agent': 'Mozilla/5.0 (FreeClaw app icon)'})
+    try:
+        if resp.status_code != 200:
+            return None
+        ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+        if not (ctype.startswith('image/') or ctype in ('application/octet-stream', 'image/x-icon')):
+            return None
+        data = resp.raw.read(_ICON_MAX_BYTES + 1, decode_content=True)
+        if not data or len(data) > _ICON_MAX_BYTES:
+            return None
+        if ctype == 'application/octet-stream':
+            ctype = 'image/x-icon'
+        return data, ctype
+    finally:
+        resp.close()
+
+
+def _find_icon(host):
+    """The best icon `host` (or, failing that, its parent domain) publishes:
+    a declared apple-touch-icon or icon from its home page, else /favicon.ico.
+    None if there's nothing — the desktop then draws the name's first letter."""
+    candidates = [host]
+    labels = host.split('.')
+    if len(labels) > 2:
+        candidates.append('.'.join(labels[-2:]))
+    for h in candidates:
+        base = f'https://{h}/'
+        links = []
+        try:
+            resp = requests.get(base, timeout=(3, 4), stream=True,
+                                headers={'User-Agent': 'Mozilla/5.0 (FreeClaw app icon)'})
+            try:
+                if resp.status_code == 200 and 'html' in (resp.headers.get('Content-Type') or ''):
+                    html = resp.raw.read(300_000, decode_content=True).decode('utf-8', 'replace')
+                    base = resp.url or base
+                    for tag in _ICON_LINK_RE.findall(html):
+                        attrs = {m[0].lower(): m[1] or m[2] or m[3]
+                                 for m in _ICON_ATTR_RE.findall(tag)}
+                        rel = attrs.get('rel', '').lower()
+                        if 'icon' in rel and attrs.get('href'):
+                            # Bigger first: an apple-touch-icon is usually 180px,
+                            # a plain icon often 16 or 32.
+                            rank = 0 if 'apple-touch' in rel else 1
+                            links.append((rank, urljoin(base, attrs['href'])))
+            finally:
+                resp.close()
+        except requests.RequestException:
+            pass
+        links.sort(key=lambda x: x[0])
+        for _, href in links + [(2, urljoin(base, '/favicon.ico'))]:
+            if not href.startswith('https://') and not href.startswith('http://'):
+                continue
+            try:
+                found = _get_icon_bytes(href)
+            except requests.RequestException:
+                found = None
+            if found:
+                return found
+    return None
+
+
+@app.route('/api/appstore/icon', methods=['GET'])
+def api_appstore_icon():
+    """An installed app's icon, fetched from its vendor's site here rather
+    than by the page, so the list of what someone has installed isn't handed
+    to a third-party favicon service."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    host = (request.args.get('host') or '').strip().lower()
+    if not host or host not in _icon_hosts():
+        return jsonify({'error': 'Unknown host'}), 404
+    cached = _icon_cache.get(host)
+    if cached is None or (cached[1] is None and time.time() - cached[0] > _ICON_MISS_TTL):
+        try:
+            found = _find_icon(host)
+        except Exception:
+            logger.exception("Couldn't fetch an icon for %s", host)
+            found = None
+        cached = (time.time(), found)
+        _icon_cache[host] = cached
+    if cached[1] is None:
+        return jsonify({'error': 'No icon'}), 404
+    data, ctype = cached[1]
+    resp = Response(data, mimetype=ctype)
+    resp.headers['Cache-Control'] = 'private, max-age=86400'
+    # Only ever shown through <img>, but an SVG opened directly would run as a
+    # page on this origin. It gets nothing to run with.
+    resp.headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
 
 
 # ── LLM PROVIDERS (env-backed parallel lists) ────────────────

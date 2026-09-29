@@ -3650,7 +3650,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     command_name, tc["function"]["arguments"], exc_info=True,
                 )
             if args_dict is not None:
-                yield {"type": "tool_call", "name": command_name, "arguments": args_dict}
+                call_event = {"type": "tool_call", "name": command_name, "arguments": args_dict}
+                # Which MCP server this call goes to, so the desktop can light
+                # up that app's icon while it runs. Looked up rather than parsed
+                # back out of the name: sanitizing and de-duplicating make
+                # 'mcp_<server>_<tool>' ambiguous for a server with '_' in it.
+                mcp_entry = registry_for(_tools_user()).get(command_name)
+                if mcp_entry:
+                    call_event["mcp"] = mcp_entry["server"].get("name")
+                yield call_event
                 bash_approved = False
                 # Checked before the approval gate on purpose: a call that isn't
                 # going to run shouldn't put a prompt in front of the user, and

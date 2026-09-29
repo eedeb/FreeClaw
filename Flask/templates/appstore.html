@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw · App Store</title>
+  <meta name="theme-color" content="#0d0d0f"/>
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <script>
+    // Opened as a window on the chat desktop: the desktop is the navigation
+    // there, so this page drops its own header.
+    if (window.self !== window.top) document.documentElement.classList.add('embedded');
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0d0f; --surface: #141416; --surface-2: #18181c; --border: #222228;
+      --accent: #c8f04a; --accent-dim: #a8cc38; --text: #e8e8ec;
+      --muted: #666672; --err: #e05555; --warn: #e0b43c;
+      --radius: 4px; --mono: 'IBM Plex Mono', monospace; --sans: 'Syne', sans-serif;
+    }
+    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-tap-highlight-color: transparent; color-scheme: dark; }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px; opacity: 0.35; pointer-events: none; z-index: 0;
+    }
+    .wrap { position: relative; z-index: 1; max-width: 980px; margin: 0 auto; padding: 20px 18px 80px; }
+    a { color: var(--accent-dim); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 22px;
+    }
+    header .logo { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; flex-shrink: 0; }
+    header .logo img { width: 100%; height: 100%; object-fit: cover; }
+    header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+    header .sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+    header .spacer { flex: 1; }
+    .nav-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      border-radius: var(--radius); padding: 7px 12px; font-family: var(--mono); font-size: 12px;
+      cursor: pointer; text-decoration: none; transition: all 0.15s;
+    }
+    .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); text-decoration: none; }
+    html.embedded header { display: none; }
+    html.embedded .wrap { padding-top: 16px; }
+
+    /* ── Hero ── */
+    .hero { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+    .hero-text { flex: 1; min-width: 220px; }
+    .hero h2 { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+    .hero p { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 4px; max-width: 520px; }
+    .search {
+      display: flex; align-items: center; gap: 8px; flex: 0 1 280px; min-width: 200px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 8px 14px;
+      transition: border-color 0.15s;
+    }
+    .search:focus-within { border-color: var(--accent-dim); }
+    .search svg { width: 14px; height: 14px; color: var(--muted); flex-shrink: 0; }
+    .search input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--text); font-family: var(--mono); font-size: 12px; }
+
+    /* ── Tabs ── */
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted);
+      font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; padding: 9px 12px 10px; cursor: pointer;
+      white-space: nowrap; transition: color 0.15s, border-color 0.15s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab .count { display: inline-block; min-width: 18px; margin-left: 5px; padding: 0 5px; border-radius: 9px; background: var(--border); color: var(--text); font-size: 10px; text-align: center; }
+    .pane[hidden] { display: none; }
+
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+    .chip {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted); border-radius: 999px;
+      font-family: var(--mono); font-size: 11px; padding: 5px 11px; cursor: pointer; transition: all 0.15s;
+    }
+    .chip:hover { color: var(--text); }
+    .chip.active { color: #10100c; background: var(--accent); border-color: var(--accent); }
+
+    /* ── App icon tile (shared by the grid, the list and the install sheet) ── */
+    .ico {
+      width: 46px; height: 46px; border-radius: 12px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; overflow: hidden;
+      background: linear-gradient(160deg, #1f1f25, #131317);
+      border: 1px solid rgba(255,255,255,0.07);
+      box-shadow: 0 6px 16px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+    .ico img { width: 28px; height: 28px; object-fit: contain; border-radius: 6px; }
+    .ico .letter { font-family: var(--sans); font-weight: 700; font-size: 21px; color: hsl(var(--h, 80) 70% 70%); text-transform: uppercase; }
+    .ico.letter-tile { background: linear-gradient(160deg, hsl(var(--h, 80) 30% 17%), hsl(var(--h, 80) 30% 9%)); }
+
+    /* ── Catalog grid ── */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+    .app {
+      display: flex; flex-direction: column; gap: 10px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .app:hover { border-color: #33333c; transform: translateY(-1px); }
+    .app-top { display: flex; gap: 12px; align-items: center; }
+    .app-name { font-size: 15px; font-weight: 700; }
+    .app-meta { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 3px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); font-size: 9.5px; letter-spacing: 0.03em; }
+    .badge.free { color: var(--accent-dim); border-color: rgba(200,240,74,0.25); }
+    .badge.local { color: #9ab8e8; border-color: rgba(154,184,232,0.25); }
+    .app-desc { font-family: var(--mono); font-size: 11px; color: #a0a0aa; line-height: 1.6; flex: 1; }
+    .app-foot { display: flex; align-items: center; gap: 10px; }
+    .app-foot .links { flex: 1; display: flex; gap: 12px; font-family: var(--mono); font-size: 10.5px; flex-wrap: wrap; }
+
+    button.primary {
+      background: var(--accent); color: #0d0d0f; border: none; border-radius: 7px;
+      padding: 8px 14px; font-family: var(--sans); font-weight: 700; font-size: 12.5px; cursor: pointer; transition: transform 0.1s, opacity 0.15s, background 0.15s;
+    }
+    button.primary:hover { background: #d4f766; }
+    button.primary:active { transform: scale(0.97); }
+    button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.ghost {
+      background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 7px;
+      padding: 8px 14px; font-family: var(--sans); font-weight: 600; font-size: 12.5px; cursor: pointer; transition: all 0.15s;
+    }
+    button.ghost:hover { border-color: var(--accent-dim); }
+    .installed-tag { font-family: var(--mono); font-size: 11px; color: var(--accent-dim); white-space: nowrap; }
+
+    .empty { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding: 22px 2px; line-height: 1.7; }
+
+    /* ── Installed list ── */
+    .list { display: flex; flex-direction: column; gap: 8px; }
+    .row {
+      display: flex; align-items: center; gap: 13px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px;
+      transition: border-color 0.2s, box-shadow 0.3s;
+    }
+    .row.flash { border-color: var(--accent-dim); box-shadow: 0 0 0 3px rgba(200,240,74,0.12); }
+    .row .ico { width: 40px; height: 40px; border-radius: 10px; }
+    .row .ico img { width: 24px; height: 24px; }
+    .row .ico .letter { font-size: 18px; }
+    .row.off .ico { filter: grayscale(1); opacity: 0.5; }
+    .row-info { flex: 1; min-width: 0; }
+    .row-name { font-size: 14px; font-weight: 700; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .row-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .state { font-family: var(--mono); font-size: 9.5px; font-weight: 500; padding: 1px 7px; border-radius: 9px; letter-spacing: 0.03em; }
+    .state.on { color: #10100c; background: var(--accent-dim); }
+    .state.off { color: var(--muted); border: 1px solid var(--border); }
+    .del {
+      background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 7px;
+      padding: 6px 11px; font-family: var(--mono); font-size: 10.5px; cursor: pointer; flex-shrink: 0; transition: all 0.15s;
+    }
+    .del:hover, .del.confirm { border-color: rgba(224,85,85,0.5); color: var(--err); }
+    .del:disabled { opacity: 0.4; cursor: default; }
+    .builtin-note { font-family: var(--mono); font-size: 10px; color: var(--muted); flex-shrink: 0; }
+
+    /* ── Custom server form ── */
+    .warnbox {
+      font-family: var(--mono); font-size: 11px; line-height: 1.65; color: #d8d0b8;
+      border: 1px solid rgba(224,180,60,0.3); border-left: 3px solid var(--warn);
+      background: rgba(224,180,60,0.06); border-radius: var(--radius); padding: 11px 13px; margin-bottom: 16px;
+    }
+    .warnbox b { color: var(--warn); }
+    .form { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; max-width: 620px; }
+    .label { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; display: flex; justify-content: space-between; gap: 10px; }
+    .label a { text-transform: none; letter-spacing: 0; }
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field[hidden] { display: none; }
+    input.in, textarea.in {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px;
+      padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
+    }
+    textarea.in { resize: vertical; min-height: 58px; line-height: 1.5; }
+    input.in:focus, textarea.in:focus { outline: none; border-color: var(--accent-dim); }
+    .hint { font-family: var(--mono); font-size: 10px; color: var(--muted); line-height: 1.55; }
+    .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+    .seg button { background: var(--bg); border: none; color: var(--muted); font-family: var(--mono); font-size: 11.5px; padding: 7px 14px; cursor: pointer; }
+    .seg button + button { border-left: 1px solid var(--border); }
+    .seg button.active { background: var(--accent); color: #10100c; }
+    .env-pair { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; }
+    .env-pair button { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 0 10px; cursor: pointer; }
+    .env-pair button:hover { color: var(--err); border-color: rgba(224,85,85,0.5); }
+    button.link { background: none; border: none; color: var(--accent-dim); font-family: var(--mono); font-size: 11px; cursor: pointer; align-self: flex-start; padding: 0; }
+    .msg { font-family: var(--mono); font-size: 11px; line-height: 1.55; min-height: 0; }
+    .msg:empty { display: none; }
+    .msg.ok { color: var(--accent); } .msg.err { color: var(--err); } .msg.warn { color: var(--warn); }
+    .actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 4px; }
+
+    /* ── Install sheet ── */
+    .sheet-bg {
+      position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center; padding: 18px;
+      animation: fade 0.15s ease;
+    }
+    .sheet-bg[hidden] { display: none; }
+    .sheet {
+      width: 100%; max-width: 460px; max-height: calc(100vh - 36px); overflow-y: auto;
+      background: var(--surface); border: 1px solid #2a2a31; border-radius: 12px; padding: 18px;
+      display: flex; flex-direction: column; gap: 12px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+      animation: rise 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+    }
+    .sheet-head { display: flex; gap: 12px; align-items: center; }
+    .sheet-head h3 { font-size: 17px; font-weight: 700; }
+    .sheet-head .x { margin-left: auto; background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
+    .sheet-head .x:hover { color: var(--text); }
+    @keyframes fade { from { opacity: 0; } }
+    @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
+
+    .toast {
+      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
+      background: #1b1f12; border: 1px solid rgba(200,240,74,0.35); color: var(--text);
+      font-family: var(--mono); font-size: 11.5px; padding: 10px 16px; border-radius: 9px; z-index: 60;
+      opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; max-width: calc(100vw - 32px);
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%); }
+
+    @media (max-width: 560px) {
+      .env-pair { grid-template-columns: 1fr; }
+      .row { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
+    <div>
+      <h1>App Store</h1>
+      <div class="sub">mcp servers for your agent</div>
+    </div>
+    <div class="spacer"></div>
+    <a class="nav-btn" href="/">⌂ home</a>
+  </header>
+
+  <div class="hero">
+    <div class="hero-text">
+      <h2>App Store</h2>
+      <p>Give your agent new tools. Everything here is an MCP server — install one and it
+         shows up on your desktop, where you can switch it on or off.</p>
+    </div>
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Search apps" autocomplete="off" spellcheck="false"/>
+    </label>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="discover" role="tab">Discover</button>
+    <button class="tab" data-tab="installed" role="tab">Installed<span class="count" id="installed-count">0</span></button>
+    <button class="tab" data-tab="custom" role="tab">Add custom server</button>
+  </nav>
+
+  <section class="pane" id="pane-discover">
+    <div class="chips" id="chips"></div>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="grid-empty" hidden></div>
+  </section>
+
+  <section class="pane" id="pane-installed" hidden>
+    <div class="list" id="installed"></div>
+    <div class="empty" id="installed-empty" hidden>Nothing installed yet. Pick something from <a href="#" data-goto="discover">Discover</a>.</div>
+  </section>
+
+  <section class="pane" id="pane-custom" hidden>
+    <div class="warnbox">
+      <b>Not recommended unless you trust the server.</b> Nothing added here has been checked.
+      Its tools run with your agent's access, anything the agent reads can end up sent to it,
+      and a stdio server runs a program on the machine FreeClaw is on.
+    </div>
+    <form class="form" id="custom-form" autocomplete="off">
+      <div class="field">
+        <div class="label">Transport</div>
+        <div class="seg" id="c-transport">
+          <button type="button" data-t="http" class="active">HTTP(S)</button>
+          <button type="button" data-t="stdio">stdio (local command)</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="label">Name</div>
+        <input class="in" id="c-name" placeholder="my-server" maxlength="60" required/>
+      </div>
+      <div class="field" data-for="http">
+        <div class="label">Server URL</div>
+        <input class="in" id="c-url" placeholder="https://example.com/mcp" inputmode="url"/>
+        <div class="hint">Streamable HTTP endpoint. Legacy SSE-only endpoints won't connect.</div>
+      </div>
+      <div class="field" data-for="http">
+        <div class="label">Token <span>optional</span></div>
+        <input class="in" id="c-token" type="password" placeholder="sent as Authorization: Bearer …"/>
+      </div>
+      <div class="field" data-for="http">
+        <div class="label">Header name <span>optional</span></div>
+        <input class="in" id="c-header" placeholder="Authorization (default)"/>
+        <div class="hint">For servers that want the token in their own header, like <code>x-api-key</code>.</div>
+      </div>
+      <div class="field" data-for="stdio" hidden>
+        <div class="label">Command</div>
+        <input class="in" id="c-command" placeholder="npx -y @scope/some-mcp-server"/>
+        <div class="hint">Run on the FreeClaw machine, so whatever it needs (node/npx, uv/uvx, python) must be installed there. Wrap paths with spaces in double quotes.</div>
+      </div>
+      <div class="field" data-for="stdio" hidden>
+        <div class="label">Environment variables <span>optional</span></div>
+        <div id="c-env" style="display:flex;flex-direction:column;gap:6px"></div>
+        <button type="button" class="link" id="c-env-add">+ add variable</button>
+      </div>
+      <div class="msg" id="c-msg"></div>
+      <div class="actions">
+        <button type="submit" class="primary" id="c-submit">Add server</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<div class="sheet-bg" id="sheet-bg" hidden>
+  <form class="sheet" id="sheet" autocomplete="off">
+    <div class="sheet-head">
+      <div class="ico" id="s-ico"></div>
+      <div>
+        <h3 id="s-title">Install</h3>
+        <div class="app-meta" id="s-meta"></div>
+      </div>
+      <button type="button" class="x" id="s-close" aria-label="Close">×</button>
+    </div>
+    <div class="hint" id="s-desc"></div>
+    <div class="field">
+      <div class="label">Name on your desktop</div>
+      <input class="in" id="s-name" maxlength="60" required/>
+    </div>
+    <div class="field" id="s-url-field">
+      <div class="label"><span id="s-url-label">Server URL</span><a id="s-url-get" target="_blank" rel="noopener" hidden>open ↗</a></div>
+      <input class="in" id="s-url" inputmode="url"/>
+    </div>
+    <div class="field" id="s-cmd-field">
+      <div class="label">Command</div>
+      <input class="in" id="s-cmd"/>
+      <div class="hint">Runs on the FreeClaw machine and needs Node.js (npx) installed there.</div>
+    </div>
+    <div class="field" id="s-key-field">
+      <div class="label"><span id="s-key-label">API key</span><a id="s-key-get" target="_blank" rel="noopener">get one ↗</a></div>
+      <input class="in" id="s-key" type="password" autocomplete="new-password"/>
+      <div class="hint" id="s-key-hint"></div>
+    </div>
+    <div class="msg" id="s-msg"></div>
+    <div class="actions">
+      <a id="s-docs" target="_blank" rel="noopener" style="margin-right:auto;font-family:var(--mono);font-size:11px">Setup guide ↗</a>
+      <button type="button" class="ghost" id="s-cancel">Cancel</button>
+      <button type="submit" class="primary" id="s-submit">Install</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  let catalog = [];
+  let servers = [];
+  let viewUser = null;
+  let category = 'All';
+
+  // ── Icons ─────────────────────────────────────────────────────────
+  // The vendor's icon, fetched through FreeClaw (/api/appstore/icon) so this
+  // page never tells a third-party favicon service what's installed. No icon
+  // → the name's first letter on a tile tinted from the name.
+  function hueOf(name) {
+    let h = 0;
+    for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return h;
+  }
+  function hostOf(url) {
+    try { return new URL(url).hostname; } catch (_) { return ''; }
+  }
+  function fillIcon(tile, name, host) {
+    tile.innerHTML = '';
+    tile.classList.remove('letter-tile');
+    tile.style.setProperty('--h', hueOf(name));
+    const letter = () => {
+      tile.innerHTML = '';
+      tile.classList.add('letter-tile');
+      const span = document.createElement('span');
+      span.className = 'letter';
+      span.textContent = (String(name || '?').trim()[0] || '?');
+      tile.appendChild(span);
+    };
+    if (!host) return letter();
+    const img = document.createElement('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.onerror = letter;
+    img.src = '/api/appstore/icon?host=' + encodeURIComponent(host);
+    tile.appendChild(img);
+  }
+  const serverHost = s => s.site || hostOf(s.url);
+
+  // ── Data ──────────────────────────────────────────────────────────
+  async function loadAll() {
+    const [c, m] = await Promise.all([
+      fetch('/api/appstore/catalog').then(r => r.json()).catch(() => ({})),
+      fetch('/api/mcp').then(r => r.json()).catch(() => ({})),
+    ]);
+    catalog = c.catalog || [];
+    applyServers(m);
+    renderChips();
+    renderGrid();
+  }
+
+  function applyServers(data) {
+    if (!data) return;
+    if (data.servers) servers = data.servers;
+    if ('user' in data) viewUser = data.user;
+    renderInstalled();
+    renderGrid();
+  }
+
+  function installedFor(entry) {
+    return servers.find(s => s.catalog === entry.id);
+  }
+
+  // Tell the desktop around us, so the icons appear or go straight away.
+  function announce() {
+    if (window.self !== window.top) {
+      window.parent.postMessage({ type: 'freeclaw-mcp-changed' }, location.origin);
+    }
+  }
+
+  let toastTimer = null;
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+  }
+
+  // ── Tabs ──────────────────────────────────────────────────────────
+  function showTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.pane').forEach(p => { p.hidden = p.id !== 'pane-' + name; });
+  }
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
+  document.addEventListener('click', e => {
+    const a = e.target.closest('[data-goto]');
+    if (a) { e.preventDefault(); showTab(a.dataset.goto); }
+  });
+
+  // ── Discover ──────────────────────────────────────────────────────
+  function renderChips() {
+    const cats = ['All', ...new Set(catalog.map(e => e.category))];
+    const box = $('chips');
+    box.innerHTML = '';
+    for (const c of cats) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip' + (c === category ? ' active' : '');
+      b.textContent = c;
+      b.addEventListener('click', () => { category = c; renderChips(); renderGrid(); });
+      box.appendChild(b);
+    }
+  }
+
+  function authBadge(entry) {
+    if (entry.transport === 'stdio') return '<span class="badge local">local · npx</span>';
+    if (!entry.auth) return '<span class="badge free">no key</span>';
+    if (entry.auth.optional) return '<span class="badge free">key optional</span>';
+    if (entry.auth.type === 'url') return '<span class="badge">your URL</span>';
+    return '<span class="badge">API key</span>';
+  }
+
+  function matches(entry, q) {
+    if (!q) return true;
+    return [entry.name, entry.description, entry.category, entry.site]
+      .some(v => String(v || '').toLowerCase().includes(q));
+  }
+
+  function renderGrid() {
+    const q = $('q').value.trim().toLowerCase();
+    const grid = $('grid');
+    grid.innerHTML = '';
+    const shown = catalog.filter(e => (category === 'All' || e.category === category) && matches(e, q));
+    for (const entry of shown) {
+      const card = document.createElement('article');
+      card.className = 'app';
+      const have = installedFor(entry);
+      card.innerHTML = `
+        <div class="app-top">
+          <div class="ico"></div>
+          <div style="min-width:0">
+            <div class="app-name">${esc(entry.name)}</div>
+            <div class="app-meta">${esc(entry.category)} · ${authBadge(entry)}</div>
+          </div>
+        </div>
+        <div class="app-desc">${esc(entry.description)}</div>
+        <div class="app-foot">
+          <div class="links">
+            <a href="${esc(entry.docs)}" target="_blank" rel="noopener">Setup guide ↗</a>
+          </div>
+          ${have ? `<span class="installed-tag">✓ installed</span>`
+                 : `<button type="button" class="primary">Install</button>`}
+        </div>`;
+      fillIcon(card.querySelector('.ico'), entry.name, entry.site);
+      const btn = card.querySelector('button.primary');
+      if (btn) btn.addEventListener('click', () => openSheet(entry));
+      const tag = card.querySelector('.installed-tag');
+      if (tag) {
+        tag.style.cursor = 'pointer';
+        tag.title = 'Show in Installed';
+        tag.addEventListener('click', () => { showTab('installed'); flashRow(have.name); });
+      }
+      grid.appendChild(card);
+    }
+    const empty = $('grid-empty');
+    empty.hidden = shown.length > 0;
+    if (!shown.length) {
+      empty.innerHTML = `No apps match. Know the server you want? <a href="#" data-goto="custom">Add it yourself</a>.`;
+    }
+  }
+  $('q').addEventListener('input', () => {
+    renderGrid();
+    if ($('pane-discover').hidden && $('q').value) showTab('discover');
+  });
+
+  // ── Installed ─────────────────────────────────────────────────────
+  function renderInstalled() {
+    const list = $('installed');
+    list.innerHTML = '';
+    $('installed-count').textContent = servers.length;
+    $('installed-empty').hidden = servers.length > 0;
+    for (const s of servers) {
+      const row = document.createElement('div');
+      const on = s.enabled !== false;
+      row.className = 'row' + (on ? '' : ' off');
+      row.dataset.name = s.name;
+      const sub = s.builtin ? (s.description || 'Ships with FreeClaw')
+        : (s.transport === 'stdio' ? s.command : s.url);
+      row.innerHTML = `
+        <div class="ico"></div>
+        <div class="row-info">
+          <div class="row-name">${esc(s.name)}
+            <span class="state ${on ? 'on' : 'off'}">${on ? 'on' : 'off'}${viewUser ? ' for ' + esc(viewUser) : ''}</span>
+            ${s.builtin ? '<span class="badge">built-in</span>' : ''}
+          </div>
+          <div class="row-sub" title="${esc(sub)}">${esc(s.transport === 'stdio' ? 'stdio · ' : '')}${esc(sub)}</div>
+        </div>`;
+      fillIcon(row.querySelector('.ico'), s.name, s.builtin ? '' : serverHost(s));
+      if (s.builtin) {
+        const note = document.createElement('span');
+        note.className = 'builtin-note';
+        note.textContent = "can't be removed";
+        row.appendChild(note);
+      } else {
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'del';
+        del.textContent = 'delete';
+        let armed = null;
+        del.addEventListener('click', async () => {
+          if (!del.classList.contains('confirm')) {
+            del.classList.add('confirm');
+            del.textContent = 'confirm delete?';
+            armed = setTimeout(() => { del.classList.remove('confirm'); del.textContent = 'delete'; }, 3500);
+            return;
+          }
+          clearTimeout(armed);
+          del.disabled = true;
+          del.textContent = 'deleting…';
+          try {
+            const res = await fetch('/api/mcp/' + encodeURIComponent(s.name), { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+            applyServers(data);
+            announce();
+            toast(`Removed ${s.name}.`);
+          } catch (e) {
+            del.disabled = false;
+            del.classList.remove('confirm');
+            del.textContent = 'delete';
+            toast('Could not delete: ' + e.message);
+          }
+        });
+        row.appendChild(del);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  function flashRow(name) {
+    const row = [...document.querySelectorAll('#installed .row')].find(r => r.dataset.name === name);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    row.classList.add('flash');
+    setTimeout(() => row.classList.remove('flash'), 1600);
+  }
+
+  // ── Install sheet ─────────────────────────────────────────────────
+  let sheetEntry = null;
+
+  function openSheet(entry) {
+    sheetEntry = entry;
+    const a = entry.auth || null;
+    fillIcon($('s-ico'), entry.name, entry.site);
+    $('s-title').textContent = 'Install ' + entry.name;
+    $('s-meta').innerHTML = `${esc(entry.category)} · ${authBadge(entry)}`;
+    $('s-desc').textContent = entry.description;
+    $('s-name').value = uniqueName(entry.name);
+    $('s-docs').href = entry.docs;
+    $('s-msg').textContent = '';
+    $('s-msg').className = 'msg';
+
+    const stdio = entry.transport === 'stdio';
+    const pasteUrl = a && a.type === 'url';
+    $('s-url-field').hidden = stdio;
+    $('s-cmd-field').hidden = !stdio;
+    $('s-url').value = pasteUrl ? '' : (entry.url || '');
+    $('s-url').placeholder = (pasteUrl && a.placeholder) || 'https://…';
+    $('s-url-label').textContent = pasteUrl ? a.label : 'Server URL';
+    $('s-url-get').hidden = !pasteUrl;
+    if (pasteUrl) $('s-url-get').href = a.get;
+    $('s-cmd').value = entry.command || '';
+
+    const needsKey = a && a.type !== 'url';
+    $('s-key-field').hidden = !needsKey;
+    $('s-key').value = '';
+    if (needsKey) {
+      $('s-key-label').textContent = a.label + (a.optional ? ' (optional)' : '');
+      $('s-key-get').href = a.get || entry.docs;
+      $('s-key-get').hidden = !a.get;
+      $('s-key-hint').textContent =
+        a.type === 'bearer' ? 'Sent as Authorization: Bearer …'
+        : a.type === 'header' ? `Sent in the ${a.header} header.`
+        : a.type === 'query' ? `Added to the URL as ?${a.param}=…`
+        : a.type === 'env' ? `Given to the server as ${a.env}, and to nothing else.`
+        : '';
+    }
+    $('sheet-bg').hidden = false;
+    setTimeout(() => (needsKey ? $('s-key') : pasteUrl ? $('s-url') : $('s-name')).focus(), 50);
+  }
+
+  function uniqueName(base) {
+    base = base || 'app';
+    let name = base, n = 2;
+    while (servers.some(s => s.name === name)) name = `${base} ${n++}`;
+    return name;
+  }
+
+  function closeSheet() {
+    $('sheet-bg').hidden = true;
+    $('s-key').value = '';
+    sheetEntry = null;
+  }
+  $('s-close').addEventListener('click', closeSheet);
+  $('s-cancel').addEventListener('click', closeSheet);
+  $('sheet-bg').addEventListener('pointerdown', e => { if (e.target === $('sheet-bg')) closeSheet(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('sheet-bg').hidden) closeSheet(); });
+
+  function sheetBody(entry) {
+    const a = entry.auth || null;
+    const key = $('s-key').value.trim();
+    const body = {
+      name: $('s-name').value.trim(),
+      transport: entry.transport,
+      catalog: entry.id,
+      site: entry.site,
+    };
+    if (a && a.type !== 'url' && !a.optional && !key) {
+      throw new Error(`${entry.name} needs ${/^[aeiou]/i.test(a.label) ? 'an' : 'a'} ${a.label.toLowerCase()} to connect.`);
+    }
+    if (entry.transport === 'stdio') {
+      body.command = $('s-cmd').value.trim();
+      if (!body.command) throw new Error('A command is required.');
+      if (a && a.type === 'env' && key) body.env = { [a.env]: key };
+      return body;
+    }
+    let url = $('s-url').value.trim();
+    if (!url) throw new Error(a && a.type === 'url' ? `Paste your ${a.label.toLowerCase()}.` : 'A URL is required.');
+    if (!a) { /* no key at all */ }
+    else if (a.type === 'bearer') { if (key) body.token = key; }
+    else if (a.type === 'header') { if (key) { body.token = key; body.header = a.header; } }
+    else if (a.type === 'query') {
+      if (key) url += (url.includes('?') ? '&' : '?') + encodeURIComponent(a.param) + '=' + encodeURIComponent(key);
+    }
+    body.url = url;
+    return body;
+  }
+
+  $('sheet').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!sheetEntry) return;
+    const msg = $('s-msg');
+    const btn = $('s-submit');
+    let body;
+    try { body = sheetBody(sheetEntry); }
+    catch (err) { msg.textContent = err.message; msg.className = 'msg err'; return; }
+    if (viewUser) body.user = viewUser;
+    btn.disabled = true;
+    btn.textContent = sheetEntry.transport === 'stdio' ? 'Starting…' : 'Connecting…';
+    msg.textContent = sheetEntry.transport === 'stdio'
+      ? 'Starting it up — the first run can take a minute while npx downloads the package.'
+      : '';
+    msg.className = 'msg';
+    try {
+      const res = await fetch('/api/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+      const name = body.name;
+      applyServers(data);
+      announce();
+      closeSheet();
+      if (data.warning) toast(`Installed ${name} — ${data.warning}`);
+      else toast(`Installed ${name} · ${data.tool_count} tool${data.tool_count === 1 ? '' : 's'} · it's on your desktop`);
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = 'msg err';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Install';
+    }
+  });
+
+  // ── Custom server ─────────────────────────────────────────────────
+  let customTransport = 'http';
+  $('c-transport').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    customTransport = b.dataset.t;
+    $('c-transport').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+    document.querySelectorAll('#custom-form [data-for]').forEach(f => { f.hidden = f.dataset.for !== customTransport; });
+  }));
+
+  function addEnvRow(k, v) {
+    const row = document.createElement('div');
+    row.className = 'env-pair';
+    row.innerHTML = `<input class="in env-k" placeholder="NAME" spellcheck="false"/>
+                     <input class="in env-v" type="password" placeholder="value"/>
+                     <button type="button" title="Remove">×</button>`;
+    row.querySelector('.env-k').value = k || '';
+    row.querySelector('.env-v').value = v || '';
+    row.querySelector('button').addEventListener('click', () => row.remove());
+    $('c-env').appendChild(row);
+  }
+  $('c-env-add').addEventListener('click', () => addEnvRow());
+
+  $('custom-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const msg = $('c-msg');
+    const btn = $('c-submit');
+    const body = { name: $('c-name').value.trim(), transport: customTransport };
+    if (viewUser) body.user = viewUser;
+    if (customTransport === 'stdio') {
+      body.command = $('c-command').value.trim();
+      const env = {};
+      $('c-env').querySelectorAll('.env-pair').forEach(r => {
+        const k = r.querySelector('.env-k').value.trim();
+        const v = r.querySelector('.env-v').value;
+        if (k) env[k] = v;
+      });
+      if (Object.keys(env).length) body.env = env;
+    } else {
+      body.url = $('c-url').value.trim();
+      body.token = $('c-token').value.trim();
+      const header = $('c-header').value.trim();
+      if (header && header.toLowerCase() !== 'authorization') body.header = header;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    msg.textContent = '';
+    msg.className = 'msg';
+    try {
+      const res = await fetch('/api/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+      applyServers(data);
+      announce();
+      if (data.warning) { msg.textContent = data.warning; msg.className = 'msg warn'; }
+      else { msg.textContent = `Added ${body.name} · ${data.tool_count} tools. It's on your desktop.`; msg.className = 'msg ok'; }
+      $('custom-form').reset();
+      $('c-env').innerHTML = '';
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = 'msg err';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Add server';
+    }
+  });
+
+  // ── Start ─────────────────────────────────────────────────────────
+  // ?tab=installed&app=<name> — how the desktop's app window says "delete it
+  // from here", landing on the right row.
+  const params = new URLSearchParams(location.search);
+  loadAll().then(() => {
+    const tab = params.get('tab');
+    if (tab && $('pane-' + tab)) showTab(tab);
+    if (params.get('app')) flashRow(params.get('app'));
+  });
+</script>
+<script>
+  // Inside a desktop window: raise the window on any press, and hand links to
+  // the other apps (or away from the desktop) back to the page around us
+  // instead of loading them into this frame.
+  if (window.self !== window.top) {
+    const desk = window.parent;
+    document.addEventListener('pointerdown', () => {
+      desk.postMessage({ type: 'freeclaw-focus' }, location.origin);
+    }, true);
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (!a || e.defaultPrevented || a.target === '_blank' || a.getAttribute('href').startsWith('#')) return;
+      const u = new URL(a.href, location.href);
+      if (u.origin !== location.origin || u.pathname === location.pathname) return;
+      const app = { '/browser': 'browser', '/settings': 'settings', '/appstore': 'appstore' }[u.pathname];
+      e.preventDefault();
+      if (app) desk.postMessage({ type: 'freeclaw-open', app: app }, location.origin);
+      else window.top.location.href = u.href;
+    });
+  }
+</script>
+</body>
+</html>

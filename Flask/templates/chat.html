@@ -339,6 +339,54 @@
     #icon-files    { --tile-a: #2a2516; --tile-b: #17140c; }
     #icon-settings { --tile-a: #22222b; --tile-b: #131318; }
     #icon-home     { --tile-a: #1d2512; --tile-b: #11150a; }
+    #icon-appstore { --tile-a: #1c2130; --tile-b: #10131b; }
+
+    /* ── Installed MCP apps ──
+       One icon per server from the App Store. The tile holds the vendor's
+       icon, or the name's first letter tinted from the name. */
+    .app-icon.mcp-app .app-tile img { width: 30px; height: 30px; object-fit: contain; border-radius: 7px; }
+    .app-icon.mcp-app .app-tile .app-letter {
+      font-family: var(--sans); font-weight: 700; font-size: 24px; line-height: 1;
+      color: hsl(var(--h, 80) 70% 70%); text-transform: uppercase;
+    }
+    .app-icon.mcp-app.letter .app-tile { --tile-a: hsl(var(--h, 80) 30% 17%); --tile-b: hsl(var(--h, 80) 30% 9%); }
+    .app-icon.compact.mcp-app .app-tile img { width: 22px; height: 22px; }
+    .app-icon.compact.mcp-app .app-tile .app-letter { font-size: 17px; }
+    /* Switched off for this user: still there, clearly asleep. */
+    .app-icon.off .app-tile { filter: grayscale(1) brightness(0.7); opacity: 0.45; }
+    .app-icon.off .app-label { opacity: 0.5; }
+
+    /* In use: the agent is calling one of this app's tools right now. A ring
+       of light runs round the tile while it glows. */
+    @property --ring { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+    .app-tile { position: relative; }
+    .app-icon.using .app-tile {
+      box-shadow: 0 0 0 1px rgba(200,240,74,0.55), 0 0 22px 3px rgba(200,240,74,0.4), 0 8px 22px rgba(0,0,0,0.45);
+      animation: usingPulse 1.6s ease-in-out infinite;
+    }
+    .app-icon.using .app-tile::before {
+      content: '';
+      position: absolute;
+      inset: -5px;
+      border-radius: 19px;
+      padding: 2px;
+      background: conic-gradient(from var(--ring), transparent 0 50%, rgba(200,240,74,0.25) 62%, var(--accent) 80%, #fff 84%, transparent 90%);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      animation: usingRing 1.1s linear infinite;
+      pointer-events: none;
+    }
+    .app-icon.compact.using .app-tile::before { border-radius: 16px; inset: -4px; }
+    .app-icon.using .app-label { color: var(--accent); }
+    @keyframes usingRing { to { --ring: 360deg; } }
+    @keyframes usingPulse {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(200,240,74,0.55), 0 0 14px 1px rgba(200,240,74,0.3), 0 8px 22px rgba(0,0,0,0.45); }
+      50%      { box-shadow: 0 0 0 1px rgba(200,240,74,0.8), 0 0 28px 6px rgba(200,240,74,0.5), 0 8px 22px rgba(0,0,0,0.45); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .app-icon.using .app-tile, .app-icon.using .app-tile::before { animation: none; }
+    }
 
     /* ── Chat column ──
        Spans the whole height but only its thread and composer take clicks,
@@ -1435,6 +1483,72 @@
       65% { transform: translateY(0) scale(0.97); }
     }
 
+    /* ── App window ──
+       What double-clicking an installed MCP app opens: its icon, what it is,
+       and the one choice that lives here — on or off. Removing it is the App
+       Store's job. */
+    .mw {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 6px;
+      padding: 22px 20px 18px;
+      background: var(--surface);
+    }
+    .mw-icon {
+      width: 64px; height: 64px;
+      border-radius: 17px;
+      display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(160deg, var(--tile-a, #1d1d22), var(--tile-b, #121215));
+      border: 1px solid rgba(255,255,255,0.07);
+      box-shadow: 0 10px 26px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
+      margin-bottom: 6px;
+      transition: filter 0.2s, opacity 0.2s, box-shadow 0.3s;
+    }
+    .mw-icon img { width: 36px; height: 36px; object-fit: contain; border-radius: 8px; }
+    .mw-icon .app-letter { font-weight: 700; font-size: 28px; color: hsl(var(--h, 80) 70% 70%); text-transform: uppercase; }
+    .mw-icon.letter { --tile-a: hsl(var(--h, 80) 30% 17%); --tile-b: hsl(var(--h, 80) 30% 9%); }
+    .mw.off .mw-icon { filter: grayscale(1) brightness(0.7); opacity: 0.5; }
+    .mw.using .mw-icon { box-shadow: 0 0 0 1px rgba(200,240,74,0.6), 0 0 24px 4px rgba(200,240,74,0.4); }
+    .mw-name { font-size: 18px; font-weight: 700; }
+    .mw-sub {
+      font-family: var(--mono); font-size: 10px; color: var(--muted);
+      max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .mw-status { font-family: var(--mono); font-size: 11px; color: var(--muted); margin: 8px 0 4px; min-height: 16px; }
+    .mw-status b { color: var(--accent); font-weight: 500; }
+    .mw.off .mw-status b { color: var(--text); }
+    .mw.using .mw-status::before {
+      content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 6px var(--accent); margin-right: 7px; vertical-align: 1px;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .mw-seg {
+      display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+      background: var(--bg);
+    }
+    .mw-seg button {
+      background: none; border: none; color: var(--muted);
+      font-family: var(--sans); font-weight: 600; font-size: 13px;
+      padding: 9px 22px; cursor: pointer; transition: background 0.15s, color 0.15s;
+    }
+    .mw-seg button + button { border-left: 1px solid var(--border); }
+    .mw-seg button:hover:not(:disabled) { color: var(--text); }
+    .mw-seg button.on-btn.active  { background: var(--accent); color: #10100c; }
+    .mw-seg button.off-btn.active { background: #2a2a31; color: var(--text); }
+    .mw-seg button:disabled { cursor: default; }
+    .mw-msg { font-family: var(--mono); font-size: 10.5px; line-height: 1.5; min-height: 15px; margin-top: 4px; }
+    .mw-msg.err { color: var(--err); }
+    .mw-msg.warn { color: #e0b43c; }
+    .mw-note { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: auto; padding-top: 12px; line-height: 1.6; }
+    .mw-note a { color: var(--accent-dim); cursor: pointer; text-decoration: none; }
+    .mw-note a:hover { text-decoration: underline; }
+    #win-mcp .win-title .mw-title-ico { width: 13px; height: 13px; border-radius: 3px; object-fit: contain; }
+
     /* Softer corners inside the floating composer. */
     #user-input, #send-btn, #stop-btn, #upload-btn, #file-preview { border-radius: 9px; }
     #user-input { background: rgba(13,13,15,0.7); }
@@ -1468,6 +1582,12 @@
   </symbol>
   <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5.5h4V20"/>
+  </symbol>
+  <symbol id="i-appstore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 8h14l-1.2 11.2A2 2 0 0 1 15.8 21H8.2a2 2 0 0 1-2-1.8z"/><path d="M9 10.5V7a3 3 0 0 1 6 0v3.5"/><path d="M12 13.5v4M10 15.5h4"/>
+  </symbol>
+  <symbol id="i-mcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><path d="M16.5 13.5v6M13.5 16.5h6"/>
   </symbol>
 </svg>
 
@@ -1509,6 +1629,11 @@
       <span class="app-tile"><svg><use href="#i-settings"/></svg></span>
       <span class="app-label">Settings</span>
     </button>
+    <button class="app-icon" id="icon-appstore" data-app="appstore" title="App Store">
+      <span class="app-tile"><svg><use href="#i-appstore"/></svg></span>
+      <span class="app-label">App Store</span>
+    </button>
+    <!-- Installed MCP apps are added after this by refreshMcpApps(). -->
     <button class="app-icon" id="icon-home" data-app="home" title="Back to users">
       <span class="app-tile"><svg><use href="#i-home"/></svg></span>
       <span class="app-label">Home</span>
@@ -1578,6 +1703,46 @@
       <div class="win-title"><svg><use href="#i-settings"/></svg>Settings</div>
     </div>
     <div class="win-body"></div>
+    <div class="win-resize"></div>
+  </section>
+
+  <section class="win" id="win-appstore" data-app="appstore" hidden aria-label="App Store">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-appstore"/></svg>App Store</div>
+    </div>
+    <div class="win-body"></div>
+    <div class="win-resize"></div>
+  </section>
+
+  <!-- One installed MCP app at a time: switch it on or off. -->
+  <section class="win" id="win-mcp" data-app="mcp" hidden aria-label="App">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-mcp"/></svg><span class="mw-title">App</span></div>
+    </div>
+    <div class="win-body">
+      <div class="mw">
+        <div class="mw-icon"></div>
+        <div class="mw-name"></div>
+        <div class="mw-sub"></div>
+        <div class="mw-status"></div>
+        <div class="mw-seg" role="group" aria-label="Enable or disable">
+          <button type="button" class="on-btn">Enable</button>
+          <button type="button" class="off-btn">Disable</button>
+        </div>
+        <div class="mw-msg"></div>
+        <div class="mw-note"></div>
+      </div>
+    </div>
     <div class="win-resize"></div>
   </section>
 
@@ -2425,6 +2590,7 @@
     let currentIntent = null;
     let activeApproval = null;
     let activeReasoning = null;
+    let activeMcp = null;       // the installed app the running tool belongs to
 
     // The thinking is over the moment anything else shows up — text, a tool
     // call, or the end of the turn. A turn with tool calls makes several LLM
@@ -2546,6 +2712,9 @@
             if (thinking.parentNode) thinking.remove();
             activeToolIndicator = addToolLive(evt.name);
             agentBrowser.call(evt.name, evt.arguments);
+            if (activeMcp) appUsage.stop(activeMcp);
+            activeMcp = evt.mcp || null;
+            if (activeMcp) appUsage.start(activeMcp);
 
             // open_url runs entirely client-side: the backend can't reach
             // the user's browser, so it just reports the url in
@@ -2619,6 +2788,7 @@
 
           } else if (evt.type === 'tool_result') {
             agentBrowser.result(evt.name, evt.result);
+            if (activeMcp) { appUsage.stop(activeMcp); activeMcp = null; }
             if (activeToolIndicator) {
               markToolLiveDone(activeToolIndicator, evt.name);
               activeToolIndicator = null;
@@ -2694,6 +2864,7 @@
     }
 
     agentBrowser.turnEnd();
+    appUsage.stopAll();
     setBusy(false);
     if (!isStandalone) inputEl.focus();
   }
@@ -2717,35 +2888,25 @@
   // ── Load the conversation this session is currently pointed at ───
   let lastUpdatedAt = null;
 
-  // The browser app is only useful once the shadow-web server is switched on
-  // *and* its Chromium has finished downloading — before that the page it
-  // opens can't show anything. Checked once per load rather than polled, and
-  // again whenever the Settings window closes, since that's where it's
-  // switched on.
-  let browserLinkChecked = false;
-  async function showBrowserLink(user) {
-    if (browserLinkChecked || !user) return;
-    browserLinkChecked = true;
-    const icon = document.getElementById('icon-browser');
-    if (!icon) return;
+  // The MCP servers this user has, fetched once per load and again whenever
+  // something that can change them closes or says so (the App Store, Settings,
+  // an app window's switch). They drive the installed-app icons, and the
+  // Browser icon — which is only any use once the shadow-web server is on
+  // *and* its Chromium has finished downloading.
+  let mcpAppsLoaded = false;
+  async function refreshMcpApps() {
+    mcpAppsLoaded = true;
     try {
       const res = await fetch('/api/mcp');
       if (!res.ok) return;
-      const servers = (await res.json()).servers || [];
-      agentBrowser.setServers(servers.filter(s => s.browser).map(s => s.name));
-      const ready = servers.some(s => s.browser && s.enabled !== false
-                                   && s.browser.status === 'ready');
-      if (icon.hidden === ready) {
-        icon.hidden = !ready;
-        layoutIcons();
-      }
-    } catch (e) { /* the icon is a convenience; never break the chat over it */ }
+      renderMcpServers((await res.json()).servers || []);
+    } catch (e) { /* the icons are a convenience; never break the chat over them */ }
   }
 
   function applyConversation(data) {
     if (data.user) currentUser = data.user;
     if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
-    showBrowserLink(data.user);
+    if (data.user && !mcpAppsLoaded) refreshMcpApps();
     if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
     const msgs = data.messages || [];
     const hasVisible = msgs.some(m => m.role === 'user' || (m.role === 'assistant' && m.content));
@@ -3155,6 +3316,7 @@
     files:    [0.76, 0.16],
     settings: [0.31, 0.50],
     home:     [0.69, 0.46],
+    appstore: [0.77, 0.74],
   };
   // A phone has no room around the wallpaper mark, so the corners.
   const ICON_HOME_NARROW = {
@@ -3162,9 +3324,26 @@
     files:    [0.80, 0.14],
     settings: [0.22, 0.86],
     home:     [0.78, 0.82],
+    appstore: [0.50, 0.93],
   };
   const iconPos = loadPref('fc-icon-pos');
   const ICON_GAP = 12;
+
+  // Which remembered spot an icon uses. The built-in apps by app name;
+  // installed apps by their server's name, since they all open the one
+  // 'mcp' window.
+  const iconKey = el => el.dataset.mcp ? 'mcp:' + el.dataset.mcp : el.dataset.app;
+
+  // Where an installed app sits until it's dragged somewhere: down the two
+  // side edges, alternating, away from the built-in apps in the middle. A
+  // phone gets rows in the gap between the wallpaper mark and the bottom icons.
+  function mcpHome(i, narrow) {
+    if (narrow) return [0.14 + (i % 4) * 0.24, 0.63 + Math.floor(i / 4) * 0.13];
+    const right = i % 2 === 1;
+    const n = Math.floor(i / 2);
+    const col = Math.floor(n / 5);
+    return [right ? 0.95 - col * 0.08 : 0.05 + col * 0.08, 0.08 + (n % 5) * 0.2];
+  }
 
   const iconEls = () => [...iconsEl.querySelectorAll('.app-icon')].filter(el => !el.hidden);
 
@@ -3200,12 +3379,20 @@
     const strip = hasThread && !stepAside;
     icons.forEach(el => el.classList.toggle('compact', strip));
     if (strip) {
+      // As many rows as it takes: installed apps can outnumber what fits
+      // across a phone.
       const w = icons[0].offsetWidth, h = icons[0].offsetHeight;
       const gap = 6;
-      const total = icons.length * w + (icons.length - 1) * gap;
-      let x = Math.max(8, (W - total) / 2);
-      icons.forEach(el => { setIconXY(el, x, topbarH + 6); x += w + gap; });
-      rootStyle.setProperty('--chat-top', (topbarH + h + 10) + 'px');
+      const perRow = Math.max(1, Math.floor((W - 16 + gap) / (w + gap)));
+      const rows = Math.ceil(icons.length / perRow);
+      icons.forEach((el, i) => {
+        const row = Math.floor(i / perRow);
+        const inRow = Math.min(perRow, icons.length - row * perRow);
+        const total = inRow * w + (inRow - 1) * gap;
+        const x = Math.max(8, (W - total) / 2) + (i % perRow) * (w + gap);
+        setIconXY(el, x, topbarH + 6 + row * (h + 4));
+      });
+      rootStyle.setProperty('--chat-top', (topbarH + rows * (h + 4) + 6) + 'px');
       return;
     }
     rootStyle.setProperty('--chat-top', 'var(--topbar-h)');
@@ -3221,8 +3408,12 @@
 
     // Home spots first.
     const defaults = W < 720 ? ICON_HOME_NARROW : ICON_HOME;
+    let mcpIndex = 0;
     const placed = icons.map(el => {
-      const [fx, fy] = iconPos[el.dataset.app] || defaults[el.dataset.app] || [0.5, 0.5];
+      const key = iconKey(el);
+      const slot = el.dataset.mcp ? mcpIndex++ : 0;
+      const [fx, fy] = iconPos[key] || defaults[key]
+        || (el.dataset.mcp ? mcpHome(slot, W < 720) : [0.5, 0.5]);
       return {
         el,
         x: clampX(b.left + fx * (b.right - b.left) - iw / 2),
@@ -3294,7 +3485,12 @@
     if (!e.target.closest('.app-icon') && !e.target.closest('#chat > *')) selectIcon(null);
   });
 
-  iconsEl.querySelectorAll('.app-icon').forEach(el => {
+  // Opening an icon: an installed app opens the shared app window on itself.
+  const openIcon = el => openApp(el.dataset.app, el.dataset.mcp ? { mcp: el.dataset.mcp } : undefined);
+
+  iconsEl.querySelectorAll('.app-icon').forEach(wireIcon);
+
+  function wireIcon(el) {
     let start = null;   // { px, py, x, y, pointerType } while pressed
     let moved = false;
 
@@ -3318,7 +3514,7 @@
       start = null;
       el.classList.remove('dragging');
       if (!moved) {
-        if (s.type === 'touch' || s.type === 'pen') openApp(el.dataset.app);
+        if (s.type === 'touch' || s.type === 'pen') openIcon(el);
         else selectIcon(el);
         return;
       }
@@ -3327,7 +3523,7 @@
       const topbarH = document.getElementById('topbar').offsetHeight;
       const top = topbarH + 10, bottom = inputArea.getBoundingClientRect().top - 10;
       const x = s.x + (e.clientX - s.px), y = s.y + (e.clientY - s.py);
-      iconPos[el.dataset.app] = [
+      iconPos[iconKey(el)] = [
         Math.min(1, Math.max(0, (x + el.offsetWidth / 2 - 8) / (window.innerWidth - 16))),
         Math.min(1, Math.max(0, (y + el.offsetHeight / 2 - top) / Math.max(1, bottom - top))),
       ];
@@ -3337,16 +3533,18 @@
     };
     el.addEventListener('pointerup', release);
     el.addEventListener('pointercancel', release);
-    el.addEventListener('dblclick', () => { if (!moved) openApp(el.dataset.app); });
+    el.addEventListener('dblclick', () => { if (!moved) openIcon(el); });
     el.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openApp(el.dataset.app); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openIcon(el); }
     });
-  });
+  }
 
   // ── Windows ────────────────────────────────────────────────────────
   const APPS = {
     browser:  { w: 1000, h: 700, src: () => '/browser' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
     settings: { w: 820,  h: 660, src: () => '/settings' },
+    appstore: { w: 940,  h: 700, src: () => '/appstore' },
+    mcp:      { w: 380,  h: 360 },
     // Up in the top-right corner, out of the thread's way.
     agent:    { w: 540,  h: 400, place: d => ({ w: 540, h: 400, x: d.width - 540 - 18, y: 14 }),
                 onClose: () => { agentBrowser.closed(); return true; } },
@@ -3427,6 +3625,10 @@
     const win = winEl(app);
     if (!spec || !win) return;
     selectIcon(null);
+    if (app === 'mcp') {
+      if (!opts.mcp && !mcpWindow.name) return;
+      if (opts.mcp) mcpWindow.show(opts.mcp);
+    }
 
     if (spec.src) ensureFrame(app, opts.src);
 
@@ -3471,11 +3673,12 @@
       // streaming frames and Settings starts fresh next time.
       const frame = win.querySelector('.win-body iframe');
       if (frame) frame.remove();
-      if (app === 'settings' && currentUser) {
-        // It may have just switched the browser on (or off).
-        browserLinkChecked = false;
-        showBrowserLink(currentUser);
+      if ((app === 'settings' || app === 'appstore') && currentUser) {
+        // Either may have added, removed or switched off a server — the
+        // browser included.
+        refreshMcpApps();
       }
+      if (app === 'mcp') mcpWindow.name = null;
     }, 140);
     if (wm.focused === app) wm.focused = null;
     focusTopmost();
@@ -3499,7 +3702,8 @@
   }
 
   // ── Menu bar task pills ──
-  const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings', agent: 'Agent browser' };
+  const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings', agent: 'Agent browser',
+                      appstore: 'App Store' };
   function renderTasks() {
     tasksEl.innerHTML = '';
     for (const app of wm.order) {
@@ -3508,8 +3712,10 @@
       const min = win.classList.contains('minimized');
       btn.className = 'task' + (wm.focused === app && !min ? ' active' : '') + (min ? ' minimized' : '');
       btn.type = 'button';
-      btn.title = APP_LABEL[app];
-      btn.innerHTML = `<svg><use href="#i-${app}"/></svg><span>${APP_LABEL[app]}</span>`;
+      const label = app === 'mcp' ? (mcpWindow.name || 'App') : APP_LABEL[app];
+      btn.title = label;
+      btn.innerHTML = `<svg><use href="#i-${app}"/></svg><span></span>`;
+      btn.querySelector('span').textContent = label;
       btn.addEventListener('click', () => {
         if (min) openApp(app);
         else if (wm.focused === app) minimizeApp(app);
@@ -3576,14 +3782,245 @@
   window.addEventListener('message', e => {
     if (e.origin !== location.origin) return;
     const d = e.data || {};
-    if (d.type === 'freeclaw-open' && (APPS[d.app] || d.app === 'home')) {
+    if (d.type === 'freeclaw-open' && (APPS[d.app] || d.app === 'home') && d.app !== 'mcp') {
       openApp(d.app, { src: d.src });
+    } else if (d.type === 'freeclaw-mcp-changed') {
+      refreshMcpApps();
     } else if (d.type === 'freeclaw-focus') {
       const frame = [...document.querySelectorAll('.win iframe')].find(f => f.contentWindow === e.source);
       const win = frame && frame.closest('.win');
       if (win && wm.focused !== win.dataset.app) focusApp(win.dataset.app);
     }
   });
+
+  // ── Installed apps ─────────────────────────────────────────────────
+  // Every server added through the App Store (or Settings) is an icon on
+  // the desktop: the vendor's icon, or its first letter; greyed out while
+  // it's switched off for this user; glowing while the agent is using it.
+  // Double-clicking one opens the app window, whose only job is on/off —
+  // removing an app is done from the App Store.
+  let mcpServers = [];
+  const homeIcon = document.getElementById('icon-home');
+  const mcpIconEl = name => [...iconsEl.querySelectorAll('.app-icon.mcp-app')].find(el => el.dataset.mcp === name);
+
+  function mcpHue(name) {
+    let h = 0;
+    for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return h;
+  }
+
+  function mcpHost(s) {
+    if (s.site) return s.site;
+    try { return new URL(s.url).hostname; } catch (_) { return ''; }
+  }
+
+  // Fill a tile with the app's icon, falling back to its first letter if
+  // there's no site to ask or the site has no icon. `holder` gets the
+  // `letter` class so its tile can take on the name's tint.
+  function fillAppIcon(tile, holder, s) {
+    const letter = () => {
+      tile.innerHTML = '';
+      holder.classList.add('letter');
+      const span = document.createElement('span');
+      span.className = 'app-letter';
+      span.textContent = (String(s.name).trim()[0] || '?');
+      tile.appendChild(span);
+    };
+    holder.style.setProperty('--h', mcpHue(s.name));
+    holder.classList.remove('letter');
+    tile.innerHTML = '';
+    const host = mcpHost(s);
+    if (!host) return letter();
+    const img = document.createElement('img');
+    img.alt = '';
+    img.draggable = false;
+    img.onerror = letter;
+    img.src = '/api/appstore/icon?host=' + encodeURIComponent(host);
+    tile.appendChild(img);
+  }
+
+  function renderMcpServers(servers) {
+    mcpServers = servers;
+    agentBrowser.setServers(servers.filter(s => s.browser).map(s => s.name));
+
+    const browserIcon = document.getElementById('icon-browser');
+    const ready = servers.some(s => s.browser && s.enabled !== false && s.browser.status === 'ready');
+    let changed = false;
+    if (browserIcon && browserIcon.hidden === ready) { browserIcon.hidden = !ready; changed = true; }
+
+    // Builtins aren't "installed" — the browser already has its own icon.
+    const apps = servers.filter(s => !s.builtin);
+    const want = new Set(apps.map(s => s.name));
+    iconsEl.querySelectorAll('.app-icon.mcp-app').forEach(el => {
+      if (!want.has(el.dataset.mcp)) { el.remove(); changed = true; }
+    });
+    for (const s of apps) {
+      let el = mcpIconEl(s.name);
+      if (!el) {
+        el = document.createElement('button');
+        el.className = 'app-icon mcp-app';
+        el.dataset.app = 'mcp';
+        el.dataset.mcp = s.name;
+        el.innerHTML = '<span class="app-tile"></span><span class="app-label"></span>';
+        el.querySelector('.app-label').textContent = s.name;
+        iconsEl.insertBefore(el, homeIcon);
+        wireIcon(el);
+        if (appUsage.active(s.name)) el.classList.add('using');
+        changed = true;
+      }
+      const on = s.enabled !== false;
+      el.title = s.name + (on ? '' : ' (off)');
+      el.classList.toggle('off', !on);
+      // Refetched only when where it comes from changes, not on every toggle.
+      const iconFrom = mcpHost(s);
+      if (el.dataset.iconFrom !== iconFrom) {
+        el.dataset.iconFrom = iconFrom;
+        fillAppIcon(el.querySelector('.app-tile'), el, s);
+      }
+    }
+    if (changed) layoutIcons();
+    mcpWindow.sync();
+  }
+
+  const mcpWindow = (() => {
+    const win    = winEl('mcp');
+    const root   = win.querySelector('.mw');
+    const iconEl = root.querySelector('.mw-icon');
+    const nameEl = root.querySelector('.mw-name');
+    const subEl  = root.querySelector('.mw-sub');
+    const status = root.querySelector('.mw-status');
+    const onBtn  = root.querySelector('.on-btn');
+    const offBtn = root.querySelector('.off-btn');
+    const msgEl  = root.querySelector('.mw-msg');
+    const note   = root.querySelector('.mw-note');
+    const title  = win.querySelector('.mw-title');
+    let busy = false;
+
+    const self = {
+      name: null,
+      show(name) {
+        if (self.name !== name) msgEl.textContent = '';
+        self.name = name;
+        const s = mcpServers.find(x => x.name === name);
+        if (!s) return;
+        fillAppIcon(iconEl, iconEl, s);
+        self.sync();
+        renderTasks();
+      },
+      // Redraw from the current server list — after a toggle, a refresh, or a
+      // tool call starting or finishing.
+      sync() {
+        if (!self.name) return;
+        const s = mcpServers.find(x => x.name === self.name);
+        if (!s) {
+          // Deleted from the App Store while this was open.
+          if (isOpen('mcp')) closeApp('mcp');
+          return;
+        }
+        const on = s.enabled !== false;
+        const using = appUsage.active(s.name);
+        title.textContent = s.name;
+        win.setAttribute('aria-label', s.name);
+        nameEl.textContent = s.name;
+        subEl.textContent = s.transport === 'stdio' ? 'local · ' + (s.command || '') : (s.url || '');
+        subEl.title = subEl.textContent;
+        root.classList.toggle('off', !on);
+        root.classList.toggle('using', using);
+        status.innerHTML = '';
+        if (using) {
+          status.append('The agent is using this app now');
+        } else {
+          const b = document.createElement('b');
+          b.textContent = on ? 'Enabled' : 'Disabled';
+          status.append(b, on ? ' — your agent can use its tools' : ' — your agent won’t see it');
+        }
+        onBtn.classList.toggle('active', on);
+        offBtn.classList.toggle('active', !on);
+        onBtn.disabled = busy || on;
+        offBtn.disabled = busy || !on;
+        note.innerHTML = 'To remove this app, open the <a data-open-store>App Store</a>.';
+      },
+    };
+
+    async function setEnabled(enabled) {
+      const name = self.name;
+      if (!name || busy) return;
+      busy = true;
+      msgEl.textContent = '';
+      msgEl.className = 'mw-msg';
+      self.sync();
+      try {
+        const res = await fetch('/api/mcp/' + encodeURIComponent(name), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled, user: currentUser }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+        if (data.warning) { msgEl.textContent = data.warning; msgEl.className = 'mw-msg warn'; }
+        busy = false;
+        renderMcpServers(data.servers || mcpServers);
+      } catch (e) {
+        busy = false;
+        msgEl.textContent = 'Couldn’t switch it: ' + e.message;
+        msgEl.className = 'mw-msg err';
+        self.sync();
+      }
+    }
+    onBtn.addEventListener('click', () => setEnabled(true));
+    offBtn.addEventListener('click', () => setEnabled(false));
+    note.addEventListener('click', e => {
+      if (!e.target.closest('[data-open-store]') || !self.name) return;
+      openApp('appstore', { src: '/appstore?tab=installed&app=' + encodeURIComponent(self.name) });
+    });
+    return self;
+  })();
+
+  // Which apps the agent is in the middle of using. Each tool_call that goes
+  // to an MCP server names it (agent.py); the glow stays on until the
+  // result comes back, and for a beat longer so a quick call still shows.
+  const appUsage = (() => {
+    const MIN_MS = 900;
+    const running = new Map();   // server name -> started at
+    const timers = new Map();
+
+    function iconsFor(name) {
+      const out = [];
+      const el = mcpIconEl(name);
+      if (el) out.push(el);
+      // The builtin browser has no app icon of its own — light the Browser.
+      const s = mcpServers.find(x => x.name === name);
+      if (s && s.builtin && s.browser) {
+        const b = document.getElementById('icon-browser');
+        if (b && !b.hidden) out.push(b);
+      }
+      return out;
+    }
+
+    return {
+      active: name => running.has(name),
+      start(name) {
+        if (!name) return;
+        clearTimeout(timers.get(name));
+        timers.delete(name);
+        running.set(name, performance.now());
+        iconsFor(name).forEach(el => el.classList.add('using'));
+        if (mcpWindow.name === name) mcpWindow.sync();
+      },
+      stop(name) {
+        if (!running.has(name)) return;
+        const left = Math.max(0, MIN_MS - (performance.now() - running.get(name)));
+        clearTimeout(timers.get(name));
+        timers.set(name, setTimeout(() => {
+          timers.delete(name);
+          running.delete(name);
+          iconsFor(name).forEach(el => el.classList.remove('using'));
+          if (mcpWindow.name === name) mcpWindow.sync();
+        }, left));
+      },
+      stopAll() { [...running.keys()].forEach(n => this.stop(n)); },
+    };
+  })();
 
   // ── Agent browser ──────────────────────────────────────────────────
   // Replays the agent's browser tool calls as they stream in: the address

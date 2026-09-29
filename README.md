@@ -265,6 +265,14 @@ Only one platform's files are checked out at install time, so you'll see one of 
 
 FreeClaw can connect to external [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to gain new tools — think GitHub, web search, databases, or your own custom server. Add one from **Settings → MCP Servers**, in either of two flavours.
 
+### App Store
+
+The **App Store** icon on the desktop is the easier way in. It lists well-known servers (Composio, GitHub, Linear, Stripe, Supabase, Notion, Context7, Firecrawl and more) with their endpoint already filled in, where to get a key, and a link to each one's setup guide; the catalog lives in `src/mcp_catalog.py`. Its **Add custom server** tab takes any HTTP(S) or stdio server by hand. Only servers that can connect with a key are listed: FreeClaw can't complete an OAuth sign-in, so OAuth-only servers are left out.
+
+Every installed server shows up on the desktop as an app, with its vendor's icon (or its first letter). Double-click one to switch it on or off for you; a switched-off app is greyed out, and an app glows while the agent is calling one of its tools. Deleting is done from the App Store's **Installed** tab.
+
+The App Store can store two things Settings can't: a custom header for the key (Composio wants `x-consumer-api-key`), and environment variables handed to one stdio server only. Both go in `.env` under `MCP_EXTRAS`.
+
 ### Remote — HTTP
 
 Enter the server's URL and (optionally) an auth token. FreeClaw connects over the Streamable HTTP transport, fetches the server's tools, and makes them available immediately — no restart required.

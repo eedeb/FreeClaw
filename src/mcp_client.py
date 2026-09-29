@@ -13,10 +13,11 @@ Speaks two transports, both JSON-RPC 2.0 and both without an external MCP SDK:
     putting that key in `.env` rather than through a second mechanism here.
 
 Server definitions live in `.env` as parallel JSON lists (MCP_NAMES, _URLS,
-_TOKENS, _ENABLED, _TRANSPORTS, _COMMANDS) so they're editable by hand or from
-the web UI. `read_servers()` parses those into
-`{"name","url","token","enabled","transport","command"}` dicts and
-`servers_to_env()` reverses it. Entries saved before a field existed keep the
+_TOKENS, _ENABLED, _TRANSPORTS, _COMMANDS, _EXTRAS) so they're editable by hand
+or from the web UI. `read_servers()` parses those into
+`{"name","url","token","enabled","transport","command",...}` dicts and
+`servers_to_env()` reverses it. MCP_EXTRAS holds one object per server for the
+optional fields — see EXTRA_FIELDS. Entries saved before a field existed keep the
 old behaviour — no MCP_ENABLED means enabled, no MCP_TRANSPORTS means http —
 so an existing install is untouched.
 
@@ -60,6 +61,17 @@ TOKENS_KEY = "MCP_TOKENS"
 ENABLED_KEY = "MCP_ENABLED"
 TRANSPORTS_KEY = "MCP_TRANSPORTS"
 COMMANDS_KEY = "MCP_COMMANDS"
+EXTRAS_KEY = "MCP_EXTRAS"
+
+# The optional per-server fields, stored together in one MCP_EXTRAS object
+# rather than as a parallel list each, since most servers have none of them:
+#   header  — send the token in this header instead of `Authorization: Bearer`
+#             (Composio wants `x-consumer-api-key`, Context7 `CONTEXT7_API_KEY`)
+#   env     — {VAR: value} set for a stdio child only, so a key one server
+#             needs doesn't have to go in the environment every process sees
+#   site    — the vendor's website, where the desktop gets the app's icon
+#   catalog — which App Store entry it was installed from, if any
+EXTRA_FIELDS = ("header", "env", "site", "catalog")
 
 HTTP = "http"
 STDIO = "stdio"
@@ -425,6 +437,7 @@ def read_servers(user=None):
     enabled = parse_env_list(env.get(ENABLED_KEY))
     transports = parse_env_list(env.get(TRANSPORTS_KEY))
     commands = parse_env_list(env.get(COMMANDS_KEY))
+    extras = parse_env_list(env.get(EXTRAS_KEY))
     count = max(len(names), len(urls), len(commands))
     servers = []
     for i in range(count):
@@ -444,8 +457,26 @@ def read_servers(user=None):
             "enabled": bool(enabled[i]) if i < len(enabled) else True,
             "transport": transport,
             "command": command,
+            **_clean_extras(extras[i] if i < len(extras) else None),
         })
     return _apply_user_prefs(_merge_builtins(servers), user)
+
+
+def _clean_extras(raw):
+    """The EXTRA_FIELDS of one stored MCP_EXTRAS entry, dropping anything
+    malformed — a hand-edited `.env` shouldn't be able to crash a read."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key in ("header", "site", "catalog"):
+        if isinstance(raw.get(key), str) and raw[key]:
+            out[key] = raw[key]
+    env = raw.get("env")
+    if isinstance(env, dict):
+        env = {k: v for k, v in env.items() if isinstance(k, str) and isinstance(v, str)}
+        if env:
+            out["env"] = env
+    return out
 
 
 def _merge_builtins(servers):
@@ -487,7 +518,16 @@ def servers_to_env(servers):
         ENABLED_KEY: "'" + json.dumps([bool(s.get("enabled", True)) for s in servers]) + "'",
         TRANSPORTS_KEY: "'" + json.dumps([s.get("transport") or HTTP for s in servers]) + "'",
         COMMANDS_KEY: "'" + json.dumps([s.get("command", "") for s in servers]) + "'",
+        EXTRAS_KEY: "'" + json.dumps([_extras_of(s) for s in servers]) + "'",
     }
+
+
+def _extras_of(server):
+    """What MCP_EXTRAS stores for `server`. A builtin's `env` is defined in
+    BUILTIN_SERVERS, not persisted, so it's left out like its command is."""
+    if server.get("builtin"):
+        return {}
+    return {k: server[k] for k in EXTRA_FIELDS if server.get(k)}
 
 
 def _sig(server):
@@ -501,7 +541,7 @@ def _sig(server):
     if (server.get("transport") or HTTP) == STDIO:
         env = server.get("env") or {}
         return (STDIO, server.get("command") or "", tuple(sorted(env.items())))
-    return (HTTP, server.get("url"), server.get("token"))
+    return (HTTP, server.get("url"), server.get("token"), server.get("header") or "")
 
 
 def describe(server):
@@ -522,7 +562,11 @@ def _headers(server, session_id=None):
     }
     token = (server.get("token") or "").strip()
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        header = (server.get("header") or "").strip()
+        if header:
+            headers[header] = token
+        else:
+            headers["Authorization"] = f"Bearer {token}"
     if session_id:
         headers["Mcp-Session-Id"] = session_id
     return headers
