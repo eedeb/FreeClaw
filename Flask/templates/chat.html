@@ -1022,6 +1022,9 @@
     }
     .win-title svg { width: 13px; height: 13px; flex-shrink: 0; }
     .win.focused .win-title { color: var(--text); }
+    .win-title .wt-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    /* A page title, in its own case — it's the site's words, not a label. */
+    .win-title .wt-text.page { text-transform: none; letter-spacing: 0.02em; font-family: var(--sans); font-size: 12px; font-weight: 600; }
     .win.focused .win-title svg { color: var(--accent); }
 
     .win-body {
@@ -1687,7 +1690,7 @@
         <button class="wl min" data-glyph="–" title="Minimize"></button>
         <button class="wl max" data-glyph="+" title="Maximize"></button>
       </div>
-      <div class="win-title"><svg><use href="#i-browser"/></svg>Browser</div>
+      <div class="win-title"><svg><use href="#i-browser"/></svg><span class="wt-text">Browser</span></div>
     </div>
     <div class="win-body"></div>
     <div class="win-resize"></div>
@@ -3541,7 +3544,9 @@
 
   // ── Windows ────────────────────────────────────────────────────────
   const APPS = {
-    browser:  { w: 1000, h: 700, src: () => '/browser' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
+    // 705 tall so the page, under the window bar and the browser's own
+    // toolbar, comes out at the remote viewport's 16:10 with no letterbox.
+    browser:  { w: 1000, h: 705, src: () => '/browser' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
     settings: { w: 820,  h: 660, src: () => '/settings' },
     appstore: { w: 940,  h: 700, src: () => '/appstore' },
     mcp:      { w: 380,  h: 360 },
@@ -3679,6 +3684,8 @@
         refreshMcpApps();
       }
       if (app === 'mcp') mcpWindow.name = null;
+      const wt = win.querySelector('.wt-text');
+      if (wt) { wt.textContent = APP_LABEL[app]; wt.classList.remove('page'); }
     }, 140);
     if (wm.focused === app) wm.focused = null;
     focusTopmost();
@@ -3784,6 +3791,16 @@
     const d = e.data || {};
     if (d.type === 'freeclaw-open' && (APPS[d.app] || d.app === 'home') && d.app !== 'mcp') {
       openApp(d.app, { src: d.src });
+    } else if (d.type === 'freeclaw-title') {
+      // The Browser shows the page it's on in the window's title, as Chrome
+      // does on its tab.
+      const frame = [...document.querySelectorAll('.win iframe')].find(f => f.contentWindow === e.source);
+      const t = frame && frame.closest('.win').querySelector('.wt-text');
+      if (t) {
+        const title = String(d.title || '').slice(0, 120);
+        t.textContent = title || APP_LABEL[frame.closest('.win').dataset.app];
+        t.classList.toggle('page', !!title);
+      }
     } else if (d.type === 'freeclaw-mcp-changed') {
       refreshMcpApps();
     } else if (d.type === 'freeclaw-focus') {

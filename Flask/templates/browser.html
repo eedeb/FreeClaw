@@ -20,15 +20,25 @@
       --accent: #c8f04a; --accent-dim: #a8cc38; --text: #e8e8ec;
       --muted: #666672; --err: #e05555;
       --radius: 4px; --mono: 'IBM Plex Mono', monospace; --sans: 'Syne', sans-serif;
+      /* Browser chrome — a notch lighter than the page so it reads as a frame. */
+      --tb: #1b1b20; --tb-border: #2a2a31; --omni: #0f0f12; --hover: rgba(255,255,255,0.07);
     }
-    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-tap-highlight-color: transparent; }
-    body::before {
+    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-tap-highlight-color: transparent; color-scheme: dark; }
+    .nav-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      border-radius: var(--radius); padding: 6px 11px; font-family: var(--mono); font-size: 12px;
+      cursor: pointer; text-decoration: none; transition: all 0.15s; white-space: nowrap;
+    }
+    .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+    .empty { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+    /* ── No user picked: a plain page ── */
+    body.picker-page::before {
       content: ''; position: fixed; inset: 0;
       background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
       background-size: 40px 40px; opacity: 0.35; pointer-events: none; z-index: 0;
     }
-    .wrap { position: relative; z-index: 1; max-width: 1340px; margin: 0 auto; padding: 16px 18px 60px; }
-
+    .wrap { position: relative; z-index: 1; max-width: 760px; margin: 0 auto; padding: 16px 18px 60px; }
     header {
       display: flex; align-items: center; gap: 12px;
       padding: 6px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 14px;
@@ -38,167 +48,275 @@
     header h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
     header .sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
     header .spacer { flex: 1; }
-    .nav-btn {
-      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
-      border-radius: var(--radius); padding: 6px 11px; font-family: var(--mono); font-size: 12px;
-      cursor: pointer; text-decoration: none; transition: all 0.15s; white-space: nowrap;
-    }
-    .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
-    /* Saved, and the agent is waiting in the chat this came from. */
-    .nav-btn.ready { border-color: var(--accent); color: var(--accent); }
-
-    /* ── browser chrome ── */
-    .chrome {
-      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius) var(--radius) 0 0; padding: 8px 9px;
-    }
-    .chrome .icon {
-      background: transparent; border: 1px solid transparent; color: var(--muted);
-      border-radius: var(--radius); padding: 5px 9px; font-family: var(--mono); font-size: 13px;
-      cursor: pointer; line-height: 1; transition: all 0.15s;
-    }
-    .chrome .icon:hover:not(:disabled) { border-color: var(--border); color: var(--accent); }
-    .chrome .icon:disabled { opacity: 0.3; cursor: default; }
-    #addr {
-      flex: 1; min-width: 180px; background: var(--bg); border: 1px solid var(--border); color: var(--text);
-      border-radius: 999px; padding: 7px 13px; font-family: var(--mono); font-size: 12px;
-    }
-    #addr:focus { outline: none; border-color: var(--accent-dim); }
-    .chrome .sep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; }
-    button.act {
-      background: var(--surface); border: 1px solid var(--border); color: var(--text);
-      border-radius: var(--radius); padding: 6px 11px; font-family: var(--mono); font-size: 11px;
-      cursor: pointer; transition: all 0.15s; white-space: nowrap;
-    }
-    button.act:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
-    button.act:disabled { opacity: 0.35; cursor: default; }
-    button.act.primary { background: var(--accent); border-color: var(--accent); color: #10100c; font-weight: 500; }
-    button.act.primary:hover:not(:disabled) { background: var(--accent-dim); color: #10100c; }
-    button.act.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
-
-    /* ── viewport ── */
-    .viewport {
-      position: relative; border: 1px solid var(--border); border-top: none;
-      border-radius: 0 0 var(--radius) var(--radius); background: #000;
-      aspect-ratio: 1280 / 800; overflow: hidden;
-    }
-    #screen { display: block; width: 100%; height: 100%; object-fit: contain; cursor: crosshair; }
-    #screen:focus { outline: none; }
-    .overlay {
-      position: absolute; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 10px; text-align: center;
-      background: var(--bg); font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 20px;
-    }
-    .overlay.hidden { display: none; }
-    .spin { width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    .statusbar {
-      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-      font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; min-height: 17px;
-    }
-    .statusbar .msg.err { color: var(--err); }
-    .statusbar .msg.ok { color: var(--accent); }
-    .statusbar .nav-state { color: var(--accent-dim); }
-    .statusbar .nav-state:not(:empty)::after { content: ' ·'; color: var(--muted); }
-
+    html.embedded header { display: none; }
+    html.embedded .wrap { padding-top: 14px; }
     .banner {
       font-family: var(--mono); font-size: 11px; line-height: 1.6;
       border: 1px solid var(--border); border-left: 2px solid var(--accent-dim);
       background: var(--surface); border-radius: var(--radius); padding: 9px 12px; margin-bottom: 12px;
     }
     .banner.warn { border-left-color: var(--err); }
-    .banner.hidden { display: none; }
-
-    section.saved { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border); }
-    section.saved h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
-    .sec-desc { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin: 4px 0 12px; }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-    .chip {
-      font-family: var(--mono); font-size: 11px; color: var(--text);
-      background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px;
-    }
-    .empty { font-family: var(--mono); font-size: 11px; color: var(--muted); }
     .picker { display: flex; flex-direction: column; gap: 8px; max-width: 340px; }
-    html.embedded { color-scheme: dark; }
-    html.embedded header { display: none; }
-    html.embedded .wrap { padding-top: 14px; }
+
+    /* ── The browser: fills its window edge to edge, like Chrome does. The
+       page never scrolls; only the remote page inside the viewport does. ── */
+    html.app, html.app body { height: 100%; overflow: hidden; }
+    body.app { display: flex; flex-direction: column; }
+
+    .toolbar {
+      position: relative; z-index: 3;
+      display: flex; align-items: center; gap: 4px;
+      height: 44px; padding: 0 8px; flex-shrink: 0;
+      background: var(--tb); border-bottom: 1px solid var(--tb-border);
+    }
+    .tbtn {
+      width: 32px; height: 32px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: none; border: none; border-radius: 50%; color: #b4b4bd; cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .tbtn svg { width: 17px; height: 17px; }
+    .tbtn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+    .tbtn:active:not(:disabled) { background: rgba(255,255,255,0.12); }
+    .tbtn:disabled { opacity: 0.3; cursor: default; }
+    .tbtn.on { background: rgba(200,240,74,0.12); color: var(--accent); }
+
+    .omni {
+      flex: 1; min-width: 0; height: 32px; margin: 0 4px;
+      display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px;
+      background: var(--omni); border: 1px solid transparent; border-radius: 999px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .omni:hover { background: #131317; }
+    .omni:focus-within { border-color: var(--accent-dim); background: var(--omni); }
+    .omni .site { width: 14px; height: 14px; flex-shrink: 0; color: var(--muted); display: flex; }
+    .omni .site svg { width: 14px; height: 14px; }
+    .omni .site.secure { color: #9a9aa4; }
+    .omni .site.insecure { color: var(--err); }
+    #addr {
+      flex: 1; min-width: 0; height: 100%; background: none; border: none; outline: none;
+      color: var(--text); font-family: var(--mono); font-size: 12.5px;
+    }
+    #addr::placeholder { color: var(--muted); }
+    .save-btn {
+      flex-shrink: 0; height: 24px; padding: 0 11px; border-radius: 999px;
+      background: var(--accent); color: #10100c; border: none; cursor: pointer;
+      font-family: var(--mono); font-size: 11px; font-weight: 500; white-space: nowrap;
+      display: flex; align-items: center; gap: 5px; transition: background 0.15s, opacity 0.15s;
+    }
+    .save-btn svg { width: 12px; height: 12px; }
+    .save-btn:hover:not(:disabled) { background: #d4f766; }
+    .save-btn:disabled { opacity: 0; pointer-events: none; }
+    #chat-link { font-size: 11px; padding: 5px 10px; border-radius: 999px; margin-left: 2px; }
+    #chat-link.ready { border-color: var(--accent); color: var(--accent); }
+
+    /* Loading bar along the bottom edge of the toolbar. */
+    .progress {
+      position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+      background: var(--accent); box-shadow: 0 0 6px var(--accent);
+      transform-origin: 0 50%; transform: scaleX(0); opacity: 0; pointer-events: none;
+    }
+    .progress.run { opacity: 1; transform: scaleX(0.8); transition: transform 3s cubic-bezier(0.1, 0.7, 0.2, 1), opacity 0.1s; }
+    .progress.done { opacity: 0; transform: scaleX(1); transition: transform 0.2s ease-out, opacity 0.3s ease 0.2s; }
+
+    /* An infobar, the way Chrome shows "this page wants…" — for the agent's
+       sign-in request. */
+    .infobar {
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+      padding: 7px 12px; background: #16180f; border-bottom: 1px solid #2c3318;
+      font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: #d9e3b8;
+    }
+    .infobar[hidden] { display: none; }
+    .infobar .i { color: var(--accent); flex-shrink: 0; }
+    .infobar span { flex: 1; min-width: 0; }
+    .infobar button { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; line-height: 1; }
+    .infobar button:hover { color: var(--text); }
+
+    .viewport { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
+    #screen { display: block; width: 100%; height: 100%; object-fit: contain; cursor: default; }
+    #screen:focus { outline: none; }
+
+    /* Nothing open: a new-tab page. */
+    .overlay {
+      position: absolute; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 14px; text-align: center;
+      background: radial-gradient(ellipse at 50% 40%, #16161a, var(--bg) 70%);
+      font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 20px;
+    }
+    .overlay.hidden { display: none; }
+    .overlay .ntp-logo { width: 56px; height: 56px; border-radius: 15px; overflow: hidden; opacity: 0.5; border: 1px solid rgba(200,240,74,0.15); }
+    .overlay .ntp-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .overlay.busy .ntp-logo { display: none; }
+    .spin { width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Chrome's bottom-left status bubble: messages come and go here instead
+       of taking a row of their own. */
+    .bubble {
+      position: absolute; left: 0; bottom: 0; z-index: 2; max-width: min(70%, 520px);
+      padding: 4px 10px; background: #1d1d22; border: 1px solid var(--tb-border); border-left: none; border-bottom: none;
+      border-radius: 0 7px 0 0; font-family: var(--mono); font-size: 11px; color: #c8c8d0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      opacity: 0; transform: translateY(4px); transition: opacity 0.18s, transform 0.18s; pointer-events: none;
+    }
+    .bubble.show { opacity: 1; transform: none; }
+    .bubble.err { color: #ffb4b4; background: #2a1618; border-color: #4a2226; white-space: normal; }
+    .bubble.ok { color: var(--accent); }
+
+    /* ── Gear menu ── */
+    .menu {
+      position: absolute; top: 40px; right: 8px; z-index: 5; width: 320px; max-width: calc(100vw - 16px);
+      max-height: calc(100vh - 52px); overflow-y: auto;
+      background: #1c1c21; border: 1px solid #30303a; border-radius: 10px; padding: 6px 0;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.55);
+      transform-origin: top right; animation: menuIn 0.14s ease-out;
+    }
+    .menu[hidden] { display: none; }
+    @keyframes menuIn { from { opacity: 0; transform: scale(0.96); } }
+    .menu-sec { padding: 8px 14px; }
+    .menu-sec + .menu-sec { border-top: 1px solid #2a2a31; }
+    .menu-title { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .menu-title .who { font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--muted); }
+    .menu-note { font-family: var(--mono); font-size: 10.5px; line-height: 1.55; color: #a2a2ac; margin-top: 6px; }
+    .menu-note strong { color: #ffb4b4; font-weight: 500; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--mono); font-size: 11px; color: var(--text);
+      background: #121215; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px 3px 4px;
+    }
+    .chip img, .chip .dot { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+    .chip .dot { background: #2a2a31; color: #b4b4bd; font-size: 9px; font-weight: 500; display: flex; align-items: center; justify-content: center; text-transform: uppercase; }
+    .mi {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      background: none; border: none; color: var(--text); text-align: left; text-decoration: none;
+      font-family: var(--sans); font-size: 12.5px; font-weight: 600; padding: 8px 14px; cursor: pointer;
+    }
+    .mi svg { width: 15px; height: 15px; color: #9a9aa4; flex-shrink: 0; }
+    .mi:hover:not(:disabled) { background: var(--hover); }
+    .mi:disabled { opacity: 0.35; cursor: default; }
+    .mi.danger { color: #ff9c9c; }
+    .mi.danger svg { color: #ff9c9c; }
+    .mi .k { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted); font-weight: 400; }
+    .menu-links[hidden] { display: none; }
+
+    @media (max-width: 520px) {
+      #fwd { display: none; }
+      .save-btn .lbl { display: none; }
+    }
   </style>
 </head>
-<body>
+{% if not user %}
+<body class="picker-page">
 <div class="wrap">
   <header>
     <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
     <div>
       <h1>Browser</h1>
-      <div class="sub">{% if user %}{{ user }}{% else %}no user selected{% endif %}</div>
+      <div class="sub">no user selected</div>
     </div>
     <div class="spacer"></div>
-    {% if user %}<a class="nav-btn" id="chat-link" href="/chat?name={{ user }}">Chat</a>{% endif %}
     <a class="nav-btn" href="/settings">Settings</a>
     <a class="nav-btn" href="/">Home</a>
   </header>
-
-  {% if not user %}
-    {% if unknown %}
-      <div class="banner warn">No FreeClaw user called <strong>{{ unknown }}</strong>.</div>
-    {% endif %}
-    <div class="banner">
-      This browser runs on the machine FreeClaw runs on, and whatever you sign into here,
-      that user's agent inherits. Pick whose browser to open.
-    </div>
-    <div class="picker">
-      {% for name in users %}
-        <a class="nav-btn" href="/browser?user={{ name }}">{{ name }} →</a>
-      {% else %}
-        <span class="empty">No users yet — create one from the home page.</span>
-      {% endfor %}
-    </div>
-  {% else %}
-
-  <div class="banner warn">
-    Anything you sign into here, <strong>{{ user }}</strong>'s agent can act as you on —
-    reading, posting, buying — on every turn from now on, until you clear it below.
+  {% if unknown %}
+    <div class="banner warn">No FreeClaw user called <strong>{{ unknown }}</strong>.</div>
+  {% endif %}
+  <div class="banner">
+    This browser runs on the machine FreeClaw runs on, and whatever you sign into here,
+    that user's agent inherits. Pick whose browser to open.
   </div>
-  <div class="banner hidden" id="note"></div>
+  <div class="picker">
+    {% for name in users %}
+      <a class="nav-btn" href="/browser?user={{ name }}">{{ name }} →</a>
+    {% else %}
+      <span class="empty">No users yet — create one from the home page.</span>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<script>document.documentElement.classList.add('app');</script>
+<body class="app">
+  <div class="toolbar">
+    <button class="tbtn" id="back" title="Back" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+    </button>
+    <button class="tbtn" id="forward" title="Forward" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </button>
+    <button class="tbtn" id="reload" title="Reload" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+    </button>
 
-  <div class="chrome">
-    <button class="icon" id="back" title="Back" disabled>&#8592;</button>
-    <button class="icon" id="forward" title="Forward" disabled>&#8594;</button>
-    <button class="icon" id="reload" title="Reload" disabled>&#8635;</button>
-    <input type="text" id="addr" placeholder="Search or type a URL, then press Enter"
-           autocomplete="off" spellcheck="false"/>
-    <span class="sep"></span>
-    <button class="act primary" id="save" disabled>Save logins</button>
-    <button class="act" id="close" disabled>Save &amp; close</button>
-    <button class="act danger" id="discard" disabled>Discard</button>
+    <div class="omni" id="omni">
+      <span class="site" id="site-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </span>
+      <input type="text" id="addr" placeholder="Search or type a URL"
+             autocomplete="off" spellcheck="false"/>
+      <button class="save-btn" id="save" type="button" title="Save this browser's logins for {{ user }}'s agent" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.2-8.2M16 7l3 3M14 9l2 2"/></svg>
+        <span class="lbl">Save login</span>
+      </button>
+    </div>
+
+    <a class="nav-btn" id="chat-link" href="/chat?user={{ user }}" hidden>Chat</a>
+    <button class="tbtn" id="gear" title="Logins and settings" aria-haspopup="true" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+    <div class="progress" id="progress"></div>
+
+    <div class="menu" id="menu" hidden role="menu">
+      <div class="menu-sec">
+        <div class="menu-title">Saved logins <span class="who">{{ user }}</span></div>
+        <div class="menu-note">
+          Anything you sign into here, <strong>{{ user }}'s agent can act as you on</strong> —
+          reading, posting, buying — on every turn, until you forget it.
+        </div>
+        <div class="chips" id="domains"></div>
+      </div>
+      <div class="menu-sec" style="padding:4px 0">
+        <button class="mi" id="close" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          Save &amp; close browser
+        </button>
+        <button class="mi" id="discard" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          Close without saving
+        </button>
+        <button class="mi danger" id="clear">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+          Forget all saved logins
+        </button>
+      </div>
+      <div class="menu-sec menu-links" id="menu-links" style="padding:4px 0" hidden>
+        <a class="mi" href="/settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/></svg>
+          FreeClaw settings
+        </a>
+        <a class="mi" href="/">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/></svg>
+          Home
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="infobar" id="note" hidden>
+    <span class="i">●</span><span id="note-text"></span>
+    <button type="button" id="note-x" title="Dismiss">×</button>
   </div>
 
   <div class="viewport">
     <canvas id="screen" width="1280" height="800" tabindex="0" aria-label="The remote browser"></canvas>
     <div class="overlay" id="overlay">
+      <div class="ntp-logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
       <div id="overlay-icon"></div>
       <div id="overlay-text">Type an address above to open the browser.</div>
     </div>
+    <div class="bubble" id="msg"></div>
   </div>
-
-  <div class="statusbar">
-    <span class="nav-state" id="nav-state"></span>
-    <span id="title-text"></span>
-    <span class="spacer" style="flex:1"></span>
-    <span class="msg" id="msg"></span>
-  </div>
-
-  <section class="saved">
-    <h2>Signed in</h2>
-    <p class="sec-desc">Domains {{ user }}'s agent holds cookies for.</p>
-    <div class="chips" id="domains"></div>
-    <button class="act danger" id="clear">Forget all saved logins</button>
-  </section>
-
-  {% endif %}
-</div>
+{% endif %}
 
 <script>
 (function () {
@@ -207,6 +325,7 @@
 
   const el = (id) => document.getElementById(id);
   const screen = el('screen'), overlay = el('overlay'), msg = el('msg');
+  const EMBEDDED = window.self !== window.top;
 
   // The server renders at this size; clicks are scaled from the displayed
   // image back into it, so the two must agree.
@@ -229,33 +348,83 @@
   let channel = null;
   try { channel = new BroadcastChannel('freeclaw-browser'); } catch (e) { /* unsupported */ }
 
+  // In a tab of its own (not a desktop window) there's no desktop to get back
+  // with, so the menu carries the way out, and a chat that sent us here gets
+  // a button back to it.
+  if (!EMBEDDED) {
+    el('menu-links').hidden = false;
+    if (FROM_CHAT) el('chat-link').hidden = false;
+  }
+
   function announceSaved(domains) {
     if (channel) {
       try { channel.postMessage({ type: 'saved', user: USER, domains: domains }); } catch (e) { /* best effort */ }
     }
-    if (FROM_CHAT) {
+    if (FROM_CHAT && !EMBEDDED) {
       el('chat-link').textContent = 'Back to chat →';
       el('chat-link').classList.add('ready');
     }
   }
 
+  // The status bubble. Neutral and "ok" messages fade on their own; an error
+  // stays long enough to be read.
+  let bubbleTimer = null;
   function say(text, kind) {
     msg.textContent = text || '';
-    msg.className = 'msg' + (kind ? ' ' + kind : '');
+    msg.className = 'bubble' + (kind ? ' ' + kind : '') + (text ? ' show' : '');
     navErrorShown = false;
+    clearTimeout(bubbleTimer);
+    if (text) bubbleTimer = setTimeout(() => msg.classList.remove('show'), kind === 'err' ? 9000 : 3500);
   }
 
   // Separate from `say` on purpose: this one is owned by the poll and changes
   // on its own, and it must not wipe out the result of something the user did
-  // (a "Saved" that arrived a moment earlier).
+  // (a "Saved" that arrived a moment earlier). Drawn as the loading bar.
+  const progress = el('progress');
+  let loading = false;
   function navState(text) {
-    el('nav-state').textContent = text || '';
+    const on = !!text;
+    if (on === loading) return;
+    loading = on;
+    progress.classList.remove('run', 'done');
+    void progress.offsetWidth;
+    progress.classList.add(on ? 'run' : 'done');
   }
 
   function showOverlay(text, spinning) {
     el('overlay-text').textContent = text;
     el('overlay-icon').innerHTML = spinning ? '<div class="spin"></div>' : '';
+    overlay.classList.toggle('busy', !!spinning);
     overlay.classList.remove('hidden');
+  }
+
+  // The omnibox's lock: https, plain http, or a search glass when idle.
+  const SITE_ICONS = {
+    idle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+    secure: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+    insecure: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3 2 21h20z"/><path d="M12 10v5M12 18h.01"/></svg>',
+  };
+  let siteKind = '';
+  function siteIcon(url) {
+    const kind = !url ? 'idle' : url.startsWith('https:') ? 'secure' : url.startsWith('http:') ? 'insecure' : 'idle';
+    if (kind === siteKind) return;
+    siteKind = kind;
+    const s = el('site-icon');
+    s.className = 'site ' + kind;
+    s.innerHTML = SITE_ICONS[kind];
+    s.title = kind === 'secure' ? 'Connection is secure' : kind === 'insecure' ? 'Not secure' : '';
+  }
+
+  // The page's title goes on the desktop window, the way Chrome shows it on
+  // its tab.
+  let lastTitle = null;
+  function setTitle(title) {
+    if (title === lastTitle) return;
+    lastTitle = title;
+    document.title = title ? title + ' · FreeClaw' : 'FreeClaw · Browser';
+    if (EMBEDDED) {
+      try { window.parent.postMessage({ type: 'freeclaw-title', title: title || '' }, location.origin); } catch (e) { /* cosmetic */ }
+    }
   }
 
   // `timeout` is load-bearing. Both loops below are await-chains that only
@@ -282,6 +451,7 @@
     running = on;
     ['back', 'forward', 'reload', 'save', 'close', 'discard'].forEach(
       (id) => { el(id).disabled = !on; });
+    screen.style.cursor = on ? 'default' : '';
     if (on && !wasRunning) {
       // The overlay comes down when a frame actually arrives, not here. The
       // server returns from `start` as soon as the worker thread exists, which
@@ -298,7 +468,10 @@
       lastUrl = '';
       lastNavError = '';
       navState('');
+      siteIcon('');
+      setTitle('');
       stopFrames();
+      if (tint) { tint = ''; viewportEl.style.background = ''; }
       outbox.length = 0;
     }
   }
@@ -343,12 +516,27 @@
       if (screen.width !== viewport.width) screen.width = viewport.width;
       if (screen.height !== viewport.height) screen.height = viewport.height;
       ctx.drawImage(image, 0, 0, screen.width, screen.height);
+      tintLetterbox();
       if (!gotFrame) { gotFrame = true; overlay.classList.add('hidden'); }
       if (image.close) image.close();
     }).catch(() => { /* a torn frame; the next one replaces it */ }).finally(() => {
       drawing = false;
       if (nextBlob) { const b = nextBlob; nextBlob = null; drawFrame(b); }
     });
+  }
+
+  // The remote page is a fixed size, so a window that isn't the same shape
+  // shows bars beside or below it. Painting them the colour of the page's own
+  // edge makes the page look like it runs to the window's edges, as a real
+  // browser's would. One pixel read per frame.
+  const viewportEl = screen.parentElement;
+  let tint = '';
+  function tintLetterbox() {
+    try {
+      const d = ctx.getImageData(1, Math.floor(screen.height / 2), 1, 1).data;
+      const c = `rgb(${d[0]},${d[1]},${d[2]})`;
+      if (c !== tint) { tint = c; viewportEl.style.background = c; }
+    } catch (e) { /* leave it black */ }
   }
 
   function startFrames() {
@@ -522,7 +710,7 @@
       // on a worker thread that may be mid-page-load.
       const info = await api('start', { method: 'POST', body: JSON.stringify({ url: url }) }, 40000);
       if (info.viewport) viewport = info.viewport;
-      if (info.note) { el('note').textContent = info.note; el('note').classList.remove('hidden'); }
+      if (info.note) showNote(info.note);
       setRunning(true);
     } catch (e) {
       showOverlay('Type an address above to open the browser.', false);
@@ -532,13 +720,38 @@
 
   el('addr').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); go(); screen.focus(); }
+    if (e.key === 'Escape') { addrDirty = false; el('addr').value = lastUrl; el('addr').blur(); }
+  });
+  // Like Chrome: one click in the omnibox selects the whole address.
+  el('addr').addEventListener('focus', () => el('addr').select());
+  el('omni').addEventListener('mousedown', (e) => {
+    if (e.target === el('omni') || e.target.closest('#site-icon')) { e.preventDefault(); el('addr').focus(); }
   });
   // What the user typed outranks what the poll wants to put there, until the
   // page actually goes somewhere. See poll().
   el('addr').addEventListener('input', () => { addrDirty = true; });
-  el('back').addEventListener('click', () => send({ kind: 'back' }));
-  el('forward').addEventListener('click', () => send({ kind: 'forward' }));
-  el('reload').addEventListener('click', () => send({ kind: 'reload' }));
+  el('back').addEventListener('click', () => { send({ kind: 'back' }); navState('Loading…'); });
+  el('forward').addEventListener('click', () => { send({ kind: 'forward' }); navState('Loading…'); });
+  el('reload').addEventListener('click', () => { send({ kind: 'reload' }); navState('Loading…'); });
+
+  function showNote(text) {
+    el('note-text').textContent = text;
+    el('note').hidden = false;
+  }
+  el('note-x').addEventListener('click', () => { el('note').hidden = true; });
+
+  // ── gear menu ──
+  const menu = el('menu'), gear = el('gear');
+  function setMenu(open) {
+    menu.hidden = !open;
+    gear.classList.toggle('on', open);
+    gear.setAttribute('aria-expanded', String(open));
+  }
+  gear.addEventListener('click', (e) => { e.stopPropagation(); setMenu(menu.hidden); });
+  document.addEventListener('pointerdown', (e) => {
+    if (!menu.hidden && !menu.contains(e.target) && !gear.contains(e.target)) setMenu(false);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) setMenu(false); });
 
   el('save').addEventListener('click', async () => {
     say('Saving…');
@@ -553,6 +766,7 @@
   });
 
   el('close').addEventListener('click', async () => {
+    setMenu(false);
     say('Saving…');
     try {
       const info = await api('finish', { method: 'POST' }, 40000);
@@ -566,6 +780,7 @@
   });
 
   el('discard').addEventListener('click', async () => {
+    setMenu(false);
     if (!confirm('Close without saving? Anything you signed into in this session is lost.')) return;
     try { await api('cancel', { method: 'POST' }, 25000); } catch (e) { /* closing anyway */ }
     setRunning(false);
@@ -582,20 +797,32 @@
     } catch (e) { say(e.message, 'err'); }
   });
 
+  // Redrawn only when the list changes — the poll calls this every two
+  // seconds, and rebuilding it would refetch every icon each time.
+  let domainsKey = null;
   function renderDomains(list) {
+    const key = list.join('\n');
+    if (key === domainsKey) return;
+    domainsKey = key;
     const box = el('domains');
     box.innerHTML = '';
+    el('clear').disabled = !list.length;
     if (!list.length) {
       const span = document.createElement('span');
       span.className = 'empty';
-      span.textContent = 'Nothing yet — the agent browses signed out.';
+      span.textContent = 'Nothing saved yet — the agent browses signed out.';
       box.appendChild(span);
       return;
     }
     list.forEach((domain) => {
       const chip = document.createElement('span');
       chip.className = 'chip';
-      chip.textContent = domain;      // textContent: these come from cookies
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.textContent = domain.replace(/^\./, '').replace(/^www\./, '')[0] || '?';
+      const name = document.createElement('span');
+      name.textContent = domain;      // textContent: these come from cookies
+      chip.append(dot, name);
       box.appendChild(chip);
     });
   }
@@ -619,7 +846,9 @@
         if (!addrDirty && document.activeElement !== el('addr')) {
           el('addr').value = info.url || '';
         }
-        el('title-text').textContent = info.title || '';
+        siteIcon(info.url || '');
+        setTitle(info.title || '');
+        el('addr').title = info.title || '';
         navState(info.navigating ? 'Loading…' : '');
         // Once per failure, so a stale one doesn't sit on top of a later
         // "Saved" every two seconds.
@@ -636,7 +865,6 @@
         if (info.error) say(info.error, 'err');
       } else if (running) {
         setRunning(false);
-        el('title-text').textContent = '';
         showOverlay('The browser closed. Type an address to open it again.', false);
       }
     } catch (e) { /* transient */ }
@@ -648,7 +876,7 @@
   // open in the one behind it — so going back means closing this one, not
   // loading a second copy of the chat. window.close() is refused for a tab
   // the page didn't open by script on some browsers; fall back to navigating.
-  if (FROM_CHAT) {
+  if (FROM_CHAT && !EMBEDDED) {
     el('chat-link').addEventListener('click', (e) => {
       e.preventDefault();
       const href = el('chat-link').href;
@@ -668,9 +896,8 @@
     history.replaceState(null, '', location.pathname + '?' + params.toString());
     let host = ASK_URL;
     try { host = new URL(ASK_URL.includes('://') ? ASK_URL : 'https://' + ASK_URL).hostname; } catch (e) { /* show it raw */ }
-    el('note').textContent = 'The agent needs you to sign in to ' + host + '. Sign in below, then press '
-      + 'Save & close — ' + USER + '\'s agent picks it up from there.';
-    el('note').classList.remove('hidden');
+    showNote('The agent needs you to sign in to ' + host + '. Sign in, then press Save login — '
+      + USER + '\'s agent picks it up from there.');
     el('addr').value = ASK_URL;
     addrDirty = true;
     try {
@@ -680,6 +907,7 @@
     go();
   }
   openRequested();
+  if (!ASK_URL) setTimeout(() => { if (!running) el('addr').focus(); }, 0);
 })();
 </script>
 <script>
@@ -696,7 +924,7 @@
       if (!a || e.defaultPrevented || a.target === '_blank') return;
       const u = new URL(a.href, location.href);
       if (u.origin !== location.origin || u.pathname === location.pathname) return;
-      const app = { '/browser': 'browser', '/settings': 'settings' }[u.pathname];
+      const app = { '/browser': 'browser', '/settings': 'settings', '/appstore': 'appstore' }[u.pathname];
       e.preventDefault();
       if (app) desk.postMessage({ type: 'freeclaw-open', app: app }, location.origin);
       else window.top.location.href = u.href;
