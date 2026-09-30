@@ -30,7 +30,7 @@ import threading
 import shutil
 import subprocess
 import functools
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
@@ -2434,7 +2434,8 @@ _ping_scheduler_start_lock = threading.Lock()
 
 def _pop_due_pings(name, now):
     """Read this user's ping.md, take out every entry whose time is <= now, and
-    return those due entries as (timestamp, action) pairs. Future entries —
+    return those due entries as (timestamp, repeat, action) triples, repeat
+    being None for a one-off. Future entries —
     and any line whose timestamp genuinely can't be parsed — are written back
     untouched. A due entry carrying a repeat interval is written back at its
     next occurrence rather than dropped.
@@ -2463,7 +2464,7 @@ def _pop_due_pings(name, now):
             logger.warning("Skipping unparseable ping for user=%s: %r", name, ln)
             remaining.append(ln)
         elif when <= now:
-            due.append((time_text.strip(), action.strip()))
+            due.append((time_text.strip(), repeat, action.strip()))
             if repeat:
                 # Rescheduled here, before delivery, so a turn that throws
                 # can't quietly end the recurrence — the next occurrence is
@@ -2482,6 +2483,61 @@ def _pop_due_pings(name, now):
         with open(path, "w", encoding="utf-8") as f:
             f.write(("\n".join(remaining) + "\n") if remaining else "")
     return due
+
+
+# A one-off ping whose delivery failed is tried once more after this long.
+# Nearly every failure is every provider being rate-limited or unreachable at
+# once, and both usually clear within minutes. Only once: a ping that fails
+# twice is reported and dropped rather than retried forever.
+PING_RETRY_DELAY = timedelta(minutes=5)
+PING_RETRY_MARKER = "(retry) "
+
+
+def _note_failed_ping(name, action, repeat, error):
+    """Record a ping delivery that failed, where the user will see it.
+
+    Called with the user's Session bound and its lock held (see
+    _fire_due_pings). A one-off gets one retry, written back to ping.md; a
+    repeating ping doesn't need one, its next occurrence is already there. The
+    note goes into the conversation either way, so the reminder that didn't
+    arrive is visible instead of simply absent."""
+    retry_at = None
+    try:
+        if not repeat and not action.startswith(PING_RETRY_MARKER):
+            retry_at = datetime.now() + PING_RETRY_DELAY
+            path = user_ping_path(name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = [ln for ln in f.read().splitlines() if ln.strip()]
+            except FileNotFoundError:
+                lines = []
+            lines.append(agent.format_ping_line(retry_at, None, PING_RETRY_MARKER + action))
+            lines = agent.sort_ping_lines(lines)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+    except Exception:
+        logger.exception("Couldn't requeue failed ping for user=%s", name)
+        retry_at = None
+    try:
+        # The user-facing provider errors already end in a full stop.
+        reason = (" ".join(str(error).split())[:300].rstrip(".")
+                  or type(error).__name__)
+        if retry_at:
+            outcome = f"I'll try again at {retry_at.strftime('%H:%M')}."
+        elif repeat:
+            outcome = f"It repeats {repeat}, so the next one is still scheduled."
+        else:
+            outcome = "This was already a retry, so it won't be tried again."
+        action_text = action[len(PING_RETRY_MARKER):] if action.startswith(PING_RETRY_MARKER) else action
+        agent.get_messages().append({
+            "role": "assistant",
+            "content": (f"⚠️ A scheduled reminder didn't go through: \"{action_text}\" "
+                        f"— {reason}. {outcome}"),
+            "ts": datetime.now().strftime(agent.PING_TIME_FORMAT),
+        })
+        save_conversation(name, agent.get_messages())
+    except Exception:
+        logger.exception("Couldn't record failed ping for user=%s", name)
 
 
 def _fire_due_pings():
@@ -2505,26 +2561,34 @@ def _fire_due_pings():
             except Exception:
                 logger.exception("Couldn't read pings for user=%s", name)
                 continue
-            for stamp, action in due:
+            for stamp, repeat, action in due:
                 if not action:
                     continue
                 try:
                     activate_session(name)
-                    # Injected as a normal user turn ("physically entered"),
-                    # so the model acts on it and the bubble shows in the UI.
-                    # The PING prefix carries the delivery time so the model
-                    # can tell a scheduled wake-up from something the user
-                    # just typed, and knows when it actually fired.
-                    stamped = (f"PING [{now.strftime(agent.PING_TIME_FORMAT)}]: "
-                               f"{action}")
-                    agent.agent(user_input=stamped)
+                    # Injected as a user turn, so the model acts on it and the
+                    # bubble shows in the UI, and flagged ping=True so it skips
+                    # the intent classifier (see agent._PING_SETTINGS). The
+                    # header says when it was due as well as when it fired: a
+                    # server that was asleep delivers late, and "your 8:00
+                    # reminder" at 11:40 should say so rather than pretend.
+                    fired = now.strftime(agent.PING_TIME_FORMAT)
+                    when = (f"due {stamp}, fired {fired}" if stamp != fired
+                            else f"due {stamp}")
+                    if repeat:
+                        when += f", repeats {repeat}"
+                    stamped = f"{agent.PING_PREFIX} [{when}]: {action}"
+                    agent.agent(user_input=stamped, ping=True)
                     save_conversation(name, agent.get_messages())
                     logger.info("Delivered ping for user=%s scheduled=%s action=%r", name, stamp, action)
-                except Exception:
+                except Exception as e:
                     # A failed turn must not wedge the scheduler or replay the
                     # same ping forever — it's already been removed from
-                    # ping.md, so log it and move on.
+                    # ping.md. But it mustn't vanish either: a reminder that
+                    # silently never arrives is the fastest way to teach
+                    # someone not to rely on reminders.
                     logger.exception("Ping delivery failed for user=%s scheduled=%s", name, stamp)
+                    _note_failed_ping(name, action, repeat, e)
 
 
 def _ping_scheduler_loop():

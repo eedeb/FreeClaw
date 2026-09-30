@@ -160,14 +160,14 @@ You can type these directly into the chat box:
 ## Features
 
 - **Smart intent classification** — a local `Classy` classifier reads your message and tags its intent (greeting, search, coding, logic, banter, etc.) before any API call is made
-- **Adaptive turns** — the intent tag decides how much chat history is sent, the sampling temperature, and which tools are offered: small talk gets a tiny context window and no tools, precision work runs colder with the full toolset
-- **Minimal context windowing** — the number of past messages sent per turn scales with how complex the intent tag is, keeping token usage low for simple exchanges
+- **Adaptive turns** — the intent tag decides how much chat history is sent, the sampling temperature, and which tools are offered: small talk gets a short verbatim window and only memory and file tools, precision work runs colder with the full toolset. Scheduled pings skip the classifier and always get every tool
+- **Two-tier context windowing** — the last few messages go in full, tool calls and results included; behind them, roughly the last ten exchanges go in as plain text with the tool traffic stripped (and long messages clipped), which is cheap. Anything older is summarised as a one-line-per-message digest, and `search_history` brings back exact wording from anywhere in the conversation — or from past conversations, which are archived on reset instead of deleted
 - **Multi-provider fallback** — add any OpenAI-compatible endpoint from Settings → Providers (URL, API key, model); the agent tries them in the order you list them, falling through to the next if one fails or is rate-limited — including when a provider accepts the request and then drops the response stream before a single token arrives
-- **Persistent memory, paged in** — the agent keeps durable facts about you in `context.md`, filed under `##` headers alongside your other files. Its prompt carries only the **About** and **Preferences** sections plus the *names* of the others, so memory can grow for years without the prompt growing with it; it pulls a section in with `search_context` when the conversation calls for one, and saves with `add_context`
+- **Persistent memory, paged in when it outgrows the prompt** — the agent keeps durable facts about you in `context.md`, filed under `##` headers alongside your other files. The **About** and **Preferences** sections always go in full, and every other section is inlined too while it fits a ~6k-character budget; beyond that, sections are listed by name and entry count. `search_context` opens a section by name or finds entries by keyword, and `add_context` saves. A correction made with `edit_file` reaches the prompt on the very next turn
 - **Web search & scraping** — queries DuckDuckGo for instant answers, news, and snippets, then scrapes and cleans the top non-JS-heavy result pages, all stitched into one capped, structured block of context for the model — no extra LLM call required
 - **Bash execution, gated on your approval** — can run shell commands on the host machine, but only ones you've okayed. The prompt is raised by FreeClaw itself, not by the model: see [Bash Approvals](#bash-approvals)
 - **File, page & image tools** — can create, read, edit (find/replace), delete, and list files in its sandboxed static folder; can publish a live HTML page at a public URL; can describe an uploaded image in detail using a vision model
-- **Scheduled pings, one-off or recurring** — the agent can schedule a future action for itself with `add_ping`, writing it to `ping.md`; a background thread delivers it as a normal turn when its time comes, so the exchange is waiting the next time you open the chat. Pass `repeat` as `hourly`, `daily`, or `weekly` and it reschedules itself on every fire. Nothing runs while nothing is due — there's no polling loop spending tokens on your behalf
+- **Scheduled pings, one-off or recurring** — the agent can schedule a future action for itself with `add_ping`, writing it to `ping.md`, and remove one with `cancel_ping`; the upcoming ones are listed in its prompt every turn, so it always knows what's scheduled. A background thread delivers each as a turn with every tool available when its time comes (a late delivery says so), so the exchange is waiting the next time you open the chat. Times in the past are refused rather than fired immediately, and a delivery that fails is noted in the chat and retried once. Pass `repeat` as `hourly`, `daily`, or `weekly` and it reschedules itself on every fire. Nothing runs while nothing is due — there's no polling loop spending tokens on your behalf
 - **MCP servers, remote or local** — connect external [Model Context Protocol](https://modelcontextprotocol.io) servers from **Settings → MCP Servers**, over HTTP *or* as a local process on stdio (which is how most published MCP servers ship). Their tools are merged into the agent's toolset automatically, no restart required
 - **Prompt caching** — the system prompt is laid out stable-part-first so providers can cache it, cutting the cost of the repeated prefix every turn resends. See [Prompt Caching](#prompt-caching)
 - **Password-protected UI** — the web chat sits behind a login screen so it's safe to expose on your local network
@@ -330,9 +330,11 @@ FreeClaw's used not to be. The system message opened with a live timestamp, whic
 
 ```
 <instructions>                          ← fixed for the whole conversation, cacheable
-context.md: About + Preferences + header names ← snapshotted once, at reset
+context.md: as much as fits + header names ← snapshotted at reset, re-read after a correction
 --- live context (refreshed every turn) ---
-Current date: …                         ← rewritten every turn
+Current date/time, upcoming pings,      ← rewritten every turn
+this conversation's saves, digest of
+older messages
 ```
 
 That alone is enough for providers that cache automatically (OpenAI, DeepSeek, Groq, Cerebras, xAI) — they need no request-side opt-in, just a stable prefix.
@@ -511,9 +513,10 @@ Warnings and errors are also mirrored to the console. On Linux that means `journ
 
 FreeClaw is built around one principle: **use the cheapest model that can do the job.**
 
-- Greetings, small talk, and personal questions → no tools, minimal context
+- Greetings, small talk, and personal questions → a trimmed toolset and a short verbatim window
 - Search, coding, logic, and everything else → tools included, context trimmed to a handful of recent messages
-- Long-term facts → saved once to `context.md` under a header, and only that header's *name* is re-sent each turn until the agent actually needs what's under it
+- Long-term facts → saved once to `context.md` under a header, sent from the cached part of the prompt, and reduced to header names only once memory outgrows its budget
+- Older conversation → plain text with tool traffic stripped, then a one-line digest, then a free keyword search (`search_history`) rather than a summarising model call
 - A free, no-LLM scraping pipeline does the heavy lifting for search instead of spending a model call on it
 - The part of the prompt that never changes sits where a provider can cache it, so the repeated prefix is discounted instead of paid for in full every turn ([Prompt Caching](#prompt-caching))
 

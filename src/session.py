@@ -19,8 +19,11 @@ and a nested run just binds a different Session for the duration.
     static_dir               which user's files/ and context.md the tools see
     new_sections             context.md headers created during this conversation
     context_writes           what add_context saved, echoed back every turn
+    context_dirty            context.md was edited in place; re-snapshot it
+    tts                      whether the prompt is written for speech
     turn_usage               token tally for the turn in flight
     turn_prefix              pinned history window + tool set for the turn
+    turn_notes               per-turn lines for the prompt's live tail
     turn_tool_names          which tools the turn in flight actually ran
     consecutive_tool_calls   } the runaway-tool throttle's run: calls to the
     last_tool_name           } same tool, and of those the ones that repeated
@@ -101,6 +104,18 @@ class Session:
         # turn's history window is.
         self.context_writes = []
 
+        # Set when context.md was changed by something the echo above can't
+        # represent — an edit_file correction, or create_file appending to it.
+        # The snapshot in the prompt would otherwise keep showing the line that
+        # was just corrected, and a stale fact the model can see is one it acts
+        # on. The next turn re-reads the file (agent._refresh_stale_context).
+        self.context_dirty = False
+
+        # Whether reset() was asked to write the prompt for text-to-speech.
+        # Kept here because the instructions are rebuilt from code every turn
+        # (agent._stable_prefix), and that rebuild has to know.
+        self.tts = False
+
         # How many sub-agents deep this conversation is. 0 for a user's own
         # conversation; a child spawned by agent.spawn_subagent gets parent + 1.
         # agent.MAX_SUBAGENT_DEPTH is what stops that recursing without end.
@@ -114,6 +129,12 @@ class Session:
         # built — which can be several tool hops later, in a recursive
         # agent_stream call where the local `tag` is long out of scope.
         self.turn_tag = None
+        # Lines this turn adds to the live tail of the system message — which
+        # tools were withheld, the digest of older messages. Held here rather
+        # than appended to the message once, because the tail is rebuilt at
+        # the top of every tool continuation and anything appended directly
+        # would be gone by the turn's second request.
+        self.turn_notes = ""
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
         # The arguments half of the throttle's run. An MCP server often puts
@@ -183,6 +204,7 @@ class Session:
         # after the assistant message that ends the turn has been appended, so
         # that message still carries the tag.
         self.turn_tag = None
+        self.turn_notes = ""
 
     def note_new_section(self, name):
         """Remember a context.md section created mid-conversation so the next

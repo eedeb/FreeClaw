@@ -28,6 +28,11 @@ Flask/static/*
 # Setup Wizard is inside a tracked folder.
 *.json.lock
 
+# Conversations archived by a reset (agent._archive_conversation), kept beside a
+# user's files for search_history. Same problem as the lock: for the Setup
+# Wizard that's inside a tracked folder, and a reset must not add files to git.
+Flask/static/*/history/
+
 # Python
 __pycache__/
 *.pyc
