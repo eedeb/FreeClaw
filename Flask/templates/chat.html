@@ -1791,7 +1791,7 @@
     <div class="win-body">
       <div id="context-panel">
         <div class="ctx-head">
-          <button id="ctx-back" title="Back to files" hidden>←</button>
+          <button id="ctx-back" title="Back" hidden>←</button>
           <span class="ctx-title" id="ctx-title">files</span>
           <span class="ctx-user" id="ctx-user"></span>
         </div>
@@ -2978,12 +2978,15 @@
   });
 
   // ── files panel ───────────────────────────────────────────────────
-  // This user's files folder: context.md and ping.md pinned at the top, then
-  // everything the agent wrote or was sent. A list, and one file at a time —
-  // text files open in an editor, images in a viewer, anything else says so.
-  // Saving context.md goes through /api/users/<name>/files/context.md, which
-  // refreshes the running conversation's system message on the way, so an
-  // edit lands on the very next turn rather than waiting for a reset.
+  // Everything FreeClaw keeps for this user, one folder at a time: the saved
+  // conversation, files/ (the agent's workspace — context.md and ping.md
+  // pinned at the top, then everything it wrote or was sent) and history/
+  // (conversations archived by /reset). Text files open in an editor, images
+  // in a viewer, anything else says so. conversation.json and the archives
+  // open read-only; the server enforces that and which files can't be
+  // deleted, this only mirrors it. Saving files/context.md refreshes the
+  // running conversation's system message on the way, so an edit lands on
+  // the very next turn rather than waiting for a reset.
   const ctxBack      = document.getElementById('ctx-back');
   const ctxHeading   = document.getElementById('ctx-title');
   const ctxListView  = document.getElementById('ctx-list-view');
@@ -2999,13 +3002,25 @@
   const ctxStatus    = document.getElementById('ctx-status');
   const ctxUserEl    = document.getElementById('ctx-user');
 
-  const LIST_HINT = "The agent's files. It reads and writes these too.";
-  const FILE_HINTS = {
-    'context.md': "Long-term memory. The agent edits this too.",
-    'ping.md': "Scheduled pings, soonest first.",
+  const DIR_HINTS = {
+    '': "Everything FreeClaw keeps for you.",
+    'files': "The agent's files. It reads and writes these too.",
+    'history': "Conversations archived by /reset. The agent can search these — delete any you don't want kept.",
   };
+  const FILE_HINTS = {
+    'conversation.json': "This conversation as saved. Read-only — /reset starts a new one.",
+    'files/context.md': "Long-term memory. The agent edits this too.",
+    'files/ping.md': "Scheduled pings, soonest first.",
+  };
+  const ARCHIVE_HINT = "An archived conversation. Read-only.";
+  const dirHint = dir => DIR_HINTS[dir] || '';
+  const fileHint = f => FILE_HINTS[f.name]
+    || (f.name.startsWith('history/') ? ARCHIVE_HINT : '');
+  const parentDir = path => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+  const baseName = path => path.slice(path.lastIndexOf('/') + 1);
 
-  let ctxOpenFile = null;    // { name, kind, protected } of the open file, or null
+  let ctxDir      = '';      // folder being listed, relative to the user's folder
+  let ctxOpenFile = null;    // { name, kind, protected, readonly } of the open file, or null
   let ctxOriginal = '';      // last known saved text, for the dirty check
   let ctxSaving   = false;
   let ctxBusy     = false;   // a delete is in flight
@@ -3016,7 +3031,7 @@
   }
 
   const ctxDirty = () =>
-    !!ctxOpenFile && ctxOpenFile.kind === 'text'
+    !!ctxOpenFile && ctxOpenFile.kind === 'text' && !ctxOpenFile.readonly
     && !ctxText.disabled && ctxText.value !== ctxOriginal;
 
   const ctxFileUrl = name =>
@@ -3029,7 +3044,7 @@
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
-  const KIND_ICON = { text: '📄', image: '🖼', binary: '📦' };
+  const KIND_ICON = { text: '📄', image: '🖼', binary: '📦', dir: '📁' };
 
   // The user name normally arrives with the conversation on page load; ask for
   // it directly if the panel is opened before that landed (or if it failed).
@@ -3046,19 +3061,22 @@
   }
 
   // ── list view ──
-  async function ctxShowList(status) {
+  // `dir` is the folder to show; left out, it stays on the one already open.
+  async function ctxShowList(status, dir) {
+    if (dir !== undefined) ctxDir = dir;
+    const listing = ctxDir;
     ctxOpenFile = null;
     ctxOriginal = '';
     ctxFileView.hidden = true;
     ctxListView.hidden = false;
-    ctxBack.hidden = true;
+    ctxBack.hidden = !listing;
     ctxSave.hidden = true;
     ctxDelete.hidden = true;
-    ctxHeading.textContent = 'files';
+    ctxHeading.textContent = '/' + listing;
     // Drop the image so a closed panel isn't still holding it in memory.
     ctxImage.removeAttribute('src');
     ctxText.value = '';
-    ctxSetStatus(status || LIST_HINT, status ? 'ok' : '');
+    ctxSetStatus(status || dirHint(listing), status ? 'ok' : '');
 
     const user = await ctxResolveUser();
     ctxUserEl.textContent = user || '';
@@ -3070,10 +3088,18 @@
       return;
     }
     try {
-      const res = await fetch('/api/users/' + encodeURIComponent(user) + '/files');
+      const res = await fetch('/api/users/' + encodeURIComponent(user) + '/files?dir='
+                              + encodeURIComponent(listing));
+      if (res.status === 404 && listing) {
+        // The folder went away (history/ before the first reset, say) —
+        // step back up rather than leave the panel on an error.
+        return ctxShowList(undefined, parentDir(listing));
+      }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      ctxRenderList(data.files || []);
+      // They may have moved on while this was in flight.
+      if (ctxDir !== listing || ctxOpenFile) return;
+      ctxRenderList(data.entries || []);
     } catch (e) {
       ctxListEmpty.hidden = false;
       ctxListEmpty.textContent = '';
@@ -3081,30 +3107,37 @@
     }
   }
 
-  function ctxRenderList(files) {
+  function ctxRenderList(entries) {
     ctxListEl.innerHTML = '';
-    ctxListEmpty.hidden = files.length > 0;
-    ctxListEmpty.textContent = files.length ? '' : 'No files yet.';
-    for (const f of files) {
+    ctxListEmpty.hidden = entries.length > 0;
+    ctxListEmpty.textContent = entries.length ? ''
+      : ctxDir === 'history' ? 'No archived conversations yet.' : 'Nothing here yet.';
+    for (const f of entries) {
+      const isDir = f.type === 'dir';
       const li  = document.createElement('li');
       const row = document.createElement('button');
-      row.className = 'ctx-row' + (f.protected ? ' protected' : '');
+      // Folders aren't coloured as protected — they're navigation, and the
+      // accent is how the panel marks the files it won't let you delete.
+      row.className = 'ctx-row' + (f.protected && !isDir ? ' protected' : '');
       row.type = 'button';
 
       const icon = document.createElement('span');
       icon.className = 'ctx-row-icon';
-      icon.textContent = KIND_ICON[f.kind] || '📄';
+      icon.textContent = KIND_ICON[isDir ? 'dir' : f.kind] || '📄';
 
       const name = document.createElement('span');
       name.className = 'ctx-row-name';
-      name.textContent = f.name;
+      name.textContent = (f.label || baseName(f.name)) + (isDir ? '/' : '');
 
       const meta = document.createElement('span');
       meta.className = 'ctx-row-meta';
-      meta.textContent = fmtSize(f.size);
+      meta.textContent = isDir
+        ? f.count + (f.count === 1 ? ' item' : ' items')
+        : fmtSize(f.size);
 
       row.append(icon, name, meta);
-      row.addEventListener('click', () => ctxOpenFileView(f));
+      row.addEventListener('click', () =>
+        isDir ? ctxShowList(undefined, f.name) : ctxOpenFileView(f));
       li.appendChild(row);
       ctxListEl.appendChild(li);
     }
@@ -3117,21 +3150,22 @@
     ctxListView.hidden = true;
     ctxFileView.hidden = false;
     ctxBack.hidden = false;
-    ctxHeading.textContent = f.name;
+    ctxHeading.textContent = '/' + f.name;
     ctxText.hidden = true;
+    ctxText.readOnly = !!f.readonly;
     ctxImageWrap.hidden = true;
     ctxBinary.hidden = true;
-    ctxSave.hidden = f.kind !== 'text';
+    ctxSave.hidden = f.kind !== 'text' || !!f.readonly;
     ctxSave.disabled = true;
     ctxDelete.hidden = !!f.protected;
     ctxDelete.disabled = false;
-    ctxSetStatus(FILE_HINTS[f.name] || '', '');
+    ctxSetStatus(fileHint(f), '');
 
     if (f.kind === 'image') {
       // Cache-bust so reopening after the agent rewrote the file shows the
       // new one rather than whatever the browser kept.
       ctxImage.src = ctxFileUrl(f.name) + '?raw=1&t=' + Date.now();
-      ctxImage.alt = f.name;
+      ctxImage.alt = baseName(f.name);
       ctxImageWrap.hidden = false;
       if (!ctxStatus.textContent) ctxSetStatus(fmtSize(f.size) + ' image', '');
       return;
@@ -3186,13 +3220,13 @@
       if (ctxOpenFile && ctxOpenFile.name === file.name) {
         ctxOriginal = sent;
         ctxSave.disabled = !ctxDirty();   // they may have typed on while it flew
-        ctxSetStatus(file.name === 'context.md'
+        ctxSetStatus(file.name === 'files/context.md'
           ? 'Saved — the running conversation has it.' : 'Saved.', 'ok');
       }
       // Refreshing the system message rewrites the conversation, so a save to
       // context.md moves updated_at. Re-baseline the poll or it reads that
       // back as a background change and re-renders the thread underneath us.
-      if (file.name === 'context.md') syncUpdatedAt();
+      if (file.name === 'files/context.md') syncUpdatedAt();
     } catch (e) {
       ctxSetStatus('Save failed — ' + e.message, 'err');
       ctxSave.disabled = false;
@@ -3204,7 +3238,8 @@
   async function ctxDoDelete() {
     if (ctxBusy || !ctxOpenFile || ctxOpenFile.protected || !currentUser) return;
     const file = ctxOpenFile;
-    if (!confirm('Delete ' + file.name + '? This cannot be undone.')) return;
+    const what = file.label ? 'the conversation archived ' + file.label : file.name;
+    if (!confirm('Delete ' + what + '? This cannot be undone.')) return;
     ctxBusy = true;
     ctxDelete.disabled = true;
     ctxSave.disabled = true;
@@ -3215,7 +3250,7 @@
       if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
       ctxOriginal = ctxText.value;   // nothing left to warn about losing
       ctxBusy = false;
-      ctxShowList('Deleted ' + file.name + '.');
+      ctxShowList('Deleted ' + (file.label || baseName(file.name)) + '.', parentDir(file.name));
     } catch (e) {
       ctxSetStatus('Delete failed — ' + e.message, 'err');
       ctxDelete.disabled = false;
@@ -3233,8 +3268,21 @@
       || confirm('Discard unsaved changes to ' + ctxOpenFile.name + '?');
   }
 
+  // Opens on the user's folder — conversation.json, files/, history/ — rather
+  // than straight into files/.
   function ctxOpen() {
-    ctxShowList();
+    ctxShowList(undefined, '');
+  }
+
+  // One level up: an open file back to its folder's listing, a folder to its
+  // parent. False when already at the top, so Escape knows to close instead.
+  function ctxGoUp() {
+    if (ctxOpenFile) {
+      if (ctxConfirmLeave()) ctxShowList(undefined, parentDir(ctxOpenFile.name));
+      return true;
+    }
+    if (ctxDir) { ctxShowList(undefined, parentDir(ctxDir)); return true; }
+    return false;
   }
 
   function ctxClosePanel() {
@@ -3245,22 +3293,21 @@
     return true;
   }
 
-  ctxBack.addEventListener('click', () => { if (ctxConfirmLeave()) ctxShowList(); });
+  ctxBack.addEventListener('click', ctxGoUp);
   ctxSave.addEventListener('click', ctxDoSave);
   ctxDelete.addEventListener('click', ctxDoDelete);
   ctxText.addEventListener('input', () => {
     ctxSave.disabled = !ctxDirty();
-    if (ctxStatus.className) ctxSetStatus(FILE_HINTS[ctxOpenFile && ctxOpenFile.name] || '', '');
+    if (ctxStatus.className && ctxOpenFile) ctxSetStatus(fileHint(ctxOpenFile), '');
   });
   ctxText.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); ctxDoSave(); }
   });
-  // Escape backs out one level at a time: open file → list → closed. Only
-  // while Files is the window in front.
+  // Escape backs out one level at a time: open file → its folder → parent
+  // folder → closed. Only while Files is the window in front.
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape' || wm.focused !== 'files') return;
-    if (ctxOpenFile) { if (ctxConfirmLeave()) ctxShowList(); }
-    else closeApp('files');
+    if (!ctxGoUp()) closeApp('files');
   });
   // Nothing else on the page can move these files mid-edit except the agent
   // itself (add_context, edit_file), and clobbering that silently would lose

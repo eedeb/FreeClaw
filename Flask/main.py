@@ -350,44 +350,82 @@ def api_user_context(name):
 
 
 # ── USER FILES API ───────────────────────────────────────────
-# Everything the agent can read or write lives in static/<user>/files/ —
-# its memory, its schedule, anything it created and anything uploaded to it.
-# These routes put that folder in front of the person the agent works for:
-# list it, open a file, edit and save it, throw one away.
+# Everything FreeClaw keeps for one user lives in static/<user>/:
+#
+#     conversation.json   the conversation itself
+#     files/              the agent's workspace — its memory (context.md), its
+#                         schedule (ping.md), anything it created or was sent
+#     history/            conversations archived by /reset, for search_history
+#
+# These routes put that folder in front of the person the agent works for, one
+# folder at a time: list it, open a file, edit and save it, throw one away.
+# Paths are relative to static/<user>/ and always use forward slashes, so the
+# same name round-trips through a URL on any OS.
 
-# The two the panel won't delete: the agent's memory and its schedule, the
-# same pair agent._PROTECTED_FILES stops the model itself deleting. Order
-# matters — it's the order they're pinned to the top of the list.
-PROTECTED_FILES = ('context.md', 'ping.md')
+# Never deletable from the panel: the conversation, and the agent's memory and
+# schedule — the last two being the pair agent._PROTECTED_FILES stops the model
+# itself deleting. Order matters: it's the order they're pinned in a listing.
+PROTECTED_FILES = ('conversation.json', 'files/context.md', 'files/ping.md')
+
+# Shown but never saved from the panel. conversation.json is rewritten by every
+# turn and a hand edit that broke its JSON would break the conversation, and an
+# archive is a record of what was said — editing one would make search_history
+# quote things nobody said. /reset and delete are the ways to change them.
+HISTORY_DIR = 'history'
+CONVERSATION_FILE = 'conversation.json'
+
+# Folders pinned to the top of the root listing, in this order.
+PINNED_DIRS = ('files', HISTORY_DIR)
 
 # Extensions we serve as images rather than trying to show as text. Anything
 # not here is classified by sniffing its bytes, so a .py, .csv, .json or a
 # text file with no extension at all still opens in the editor.
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg'}
 
-def _files_root(name):
-    """Absolute, symlink-resolved path of this user's files folder. Creating
-    it if missing is conv_files_dir's job, and harmless here."""
-    return os.path.realpath(conv_files_dir(name))
+
+def _is_readonly(rel):
+    return rel == CONVERSATION_FILE or rel.startswith(HISTORY_DIR + '/')
 
 
-def _resolve_user_file(name, relpath):
-    """Absolute path of `relpath` inside this user's files folder, or None if
-    it points anywhere else.
+def _user_root(name):
+    """Absolute, symlink-resolved path of this user's folder. conv_files_dir()
+    is called for its side effect: files/ always exists, so the panel's root
+    listing never comes up without it."""
+    conv_files_dir(name)
+    return os.path.realpath(user_dir(name))
+
+
+def _resolve_user_path(name, relpath):
+    """Absolute path of `relpath` inside this user's folder — the folder
+    itself for "" — or None if it points anywhere else.
 
     Both halves are resolved before comparing, so a symlink planted in the
     folder can't be followed out of it, and the comparison goes through
     normcase because Windows paths differ in case without differing."""
-    if not relpath or '\x00' in relpath:
+    relpath = relpath or ''
+    if '\x00' in relpath:
+        return None
+    # Anything the listing hides is off limits by path too, not just unlisted.
+    # The one that matters: static/<user>/.bash_approvals.json, the always-
+    # allow rules, which sits in this folder and is managed only through the
+    # approvals API — a hand edit here could quietly widen what bash may run.
+    if any(_hidden_entry(part) for part in re.split(r'[\\/]', relpath) if part):
         return None
     if os.path.isabs(relpath) or relpath.startswith(('/', '\\')):
         return None
-    root = _files_root(name)
+    root = _user_root(name)
     full = os.path.realpath(os.path.join(root, relpath))
     root_cmp, full_cmp = os.path.normcase(root), os.path.normcase(full)
     if full_cmp != root_cmp and not full_cmp.startswith(root_cmp + os.sep):
         return None
     return full
+
+
+def _rel_to_user(name, path):
+    """`path` as the panel names it: relative to the user's folder, forward
+    slashes, "" for the folder itself."""
+    rel = os.path.relpath(path, _user_root(name)).replace(os.sep, '/')
+    return '' if rel == '.' else rel
 
 
 def _file_kind(path):
@@ -421,38 +459,64 @@ def _file_kind(path):
     return 'text'
 
 
-def _list_user_files(name):
-    """Every file under this user's files folder, protected ones first and
-    the rest alphabetically. Walks subfolders so files the agent tucked away
-    in one are still reachable; paths are relative and always use forward
-    slashes, so the same name round-trips through a URL on any OS."""
-    root = _files_root(name)
-    found = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith('.'))
-        for fname in filenames:
-            # Dotfiles covers our own working files too — the conversation
-            # lock sidecar and the ".tmp-"/".ctx-"/".edit-" leftovers an
-            # interrupted atomic write leaves behind — none of which belong
-            # to the user and none of which they should be editing.
-            if fname.startswith('.') or fname.endswith(('.lock', '.tmp')):
-                continue
-            full = os.path.join(dirpath, fname)
-            rel = os.path.relpath(full, root).replace(os.sep, '/')
+def _hidden_entry(fname):
+    """Our own working files, which don't belong to the user and shouldn't be
+    edited: the conversation lock sidecar and the ".tmp-"/".ctx-"/".edit-"/
+    ".conv-" leftovers an interrupted atomic write leaves behind."""
+    return fname.startswith('.') or fname.endswith(('.lock', '.tmp'))
+
+
+def _history_label(fname):
+    """"2026-09-30 15:16" for an archive named 2026-09-30_151600.json — when
+    the conversation was reset — or None for anything named otherwise."""
+    m = re.fullmatch(r'(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})\d{2}\.json', fname)
+    return f"{m.group(1)} {m.group(2)}:{m.group(3)}" if m else None
+
+
+def _list_user_dir(name, directory):
+    """One folder of this user's, as the panel shows it: folders and files,
+    pinned entries first, then folders, then files alphabetically — except
+    history/, which lists newest first because that's the order anyone looks
+    through past conversations in."""
+    rel_dir = _rel_to_user(name, directory)
+    entries = []
+    for fname in os.listdir(directory):
+        if _hidden_entry(fname):
+            continue
+        full = os.path.join(directory, fname)
+        rel = f"{rel_dir}/{fname}" if rel_dir else fname
+        try:
+            stat = os.stat(full)
+        except OSError:
+            continue
+        if os.path.isdir(full):
             try:
-                stat = os.stat(full)
+                count = sum(1 for f in os.listdir(full) if not _hidden_entry(f))
             except OSError:
-                continue
-            found.append({
-                'name': rel,
-                'kind': _file_kind(full),
-                'size': stat.st_size,
-                'modified': stat.st_mtime,
-                'protected': rel in PROTECTED_FILES,
-            })
-    order = {n: i for i, n in enumerate(PROTECTED_FILES)}
-    found.sort(key=lambda f: (order.get(f['name'], len(order)), f['name'].lower()))
-    return found
+                count = 0
+            entries.append({'name': rel, 'type': 'dir', 'count': count,
+                            'modified': stat.st_mtime, 'protected': True})
+            continue
+        entry = {
+            'name': rel,
+            'type': 'file',
+            'kind': _file_kind(full),
+            'size': stat.st_size,
+            'modified': stat.st_mtime,
+            'protected': rel in PROTECTED_FILES,
+            'readonly': _is_readonly(rel),
+        }
+        if rel_dir == HISTORY_DIR:
+            entry['label'] = _history_label(fname)
+        entries.append(entry)
+
+    pinned = {n: i for i, n in enumerate(PROTECTED_FILES + tuple(PINNED_DIRS))}
+    if rel_dir == HISTORY_DIR:
+        entries.sort(key=lambda e: e['name'].lower(), reverse=True)
+    else:
+        entries.sort(key=lambda e: (pinned.get(e['name'], len(pinned)),
+                                    e['type'] != 'dir', e['name'].lower()))
+    return {'dir': rel_dir, 'entries': entries}
 
 
 def _files_user(name):
@@ -467,41 +531,51 @@ def _files_user(name):
 
 @app.route('/api/users/<name>/files', methods=['GET'])
 def api_list_user_files(name):
-    """This user's files folder, as the panel shows it."""
+    """One folder of this user's, as the panel shows it — ?dir=files for the
+    agent's workspace, ?dir=history for archived conversations, nothing for
+    the user's folder itself."""
     name, err = _files_user(name)
     if err:
         return err
+    directory = _resolve_user_path(name, request.args.get('dir', ''))
+    if directory is None:
+        return jsonify({'error': 'Invalid folder'}), 400
+    if not os.path.isdir(directory):
+        return jsonify({'error': 'Folder not found'}), 404
     try:
-        return jsonify({'user': name, 'files': _list_user_files(name)})
+        return jsonify({'user': name, **_list_user_dir(name, directory)})
     except Exception as e:
         return _log_and_error(e)
 
 
 @app.route('/api/users/<name>/files/<path:relpath>', methods=['GET', 'PUT', 'DELETE'])
 def api_user_file(name, relpath):
-    """Open, save or delete one file in this user's files folder.
+    """Open, save or delete one file in this user's folder.
 
     GET returns the text of a text file as JSON; ?raw=1 (and anything that
-    isn't text) sends the bytes instead, which is what an <img> needs.
+    isn't text) sends the bytes instead, which is what an <img> needs. The
+    read-only JSON files come back pretty-printed, because they're written as
+    one long line and nobody can read a conversation that way.
 
-    A PUT to context.md goes through write_user_context so the edit reaches
-    the conversation that's already running — same as the context route."""
+    A PUT to files/context.md goes through write_user_context so the edit
+    reaches the conversation that's already running — same as the context
+    route."""
     name, err = _files_user(name)
     if err:
         return err
-    path = _resolve_user_file(name, relpath)
+    path = _resolve_user_path(name, relpath)
     if path is None:
         return jsonify({'error': 'Invalid file name'}), 400
     # Take the name back off the resolved path rather than off the URL, so it
     # is spelled exactly as the listing spells it — which is what the
-    # protected-file check below is comparing against.
-    rel = os.path.relpath(path, _files_root(name)).replace(os.sep, '/')
+    # protected and read-only checks below are comparing against.
+    rel = _rel_to_user(name, path)
+    if not rel or os.path.isdir(path):
+        return jsonify({'error': 'That is a folder, not a file.'}), 400
 
     if request.method == 'DELETE':
         if rel in PROTECTED_FILES:
             return jsonify({'error': f"{rel} can't be deleted."}), 403
-        if os.path.isdir(path):
-            return jsonify({'error': 'That is a folder, not a file.'}), 400
         if not os.path.exists(path):
             return jsonify({'error': 'File not found'}), 404
         try:
@@ -517,15 +591,23 @@ def api_user_file(name, relpath):
     if request.method == 'GET':
         kind = _file_kind(path)
         if kind != 'text' or request.args.get('raw'):
-            return send_from_directory(_files_root(name), rel)
+            return send_from_directory(_user_root(name), rel)
         try:
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
         except Exception as e:
             return _log_and_error(e)
-        return jsonify({'user': name, 'name': rel, 'kind': kind, 'content': content})
+        if _is_readonly(rel) and rel.endswith('.json'):
+            try:
+                content = json.dumps(json.loads(content), indent=2, ensure_ascii=False)
+            except ValueError:
+                pass  # show it as it is — a broken file is still worth seeing
+        return jsonify({'user': name, 'name': rel, 'kind': kind, 'content': content,
+                        'readonly': _is_readonly(rel)})
 
     # PUT
+    if _is_readonly(rel):
+        return jsonify({'error': f"{rel} is read-only."}), 403
     if _file_kind(path) != 'text':
         return jsonify({'error': "That file isn't text — it can't be edited here."}), 400
     data = request.get_json(silent=True) or {}
@@ -534,7 +616,7 @@ def api_user_file(name, relpath):
         return jsonify({'error': "Send JSON with a 'content' string."}), 400
     try:
         with _session_lock(name):
-            if rel == 'context.md':
+            if rel == 'files/context.md':
                 write_user_context(name, content)
                 activate_session(name)
                 if agent.refresh_context():

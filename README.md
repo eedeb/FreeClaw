@@ -215,6 +215,7 @@ FreeClaw/
 ├── Flask/
 │   ├── main.py               # Flask server — login, chat SSE endpoint, settings/provider/MCP APIs, /v1 API
 │   ├── static/               # Created at first run; each user gets static/<user>/files/ holding context.md, uploads, and agent-created files,
+│   │                         # static/<user>/conversation.json and history/ (conversations archived by /reset) beside it — all browsable in the Files app —
 │   │                         # plus static/<user>/.bash_approvals.json — their always-allow rules, kept out of files/ so the agent can't edit it
 │   └── templates/
 │       ├── index.html        # Home page — pick a user, toggle the API
