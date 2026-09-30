@@ -410,7 +410,7 @@ echo -e "     ${GRAY}from the web UI after install — any OpenAI-compatible end
 section_gap
 info "open the web UI, click ${BOLD}⚙ Settings${RESET} → ${BOLD}Providers${RESET},"
 info "and paste in a URL, API key, and model. Free options that work:"
-info "  ${LIME}aistudio.google.com${RESET} (Google AI)  ·  ${LIME}cloud.cerebras.ai${RESET} (Cerebras)"
+info "  ${LIME}aistudio.google.com${RESET} (Google AI)  ·  ${LIME}console.groq.com${RESET} (Groq)"
 section_gap
 info "The same Settings page manages ${BOLD}MCP servers${RESET} (external tools —"
 info "GitHub, search, databases) and your ${BOLD}.env${RESET} — no file editing needed."

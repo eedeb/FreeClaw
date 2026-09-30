@@ -229,7 +229,7 @@
     <div class="sec-desc">
       Any OpenAI-compatible chat endpoint. The agent tries your enabled providers in order, top to bottom,
       falling through to the next if one fails or is rate-limited. Free option:
-      <a href="https://cloud.cerebras.ai" target="_blank" rel="noopener" style="color:var(--accent-dim)">get a Cerebras API key</a>.
+      <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="color:var(--accent-dim)">get a Groq API key</a>.
       Prompt caching needs no setup — FreeClaw sends what each model requires and drops it for any endpoint
       that objects.
     </div>
@@ -237,8 +237,8 @@
     <div id="prov-list" class="card-list"></div>
     <div class="form">
       <div class="form-label">Add a provider</div>
-      <input id="prov-name" placeholder="Name, e.g. cerebras" maxlength="60" autocomplete="off" spellcheck="false"/>
-      <input id="prov-url" placeholder="Base URL — https://api.cerebras.ai/v1" autocomplete="off" spellcheck="false"/>
+      <input id="prov-name" placeholder="Name, e.g. groq" maxlength="60" autocomplete="off" spellcheck="false"/>
+      <input id="prov-url" placeholder="Base URL — https://api.groq.com/openai/v1" autocomplete="off" spellcheck="false"/>
       <!-- autocomplete="new-password" on every API-key box, not "off".
            Browsers ignore "off" on a password field: they see one, take the
            nearest text box above it for the username, and fill both from
@@ -378,13 +378,11 @@
       <button id="qs-close" class="modal-close" type="button" aria-label="Close">&times;</button>
     </div>
     <div class="modal-desc">
-      Paste in free API keys and this adds Groq, Cerebras, NVIDIA NIM, and OpenRouter as chat
+      Paste in free API keys and this adds Groq, NVIDIA NIM, and OpenRouter as chat
       providers, plus an NVIDIA NIM vision model — all saved to your <span style="font-family:var(--mono)">.env</span>.
     </div>
     <div class="form-label">Groq API key — <a href="https://console.groq.com/keys" target="_blank" rel="noopener">get one</a></div>
     <input id="qs-groq" type="password" placeholder="gsk_…" autocomplete="new-password" spellcheck="false"/>
-    <div class="form-label">Cerebras API key — <a href="https://cloud.cerebras.ai" target="_blank" rel="noopener">get one</a></div>
-    <input id="qs-cerebras" type="password" placeholder="csk-…" autocomplete="new-password" spellcheck="false"/>
     <div class="form-label">NVIDIA NIM API key — <a href="https://build.nvidia.com" target="_blank" rel="noopener">get one</a></div>
     <input id="qs-nvidia" type="password" placeholder="nvapi-…" autocomplete="new-password" spellcheck="false"/>
     <div class="form-label">OpenRouter API key — <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">get one</a></div>
@@ -598,7 +596,7 @@
   $('vision-save').addEventListener('click', saveVisionModel);
 
   // ── Quick setup ──
-  // Adds Groq, Cerebras, NVIDIA NIM, and OpenRouter as chat providers from
+  // Adds Groq, NVIDIA NIM, and OpenRouter as chat providers from
   // their API keys alone (fixed base URLs + free-tier models below), plus a
   // disabled "NVIDIA-vision" duplicate of the NVIDIA entry pointing at NVIDIA's
   // vision-capable model, set as the vision model. Just drives the same
@@ -608,7 +606,7 @@
 
   function openQuickSetup() {
     qsMsg.style.display = 'none';
-    $('qs-groq').value = ''; $('qs-cerebras').value = ''; $('qs-nvidia').value = ''; $('qs-openrouter').value = '';
+    $('qs-groq').value = ''; $('qs-nvidia').value = ''; $('qs-openrouter').value = '';
     qsOverlay.hidden = false;
   }
   function closeQuickSetup() { qsOverlay.hidden = true; }
@@ -625,15 +623,15 @@
   }
 
   async function runQuickSetup() {
-    const groq = $('qs-groq').value.trim(), cerebras = $('qs-cerebras').value.trim(),
-          nvidia = $('qs-nvidia').value.trim(), openrouter = $('qs-openrouter').value.trim();
+    const groq = $('qs-groq').value.trim(), nvidia = $('qs-nvidia').value.trim(),
+          openrouter = $('qs-openrouter').value.trim();
     qsMsg.style.display = 'none';
-    if (!groq || !cerebras || !nvidia || !openrouter) { showMsg(qsMsg, 'All four API keys are required.', false); return; }
+    if (!groq || !nvidia || !openrouter) { showMsg(qsMsg, 'All three API keys are required.', false); return; }
 
     const btn = $('qs-submit'); btn.disabled = true; btn.textContent = 'Adding…';
 
     // Whatever is already in the chain, captured before we add anything.
-    // A POST appends, so without the reorder below these four would land
+    // A POST appends, so without the reorder below these three would land
     // *behind* an existing provider and never get tried first. Best-effort:
     // if this read fails we still add the providers, just at the back.
     let existing = [];
@@ -644,7 +642,6 @@
 
     const jobs = [
       ['Groq', 'https://api.groq.com/openai/v1', 'openai/gpt-oss-120b', groq],
-      ['Cerebras', 'https://api.cerebras.ai/v1', 'gpt-oss-120b', cerebras],
       ['NVIDIA', 'https://integrate.api.nvidia.com/v1', 'nvidia/nemotron-3-super-120b-a12b', nvidia],
       ['OpenRouter', 'https://openrouter.ai/api/v1', 'openrouter/free', openrouter],
       ['NVIDIA-vision', 'https://integrate.api.nvidia.com/v1', 'meta/llama-3.2-11b-vision-instruct', nvidia],
@@ -655,7 +652,7 @@
       catch (e) { errors.push(`${name}: ${e.message}`); }
     }
 
-    // Put the chain in the order Quick Setup promises: its four chat
+    // Put the chain in the order Quick Setup promises: its three chat
     // providers first, anything that was already here next — keeping its own
     // relative order — and NVIDIA-vision last, since it's disabled below and
     // only ever reached through the vision-model setting.
@@ -664,7 +661,7 @@
     // it can't appear twice (re-running Quick Setup is the normal way that
     // happens). Names whose add failed are simply unknown to the endpoint,
     // which skips them, so a partial run still orders what did land.
-    const QS_FIRST = ['Groq', 'Cerebras', 'NVIDIA', 'OpenRouter'];
+    const QS_FIRST = ['Groq', 'NVIDIA', 'OpenRouter'];
     const QS_LAST = 'NVIDIA-vision';
     const order = [
       ...QS_FIRST,
@@ -693,7 +690,7 @@
     if (errors.length) {
       showMsg(qsMsg, 'Some steps failed — ' + errors.join('; '), false);
     } else {
-      showMsg(qsMsg, 'Added Groq, Cerebras, NVIDIA NIM, and OpenRouter — vision set to NVIDIA-vision.', true);
+      showMsg(qsMsg, 'Added Groq, NVIDIA NIM, and OpenRouter — vision set to NVIDIA-vision.', true);
       setTimeout(closeQuickSetup, 1200);
     }
   }

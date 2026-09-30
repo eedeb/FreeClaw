@@ -605,12 +605,41 @@ def _err_text(error):
     return str(error)
 
 
+def _raise_for_status(resp):
+    """`resp.raise_for_status()`, but carrying what the server said about why.
+
+    A bare "401 Client Error: Unauthorized" doesn't say whether the key is
+    wrong, missing, or in the wrong header — and most MCP hosts answer a
+    rejected request with a JSON body that does (Composio: "Bearer token
+    rejected: … no matching Composio account"). Still an HTTPError, so the
+    stale-session retry in _call_with_session catches it as before."""
+    if resp.status_code < 400:
+        return
+    detail = ""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict):
+                err = err.get("message")
+            parts = [str(p) for p in (err, body.get("reason") or body.get("message")) if p]
+            detail = " — ".join(parts)
+    except ValueError:
+        detail = (resp.text or "").strip()[:200]
+    # The host, not the URL: Exa and Tavily carry their API key in the query.
+    host = requests.utils.urlparse(resp.url or "").hostname or "the server"
+    msg = f"HTTP {resp.status_code} from {host}"
+    if detail:
+        msg += f": {detail[:300]}"
+    raise requests.HTTPError(msg, response=resp)
+
+
 def _rpc(server, method, params, session_id=None, timeout=(6, 20)):
     payload = {"jsonrpc": "2.0", "id": str(uuid.uuid4()),
                "method": method, "params": params}
     resp = _http.post(server["url"], headers=_headers(server, session_id),
                        json=payload, timeout=timeout)
-    resp.raise_for_status()
+    _raise_for_status(resp)
     new_session = resp.headers.get("Mcp-Session-Id") or session_id
     return _extract_message(resp), new_session
 

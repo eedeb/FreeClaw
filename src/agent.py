@@ -3655,9 +3655,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 # up that app's icon while it runs. Looked up rather than parsed
                 # back out of the name: sanitizing and de-duplicating make
                 # 'mcp_<server>_<tool>' ambiguous for a server with '_' in it.
-                mcp_entry = registry_for(_tools_user()).get(command_name)
-                if mcp_entry:
-                    call_event["mcp"] = mcp_entry["server"].get("name")
+                # Cosmetic, so it must never be what fails a turn: the lookup
+                # can rebuild a provisional catalogue, which touches the network.
+                try:
+                    mcp_entry = registry_for(_tools_user()).get(command_name)
+                    if mcp_entry:
+                        call_event["mcp"] = mcp_entry["server"].get("name")
+                except Exception:
+                    logger.warning("Couldn't tag tool call '%s' with its MCP server",
+                                   command_name, exc_info=True)
                 yield call_event
                 bash_approved = False
                 # Checked before the approval gate on purpose: a call that isn't

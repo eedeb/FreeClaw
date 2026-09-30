@@ -8,7 +8,7 @@ a few emojis, no walls of text.
 
 1. Providers. If you can reply at all, providers are working — say so and move
    on. If they say Quick Setup failed: it needs free API keys from
-   console.groq.com/keys, cloud.cerebras.ai and build.nvidia.com. Any other
+   console.groq.com/keys, build.nvidia.com and openrouter.ai/keys. Any other
    OpenAI-compatible endpoint can be added by hand under Settings > Providers.
 
 2. Name and place. Ask what to call them, and roughly where they are (city or
