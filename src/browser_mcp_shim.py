@@ -138,8 +138,8 @@ def _assert_compatible(sw):
         problems.append("shadow_web.mcp.server._session is missing or not a dict")
     if not callable(getattr(sw, "_ensure_browser", None)):
         problems.append("shadow_web.mcp.server._ensure_browser is missing")
-    if not callable(getattr(sw, "main", None)):
-        problems.append("shadow_web.mcp.server.main is missing")
+    if not callable(getattr(sw, "create_mcp_server", None)):
+        problems.append("shadow_web.mcp.server.create_mcp_server is missing")
     if problems:
         raise RuntimeError(
             "This FreeClaw build drives shadow-web's browser through internals that "
@@ -221,10 +221,21 @@ def main():
     os.environ["SHADOW_WEB_BROWSER"] = "chromium"
 
     from shadow_web.mcp import server as sw
+    import src.browser_mcp_tools as browser_tools
 
     _assert_compatible(sw)
     _install_browser_hook(sw)
-    sw.main()
+    # sw.main() is create_mcp_server() then run(); built here instead so the
+    # tools can be presented as a browser the model will reach for and can
+    # drive (src/browser_mcp_tools.py) before the server starts answering.
+    mcp = sw.create_mcp_server()
+    problems = browser_tools.check(sw, mcp)
+    if problems:
+        # Not fatal: the stock tools still work, they're only harder to use.
+        _log("browser tool tuning skipped — " + "; ".join(problems))
+    else:
+        browser_tools.install(sw, mcp, log=_log)
+    mcp.run()
 
 
 if __name__ == "__main__":
