@@ -37,59 +37,43 @@ HIDDEN_TOOLS = ("compress_html", "shadow_grep_html", "compress_html_to_xml",
                 "schema_table", "schema_form", "schema_list", "schema_page",
                 "schema_json", "schema_csv")
 
-# How many elements a terse snapshot lists, form controls first.
-TERSE_LIMIT = 30
+# How many elements a terse snapshot lists, form controls first. Every listed
+# element stays in the conversation once the model has read it, so this is
+# the smallest list that still reliably reaches a form's fields.
+TERSE_LIMIT = 20
 
-_ID_NOTE = ('Elements are identified by their "id" (e.g. "12") — pass that, '
-            'not the "bind_id", to click, fill and press_key.')
-
+# Kept short on purpose: every description is resent with every request.
 DESCRIPTIONS = {
     "navigate": (
-        "Open a web page in your web browser: a real Chromium you drive, carrying "
-        "the logins the user saved in the Browser app. This is the browser to use "
-        "whenever the user says \"the browser\" or \"web browser\", or a task needs "
-        "a website — not another service's cloud browser, which has none of their "
-        "logins.\n\n"
-        "Returns the page's interactive elements, form fields and buttons first, "
-        "then links. " + _ID_NOTE + " If what you need isn't listed, find it with "
-        "shadow_query (e.g. \"type:input\", \"label~/search/i\"). To read the page's "
-        "text, call content_outline, then content_blocks.\n\n"
-        "Some sites refuse automated browsers outright (\"Access Denied\"). Say so; "
-        "don't retry or work around it.\n\n"
-        "detail: terse (default) | minimal | xml | full"),
+        "Open a URL in your web browser: the user's real Chromium, with the logins "
+        "they saved in the Browser app. Use it whenever they say \"browser\" or a "
+        "task needs a website, not another service's cloud browser. Lists the "
+        "page's elements, fields and buttons first; pass an element's \"id\" to "
+        "click, fill or press_key. Find unlisted ones with shadow_query; read the "
+        "text with content_outline, then content_blocks. \"Access Denied\" means the "
+        "site blocks automation: say so, don't retry.\n"
+        "detail: terse | minimal | xml | full"),
     "snapshot": (
-        "Re-read the current page after it changed: after a click, after typing, "
-        "or when a page loads its content late. Same element list as navigate. "
-        + _ID_NOTE + " diff=true lists only what appeared, changed or "
-        "disappeared since the last snapshot.\n\n"
-        "detail: terse (default) | minimal | xml | full"),
+        "Re-read the current page after it changes. Same element list as navigate; "
+        "diff=true lists only what changed.\n"
+        "detail: terse | minimal | xml | full"),
     "shadow_query": (
-        "Find elements on the current page that the element list left out. "
-        "Query examples:\n"
-        "  type:input           every text field\n"
-        "  label~/search/i      anything labelled like search\n"
-        "  type:button intent:login\n"
-        "  group:Login Form\n"
-        "  id:1,3,5\n"
-        "format: terse (default) | json | xml"),
+        "Find elements the list left out, e.g. type:input · label~/search/i · "
+        "type:button intent:login · id:1,3,5\n"
+        "format: terse | json | xml"),
 }
 
 CLICK_DESCRIPTION = (
-    "Click an element on the current page. " + _ID_NOTE + " The reply says which "
-    "page the browser is on afterwards. A click that opens another page (a "
-    "submit, \"Add to cart\", a link) is reported as done with the new URL — it "
-    "worked, so don't click it again; call snapshot to see the new page.")
+    "Click an element by its \"id\". Replies with the page afterwards; if that's a "
+    "new page, the click worked, so don't repeat it.")
 
 FILL_DESCRIPTION = (
-    "Type a value into a form field, replacing what's in it. " + _ID_NOTE + " To "
-    "submit, click the form's button, or press_key \"Enter\" on the field (how "
-    "most search boxes submit).")
+    "Set a form field's value by its \"id\". Submit by clicking the form's button "
+    "or press_key \"Enter\".")
 
 PRESS_KEY_DESCRIPTION = (
-    "Press a key in the browser, e.g. \"Enter\" to submit a search box, or "
-    "\"Escape\", \"Tab\", \"ArrowDown\", \"PageDown\". Give an element's \"id\" to "
-    "press it on that element (focusing it first); leave it out to press on "
-    "whatever has focus. The reply says which page the browser is on afterwards.")
+    "Press a key (Enter, Escape, Tab, ArrowDown, ...) on the element with this "
+    "\"id\", or wherever focus is if none is given.")
 
 # What a navigation does to an action running in the page it left.
 _NAV_ERRORS = ("execution context was destroyed", "navigation",
@@ -174,9 +158,7 @@ def install(sw, mcp, log=lambda message: None):
             res["action_map"] = shown
             if len(actions) > len(shown):
                 res["not_shown"] = len(actions) - len(shown)
-                res["hint"] = ("More elements than are listed here (mostly links). "
-                               "Find one with shadow_query, e.g. "
-                               "\"label~/checkout/i\" or \"type:a\".")
+                res["hint"] = "Find unlisted elements with shadow_query."
         return res
 
     sw._format_mcp_response = _format_mcp_response
@@ -223,15 +205,17 @@ def install(sw, mcp, log=lambda message: None):
                 raise
             navigated = True
         after = await _where_now(page)
-        if navigated or (after.get("url") and after.get("url") != before):
+        # Navigated either way: an action that raised as its page went, or one
+        # that returned and left the browser elsewhere. Both worked.
+        navigated = navigated or bool(after.get("url") and after.get("url") != before)
+        if navigated:
             try:
                 await mcp.call_tool("snapshot", {"detail": "minimal"})
             except Exception as e:                           # noqa: BLE001
                 log(f"snapshot after {tool} skipped: {type(e).__name__}: {e}")
         out = {"ok": True, "tool": tool, **after}
         if navigated:
-            out["note"] = ("That opened another page — the action worked; don't "
-                           "repeat it. Call snapshot to see the new page.")
+            out["note"] = "Opened a new page: the action worked, don't repeat it."
         return out
 
     async def click(sid: str) -> dict:
