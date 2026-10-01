@@ -891,6 +891,37 @@ def api_delete_bash_approval():
 # server's own filesystem, rendered back over HTTP as a screenshot.
 _BROWSER_SCHEMES = ('http://', 'https://')
 
+# What the address bar does with something that isn't an address, as Chrome's
+# does: search for it.
+_BROWSER_SEARCH = 'https://www.google.com/search?q='
+_IPV4_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+
+
+def _browser_address(text):
+    """What typing `text` into the browser's address bar should open.
+
+    Prefixing https:// to anything without a scheme turned "google" into
+    https://google/, which can't resolve — and as the address a session starts
+    with, that failed the whole session. So: an explicit scheme is kept as
+    typed (the caller still checks it); something shaped like a host —
+    a dot in it, localhost, an IP — is an address; anything else, and anything
+    with a space in it, is a search. localhost and bare IPs get http://, since
+    that is what a dev server or a router on the user's own network speaks."""
+    text = (text or '').strip()
+    if not text or '://' in text:
+        return text
+    # A space, or an email address, which Chrome also searches for rather than
+    # opening as user@host.
+    if any(c.isspace() for c in text) or ('@' in text and '/' not in text):
+        return _BROWSER_SEARCH + quote(text, safe='')
+    host = re.split(r'[/?#]', text, 1)[0].rsplit('@', 1)[-1]
+    hostname = host.rsplit(':', 1)[0] if host.count(':') == 1 else host
+    if hostname.lower() == 'localhost' or _IPV4_RE.match(hostname):
+        return 'http://' + text
+    if '.' in hostname.strip('.'):
+        return 'https://' + text
+    return _BROWSER_SEARCH + quote(text, safe='')
+
 
 def _requested_user():
     """The FreeClaw user this request is about, from the query string or the
@@ -944,8 +975,7 @@ def api_browser_start():
     url = str((request.get_json(silent=True) or {}).get('url', '')).strip()
     if not url:
         return jsonify({'error': 'Body must include a url.'}), 400
-    if '://' not in url:
-        url = 'https://' + url
+    url = _browser_address(url)
     if not url.lower().startswith(_BROWSER_SCHEMES):
         return jsonify({'error': 'Only http:// and https:// addresses can be opened here.'}), 400
     if not browser_setup.chromium_present():
@@ -1049,8 +1079,7 @@ def _checked_input(data):
         return None, f'Unknown input kind {kind!r}.'
     if kind == 'nav':
         url = str(data.get('url', '')).strip()
-        if '://' not in url:
-            url = 'https://' + url
+        url = _browser_address(url)
         if not url.lower().startswith(_BROWSER_SCHEMES):
             return None, 'Only http:// and https:// addresses can be opened here.'
         data = {**data, 'url': url}
