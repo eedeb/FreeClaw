@@ -499,10 +499,19 @@ def _note_provider_failure(name, e, call_kwargs):
     reason = _classify_error(e)
     entry = _cooldown_state(name)
     streak = (entry["streak"] if entry else 0) + 1
-    delay = _BASE_COOLDOWN.get(reason, _FALLBACK_COOLDOWN) * 2 ** (streak - 1)
+    asked = _retry_after_seconds(e)
+    if reason == "rate_limited" and asked:
+        # The provider said exactly when it will take the request again ("try
+        # again in 3.727s" is a per-minute token window rolling over), so that
+        # is the wait, doubling only if it keeps refusing. The 20s figure is
+        # for a rate limit that doesn't say: waiting it out on a 4s window
+        # made a turn with no other provider give up rather than wait.
+        delay = max(asked, 1.0) * 2 ** (streak - 1)
+    else:
+        delay = _BASE_COOLDOWN.get(reason, _FALLBACK_COOLDOWN) * 2 ** (streak - 1)
     # Never come back sooner than the provider itself asked us to, and never
     # sit one out longer than _MAX_COOLDOWN however far the streak has run.
-    delay = min(max(delay, _retry_after_seconds(e) or 0), _MAX_COOLDOWN)
+    delay = min(max(delay, asked or 0), _MAX_COOLDOWN)
     _provider_cooldown[name] = {
         "until": time.monotonic() + delay, "streak": streak, "reason": reason,
     }
@@ -1024,7 +1033,10 @@ def _create_completion(exclude=(), **kwargs):
     waiting = sidelined()
     if prepared and len(waiting) == len(prepared):
         soonest = min(
-            ((name, remaining) for name, _, _, _, _ in prepared
+            # `name, *_`: a prepared entry is six fields since the image
+            # variant joined it, and unpacking five crashed this whole branch —
+            # every-provider-sidelined never got as far as waiting.
+            ((name, remaining) for name, *_ in prepared
              if (remaining := _cooldown_remaining(name)) is not None),
             key=lambda pair: pair[1], default=None)
         if soonest is None:
@@ -3942,6 +3954,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # the request itself succeeded, so the provider looked healthy right up
     # until its body fell apart.
     dead_streams = []
+    # Providers this request has already waited out a rate limit for (below).
+    waited_out = set()
 
     while True:
         # Tell the frontend which provider is about to answer. This fires once
@@ -4061,6 +4075,37 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 exclude=dead_streams,
             )
         except AllProvidersFailedError as e:
+            # Nothing else to fall through to — but if what broke the stream
+            # was a rate limit, the provider that broke is also the one most
+            # likely to answer: a per-minute window rolls over in seconds. So
+            # once per provider per request, put it back in the running and let
+            # _create_completion wait out its cooldown (at most
+            # _MAX_COOLDOWN_WAIT). Before this, a turn on a single provider
+            # ended with "Please try again" over a 4-second wait.
+            broken = dead_streams[-1]
+            if (broken not in waited_out and _classify_error(stream_error) == "rate_limited"
+                    and not cancellation.is_stopped()):
+                waited_out.add(broken)
+                dead_streams = [n for n in dead_streams if n != broken]
+                logger.info("'%s' was rate-limited mid-stream and nothing else can "
+                            "answer — waiting for it rather than giving up", broken)
+                try:
+                    stream, provider = _create_completion(
+                        model=model,
+                        messages=eco_messages,
+                        temperature=temp,
+                        tools=check_tools,
+                        top_p=1,
+                        stream=True,
+                        exclude=dead_streams,
+                    )
+                except AllProvidersFailedError as again:
+                    e = again
+                    dead_streams.append(broken)
+                else:
+                    logger.info("Retrying this request on '%s' after waiting out its "
+                                "rate limit", provider)
+                    continue
             # Nothing left to fall through to. Say so in the reply rather than
             # raising: the turn is salvageable on a retry, and an error here
             # would read as though the request never got out at all.
