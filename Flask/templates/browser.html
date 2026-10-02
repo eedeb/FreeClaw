@@ -342,6 +342,9 @@
   const params = new URLSearchParams(location.search);
   const ASK_URL = (params.get('url') || '').trim();
   const FROM_CHAT = params.get('from') === 'chat';
+  // Arrived from the agent's CAPTCHA button: open the page it handed over,
+  // with its cookies (src/browser_handoff.py), rather than an address.
+  const HANDOFF = params.get('handoff') === '1';
   // Tells the chat tab a login was saved, so its card can say so without the
   // user having to come back and report it. Absent on very old browsers; the
   // card's own "continue" button still works without it.
@@ -906,8 +909,40 @@
     } catch (e) { /* go() reports anything that matters */ }
     go();
   }
+  // The agent's page, cookies and all. The server steers a browser that's
+  // already open rather than replacing it, the same as openRequested.
+  async function openHandoff() {
+    if (!HANDOFF) return;
+    params.delete('handoff');
+    history.replaceState(null, '', location.pathname + '?' + params.toString());
+    try {
+      const info = await api('status');
+      if (info.running && !running) setRunning(true);
+    } catch (e) { /* the handoff call reports anything that matters */ }
+    if (!running) showOverlay('Opening the agent\'s page…', true);
+    try {
+      const info = await api('handoff', { method: 'POST' }, 40000);
+      if (info.viewport) viewport = info.viewport;
+      let host = info.url;
+      try { host = new URL(info.url).hostname; } catch (e) { /* show it raw */ }
+      showNote('The agent needs you to solve a check on ' + host
+        + (info.reason ? ' (' + info.reason + ')' : '') + '. Solve it, then press Save login — '
+        + USER + '\'s agent carries on from the page you leave this on.'
+        + (info.note ? ' ' + info.note : ''));
+      el('addr').value = info.url;
+      lastUrl = info.url;
+      addrDirty = false;
+      if (!running) setRunning(true);
+      else navState('Loading…');
+    } catch (e) {
+      if (!running) showOverlay('Type an address above to open the browser.', false);
+      say(e.message, 'err');
+    }
+  }
+
   openRequested();
-  if (!ASK_URL) setTimeout(() => { if (!running) el('addr').focus(); }, 0);
+  openHandoff();
+  if (!ASK_URL && !HANDOFF) setTimeout(() => { if (!running) el('addr').focus(); }, 0);
 })();
 </script>
 <script>

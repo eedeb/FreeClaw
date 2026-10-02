@@ -221,6 +221,7 @@ def main():
     os.environ["SHADOW_WEB_BROWSER"] = "chromium"
 
     from shadow_web.mcp import server as sw
+    import src.browser_handoff as browser_handoff
     import src.browser_mcp_tools as browser_tools
 
     _assert_compatible(sw)
@@ -235,6 +236,8 @@ def main():
         _log("browser tool tuning skipped — " + "; ".join(problems))
     else:
         browser_tools.install(sw, mcp, log=_log)
+    # After the tuning, so the snapshot it wraps keeps the tuned description.
+    browser_handoff.register(mcp, sw)
     mcp.run()
 
 

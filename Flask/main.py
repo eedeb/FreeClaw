@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.approvals as approvals
+import src.browser_handoff as browser_handoff
 import src.browser_profiles as browser_profiles
 import src.browser_setup as browser_setup
 # Neither of these imports playwright at module scope — it arrives only when a
@@ -987,6 +988,31 @@ def api_browser_start():
         logger.exception('Couldn\'t start the browser')
         return jsonify({'error': f'Couldn\'t start the browser: {e}'}), 500
     return jsonify({'ok': True, **browser_takeover.status(name)})
+
+
+@app.route('/api/browser/handoff', methods=['POST'])
+def api_browser_handoff():
+    """Open the page the agent handed over for a CAPTCHA, with its cookies
+    (src/browser_handoff.py). One-shot: the handoff is consumed here."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    if not browser_setup.chromium_present():
+        return jsonify({'error': 'Chromium isn\'t installed yet. Switch the browser server on '
+                                 'in Settings first — that\'s what downloads it.'}), 409
+    handed = browser_handoff.take(name)
+    if handed is None:
+        return jsonify({'error': 'Nothing to open — the agent hasn\'t handed over a page, '
+                                 'or it was opened already.'}), 404
+    try:
+        browser_takeover.handoff(name, handed['url'], handed.get('cookies') or [])
+    except Exception as e:
+        logger.exception('Couldn\'t open the handed-over page')
+        return jsonify({'error': f'Couldn\'t start the browser: {e}'}), 500
+    return jsonify({'ok': True, **browser_takeover.status(name),
+                    'url': handed['url'], 'reason': handed.get('reason') or ''})
 
 
 @app.route('/api/browser/status', methods=['GET'])

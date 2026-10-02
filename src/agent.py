@@ -17,6 +17,7 @@ from json_repair import repair_json
 from openai import OpenAI, APIConnectionError
 
 import src.approvals as approvals
+import src.browser_handoff as browser_handoff
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
 import src.mcp_client as mcp_client
@@ -2915,6 +2916,19 @@ def _describe_when(when, now=None):
 PING_PAST_TOLERANCE = timedelta(minutes=2)
 
 
+def _hand_over_page(result, reason):
+    """request_captcha_help's result, with the agent's page filed for the user's
+    browser to open (src/browser_handoff.py). The chat turns the call into a
+    button; the model gets told to stop, and never sees where the cookies went."""
+    url, error = browser_handoff.accept(approvals.current_user(), result, reason)
+    if error:
+        return error
+    host = urlparse(url).hostname or url
+    return (f"The user now has a button to open {host} in their FreeClaw browser and solve the "
+            f"check. End your turn: tell them to press it, solve it, save, and say when they're "
+            f"done. Then call snapshot: your browser reopens on the page they left.")
+
+
 def _run_tool(command_name, args_dict, bash_approved=False):
     """Execute a single tool call and return its result as a string.
 
@@ -3362,7 +3376,11 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         # saved logins are per user. `for_user` is a no-op for everything else.
         server = mcp_client.for_user(entry["server"], approvals.current_user())
         try:
-            return mcp_client.call_tool(server, entry["tool"], args_dict)
+            result = mcp_client.call_tool(server, entry["tool"], args_dict)
+            if (server.get("builtin") and server.get("needs_browser")
+                    and entry["tool"] == browser_handoff.TOOL_NAME):
+                return _hand_over_page(result, str(args_dict.get("reason") or ""))
+            return result
         except Exception as e:
             logger.exception("MCP tool '%s' on '%s' failed", entry['tool'], server.get('name'))
             return f"Error calling MCP tool '{entry['tool']}' on '{server.get('name')}': {e}"

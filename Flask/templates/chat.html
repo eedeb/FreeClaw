@@ -895,7 +895,8 @@
     .approval.settled .approval-head { color: var(--muted); }
 
     /* ── Sign-in request ──
-       The agent hit a login and handed it to the user (request_sign_in).
+       The agent hit a login or a CAPTCHA and handed it to the user
+       (request_sign_in, request_captcha_help).
        Built on the approval card, but in the accent rather than the warning
        colour: it's an invitation, and nothing is blocked waiting on it. */
     .signin { border-color: rgba(200,240,74,0.35); border-left-color: var(--accent); background: #13150f; }
@@ -2252,6 +2253,12 @@
               try { target = (JSON.parse(fn.arguments || '{}') || {}).url || ''; } catch { /* malformed */ }
               if (target && addSignInCard(String(target), i > lastUserIdx)) continue;
             }
+            if (isCaptchaTool(fn.name) && !isError && !/^(error|nothing to hand)/i.test(resultText)) {
+              let reason = '';
+              try { reason = (JSON.parse(fn.arguments || '{}') || {}).reason || ''; } catch { /* malformed */ }
+              addCaptchaCard(String(reason), i > lastUserIdx);
+              continue;
+            }
             addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError);
           }
         }
@@ -2293,11 +2300,12 @@
     if (label && !label.querySelector('a')) label.textContent = `ran tool: ${name}`;
   }
 
-  // ── Sign-in request card ─────────────────────────────────
-  // What a request_sign_in call draws instead of a tool pill, live and on
-  // re-render alike — the saved tool call is the only record of it. `pending`
-  // means nothing has been said since, so the agent is still waiting on the
-  // user and the card offers to carry on; an older one is only a record.
+  // ── Sign-in and CAPTCHA request cards ───────────────────────
+  // What a request_sign_in or request_captcha_help call draws instead of a
+  // tool pill, live and on re-render alike — the saved tool call is the only
+  // record of it. `pending` means nothing has been said since, so the agent is
+  // still waiting on the user and the card offers to carry on; an older one is
+  // only a record.
   // Returns null for anything that isn't a web address, and the caller falls
   // back to the ordinary tool block.
   function addSignInCard(rawUrl, pending) {
@@ -2308,6 +2316,36 @@
       url = u.href;
       host = u.hostname;
     } catch { return null; }
+    const q = new URLSearchParams({ url: url, from: 'chat' });
+    if (currentUser) q.set('user', currentUser);
+    return addBrowserCard({
+      head: 'sign-in needed', target: host, href: '/browser?' + q.toString(),
+      open: 'Sign in ↗', done: "I'm signed in — continue",
+      reply: `I've signed in to ${host} — carry on.`,
+      note: 'Opens a browser on the FreeClaw machine. Whatever you sign into there, '
+        + 'the agent can use until you clear it on that page.',
+    }, pending);
+  }
+
+  // The agent's own page, cookies and all (src/browser_handoff.py). Only a
+  // pending card asks for the handoff: it's one-shot, so an old card just
+  // opens the browser.
+  // A function, not a const, so it's hoisted for renders that run first.
+  function isCaptchaTool(name) { return name === 'mcp_shadow-web_request_captcha_help'; }
+  function addCaptchaCard(reason, pending) {
+    const q = new URLSearchParams({ from: 'chat' });
+    if (pending) q.set('handoff', '1');
+    if (currentUser) q.set('user', currentUser);
+    return addBrowserCard({
+      head: 'captcha needed', target: reason || "on the agent's current page",
+      href: '/browser?' + q.toString(), open: 'Solve it ↗', done: 'Solved — continue',
+      reply: "I've solved the check and saved — carry on.",
+      note: "Opens the agent's page in a browser on the FreeClaw machine. Solve the check, "
+        + 'press Save login, and the agent carries on from wherever you leave it.',
+    }, pending);
+  }
+
+  function addBrowserCard(card, pending) {
     removeEmpty();
 
     const wrap = document.createElement('div');
@@ -2315,11 +2353,11 @@
 
     const head = document.createElement('div');
     head.className = 'approval-head';
-    head.textContent = 'sign-in needed';
+    head.textContent = card.head;
 
     const hostEl = document.createElement('div');
     hostEl.className = 'signin-host';
-    hostEl.textContent = host;     // textContent: the model chose this address
+    hostEl.textContent = card.target;   // textContent: the model chose this
 
     const actions = document.createElement('div');
     actions.className = 'approval-actions';
@@ -2327,14 +2365,12 @@
     // A real link, opened by a real click, so no popup blocker gets a say —
     // and a new tab, because leaving this page would hang up a turn that may
     // still be streaming its last sentence.
-    const q = new URLSearchParams({ url: url, from: 'chat' });
-    if (currentUser) q.set('user', currentUser);
     const open = document.createElement('a');
     open.className = 'approval-btn primary';
-    open.href = '/browser?' + q.toString();
+    open.href = card.href;
     open.target = '_blank';
     open.rel = 'noopener';
-    open.textContent = 'Sign in ↗';
+    open.textContent = card.open;
     // On the desktop it opens in the Browser window instead. The href stays
     // real, so a middle-click or ctrl-click still gets a tab of its own.
     open.addEventListener('click', (e) => {
@@ -2347,9 +2383,9 @@
     if (pending) {
       const done = document.createElement('button');
       done.className = 'approval-btn signin-continue';
-      done.textContent = "I'm signed in — continue";
+      done.textContent = card.done;
       done.addEventListener('click', () => {
-        inputEl.value = `I've signed in to ${host} — carry on.`;
+        inputEl.value = card.reply;
         // Mid-turn the send button is disabled; the text waits in the box.
         if (!sendBtn.disabled) sendMessage();
         else inputEl.focus();
@@ -2359,8 +2395,7 @@
 
     const note = document.createElement('div');
     note.className = 'approval-note';
-    note.textContent = 'Opens a browser on the FreeClaw machine. Whatever you sign into there, '
-      + 'the agent can use until you clear it on that page.';
+    note.textContent = card.note;
 
     wrap.append(head, hostEl, actions, note);
     messagesEl.appendChild(wrap);
@@ -2733,6 +2768,9 @@
             if (evt.name === 'request_sign_in') {
               const target = evt.arguments && evt.arguments.url;
               if (target) addSignInCard(String(target), true);
+            }
+            if (isCaptchaTool(evt.name)) {
+              addCaptchaCard(String((evt.arguments && evt.arguments.reason) || ''), true);
             }
 
             if (evt.name === 'open_url') {

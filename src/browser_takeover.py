@@ -48,6 +48,7 @@ import sys
 import threading
 import time
 
+import src.browser_handoff as browser_handoff
 import src.browser_profiles as profiles
 from src.browser_mcp_shim import VIEWPORT, context_kwargs, launch_kwargs
 from src.logging_setup import get_logger
@@ -173,9 +174,13 @@ def ensure_display():
 class TakeoverSession:
     """A headful browser owned by one worker thread, driven through a queue."""
 
-    def __init__(self, user, url):
+    def __init__(self, user, url, cookies=None):
         self.user = user
         self.start_url = url
+        self._start_cookies = cookies
+        # Opened on a page the agent handed over (src/browser_handoff.py), so
+        # a save also records where the user left it, for the agent to resume.
+        self.handoff = cookies is not None
         self.started_at = time.time()
         self.touched_at = time.time()
         self._orphaned = False        # its profile was deleted under it
@@ -295,6 +300,8 @@ class TakeoverSession:
             existing = profiles.state_path(self.user)
             state = existing if existing and os.path.exists(existing) else None
             context = browser.new_context(**context_kwargs(browser, state))
+            if self._start_cookies:
+                self._add_cookies(context, self._start_cookies)
 
             page = context.new_page()
             self._active = page
@@ -625,7 +632,7 @@ class TakeoverSession:
         if page is None:
             return
         kind = command.get("kind")
-        moving = kind in ("nav", "back", "forward", "reload")
+        moving = kind in ("nav", "handoff", "back", "forward", "reload")
         if moving:
             # Read by status() from a Flask thread while this one is blocked
             # in the goto below.
@@ -650,6 +657,11 @@ class TakeoverSession:
             elif kind == "nav":
                 page.goto(command.get("url") or "", wait_until=self._wait_until(),
                           timeout=45000)
+            elif kind == "handoff":
+                self._add_cookies(page.context, command.get("cookies") or [])
+                self.handoff = True
+                page.goto(command.get("url") or "", wait_until=self._wait_until(),
+                          timeout=45000)
             elif kind == "back":
                 page.go_back(wait_until=self._wait_until(), timeout=30000)
             elif kind == "forward":
@@ -666,6 +678,15 @@ class TakeoverSession:
         finally:
             if moving:
                 self.navigating = False
+
+    def _add_cookies(self, context, cookies):
+        """The agent's cookies, over whatever this browser already holds. Added
+        rather than loaded as the context's storage_state, so the user's own
+        saved logins survive — a save writes the context out whole."""
+        try:
+            context.add_cookies(cookies)
+        except Exception:                         # noqa: BLE001 — the page may not need them
+            logger.warning("Couldn't add the agent's cookies for %r", self.user, exc_info=True)
 
     def _capture(self):
         page = self._current_page()
@@ -708,6 +729,14 @@ class TakeoverSession:
             context.storage_state(path=path)
             os.chmod(path, 0o600)
             self.saved = True
+            if self.handoff:
+                try:
+                    page = self._current_page()
+                    if page is not None:
+                        browser_handoff.write_resume(self.user, page.url)
+                except Exception:                 # noqa: BLE001 — the logins did save
+                    logger.warning("Couldn't record where %r left the handed-over page",
+                                   self.user, exc_info=True)
             logger.info("Saved browser logins for %r (%s)", self.user,
                         ", ".join(profiles.domains(self.user)) or "no cookies")
         except OSError:
@@ -725,8 +754,9 @@ class TakeoverSession:
 
 # ── module-level API used by Flask ───────────────────────────
 
-def start(user, url):
+def start(user, url, cookies=None):
     """Open a sign-in browser for `user` at `url`, replacing any existing one.
+    `cookies` are the agent's, from a handoff — see handoff().
 
     One session per user on purpose: two would race on the same storage_state
     file, and the second to save would quietly drop the first's login."""
@@ -743,10 +773,21 @@ def start(user, url):
             existing = _sessions.pop(user, None)
         if existing is not None and existing.alive():
             existing.cancel()
-        session = TakeoverSession(user, url)
+        session = TakeoverSession(user, url, cookies)
         with _registry_lock:
             _sessions[user] = session
     return session
+
+
+def handoff(user, url, cookies):
+    """Open the page the agent handed over (src/browser_handoff.py) with its
+    cookies: in the browser already open if there is one, so nothing the user
+    hasn't saved there is lost, else in a new one."""
+    session = get(user)
+    if session is not None and session.alive():
+        session.send({"kind": "handoff", "url": url, "cookies": cookies})
+        return session
+    return start(user, url, cookies or [])
 
 
 def get(user):
