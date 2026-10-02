@@ -30,6 +30,7 @@ loudly at startup if a release moves them.
 """
 
 import asyncio
+import os
 
 # Tools that only work on raw HTML passed in the call, never on the page the
 # browser is on. Each has a *_session or content_* twin that reads the page.
@@ -252,6 +253,53 @@ def install(sw, mcp, log=lambda message: None):
             if isinstance(result, dict) and result.get("ok"):
                 return
         await page.focus(f'[data-sid="{sid}"]', timeout=3000)
+
+    # ── navigate: a page that redirects itself while it's being read ──
+    #
+    # shadow-web's navigate loads the page, then reads it with page.evaluate.
+    # A site that redirects with script right after loading (cnn.com does, on
+    # every cold visit) destroys the page that read was running in, and the
+    # call fails with "Execution context was destroyed" though the browser
+    # landed somewhere perfectly good. The load half is done by then, so only
+    # the read half is redone — on wherever the browser ended up, never by
+    # loading the URL again. Twice at most, for a site that redirects twice.
+    upstream_navigate = manager.get_tool("navigate").fn
+
+    async def _read_current_page(capture_mode, detail):
+        from shadow_web.browser_use import AsyncShadowPage
+
+        page = _page()
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:                                    # noqa: BLE001
+            pass
+        mode = capture_mode if capture_mode in ("dom", "a11y", "dual", "auto") else "auto"
+        shadow = AsyncShadowPage(page, heal_api_url=os.environ.get("SHADOW_WEB_HEAL_URL"),
+                                 capture_mode=mode)
+        clean_html, xml_map = await shadow.refresh()
+        sw._session["shadow_page"] = shadow
+        sw._session["clean_html"] = clean_html
+        detail = detail if detail in ("minimal", "terse", "xml", "full") else "terse"
+        return sw._format_mcp_response(shadow, clean_html, xml_map, detail=detail,
+                                       title=await page.title())
+
+    async def navigate(url: str, capture_mode: str = "auto", detail: str = "terse") -> dict:
+        try:
+            return await upstream_navigate(url=url, capture_mode=capture_mode, detail=detail)
+        except Exception as e:                               # noqa: BLE001
+            if not _navigated(e):
+                raise
+            log(f"{url} redirected while being read; reading where it landed")
+        try:
+            return await _read_current_page(capture_mode, detail)
+        except Exception as e:                               # noqa: BLE001
+            if not _navigated(e):
+                raise
+            return await _read_current_page(capture_mode, detail)
+
+    navigate_description = manager.get_tool("navigate").description
+    mcp.remove_tool("navigate")
+    mcp.add_tool(navigate, name="navigate", description=navigate_description)
 
     for name, fn, description in (("click", click, CLICK_DESCRIPTION),
                                   ("fill", fill, FILL_DESCRIPTION),
