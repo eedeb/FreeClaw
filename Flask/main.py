@@ -1091,7 +1091,8 @@ def api_browser_stream():
                     headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
 
-_INPUT_KINDS = ('click', 'text', 'key', 'scroll', 'nav', 'back', 'forward', 'reload')
+_INPUT_KINDS = ('click', 'down', 'move', 'up', 'text', 'key', 'scroll', 'nav', 'back',
+                'forward', 'reload')
 # A generous burst — a long paste arrives as one 'text', not a command per key.
 _INPUT_BATCH_LIMIT = 200
 

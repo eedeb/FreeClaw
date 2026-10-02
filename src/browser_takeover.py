@@ -645,6 +645,18 @@ class TakeoverSession:
                     button=command.get("button") or "left",
                     click_count=int(command.get("clicks") or 1),
                 )
+            elif kind in ("down", "move", "up"):
+                # A press held across commands, so "press and hold" checks and
+                # slider CAPTCHAs see a real hold and a real drag: the button
+                # stays down here until the page sends its "up".
+                page.mouse.move(float(command.get("x", 0)), float(command.get("y", 0)))
+                button = command.get("button")
+                button = button if button in ("left", "middle", "right") else "left"
+                clicks = int(command.get("clicks") or 1)
+                if kind == "down":
+                    page.mouse.down(button=button, click_count=clicks)
+                elif kind == "up":
+                    page.mouse.up(button=button, click_count=clicks)
             elif kind == "text":
                 # `insert_text` rather than `type`: this is the browser's own
                 # composed input, so accents and non-Latin scripts arrive

@@ -627,7 +627,12 @@
 
   function send(command) {
     if (!running) return;
-    outbox.push(command);
+    // Pointer moves queued behind a slow request collapse into the latest:
+    // the path is lost only while the line is backed up, and a batch can
+    // never outgrow the server's limit and take the button's release with it.
+    const last = outbox[outbox.length - 1];
+    if (command.kind === 'move' && last && last.kind === 'move') outbox[outbox.length - 1] = command;
+    else outbox.push(command);
     flush();
   }
 
@@ -645,22 +650,117 @@
   }
 
   // ── input forwarding ──
-  screen.addEventListener('click', (e) => {
-    e.preventDefault();
-    screen.focus();
-    // object-fit: contain letterboxes the image inside the box, so the drawn
-    // area is not the element's area — map through the drawn rect or every
-    // click lands short once the aspect ratios diverge.
+  // The button goes down and comes up as two separate commands, with the
+  // moves between them, rather than as one click: "press and hold" checks
+  // time the hold, and slider CAPTCHAs watch the drag.
+
+  // object-fit: contain letterboxes the image inside the box, so the drawn
+  // area is not the element's area — map through the drawn rect or every
+  // click lands short once the aspect ratios diverge. `clamp` pins a point
+  // outside it to the edge, for a drag that wanders off the picture.
+  function toPage(e, clamp) {
     const rect = screen.getBoundingClientRect();
     const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
     const drawnW = viewport.width * scale, drawnH = viewport.height * scale;
     const originX = rect.left + (rect.width - drawnW) / 2;
     const originY = rect.top + (rect.height - drawnH) / 2;
-    const x = (e.clientX - originX) / scale;
-    const y = (e.clientY - originY) / scale;
-    if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return;
-    send({ kind: 'click', x: x, y: y });
+    let x = (e.clientX - originX) / scale;
+    let y = (e.clientY - originY) / scale;
+    if (clamp) {
+      x = Math.min(Math.max(x, 0), viewport.width);
+      y = Math.min(Math.max(y, 0), viewport.height);
+    } else if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) {
+      return null;
+    }
+    return { x: x, y: y };
+  }
+
+  const BUTTONS = ['left', 'middle', 'right'];
+  // Moves are sampled, not all sent: often enough to draw a drag's path,
+  // sparser while merely hovering.
+  const DRAG_MOVE_MS = 30, HOVER_MOVE_MS = 100;
+  let held = null;              // { pointerId, button, clicks } while a button is down
+  let lastDown = { at: 0, x: -99, y: -99, button: '', clicks: 0 };
+  let lastMoveAt = 0, moveTimer = null, pendingMove = null;
+  let lastAt = null;            // where the held pointer last was
+
+  function flushMove() {
+    clearTimeout(moveTimer);
+    moveTimer = null;
+    if (pendingMove) send(pendingMove);
+    pendingMove = null;
+    lastMoveAt = performance.now();
+  }
+
+  function release(at) {
+    if (!held) return;
+    clearTimeout(moveTimer);
+    moveTimer = null;
+    pendingMove = null;
+    send({ kind: 'up', x: at.x, y: at.y, button: held.button, clicks: held.clicks });
+    held = null;
+  }
+
+  // touch-action: none, so a finger held or dragged on the picture acts on
+  // the remote page instead of scrolling or zooming this one.
+  screen.style.touchAction = 'none';
+
+  screen.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    // Mapped before focusing: focus can scroll this page, and a point read
+    // against the moved picture lands somewhere else.
+    const at = toPage(e, false);
+    screen.focus({ preventScroll: true });
+    if (!at || held || !BUTTONS[e.button]) return;
+    // Counted here because a pointerdown has no click count of its own, and
+    // the remote page needs one to see a double-click.
+    const now = performance.now();
+    const button = BUTTONS[e.button];
+    const near = Math.abs(at.x - lastDown.x) < 6 && Math.abs(at.y - lastDown.y) < 6;
+    const again = near && button === lastDown.button && now - lastDown.at < 500;
+    const clicks = again ? lastDown.clicks + 1 : 1;
+    lastDown = { at: now, x: at.x, y: at.y, button: button, clicks: clicks };
+    held = { pointerId: e.pointerId, button: button, clicks: clicks };
+    lastAt = at;
+    // Captured, so the release still arrives when it happens off the picture
+    // — otherwise the remote button would stay down.
+    try { screen.setPointerCapture(e.pointerId); } catch (err) { /* released already */ }
+    clearTimeout(moveTimer);
+    moveTimer = null;
+    pendingMove = null;
+    send({ kind: 'down', x: at.x, y: at.y, button: held.button, clicks: clicks });
   });
+
+  screen.addEventListener('pointermove', (e) => {
+    if (held && e.pointerId !== held.pointerId) return;
+    const at = toPage(e, !!held);
+    if (!at) return;
+    if (held) lastAt = at;
+    pendingMove = { kind: 'move', x: at.x, y: at.y };
+    const gap = held ? DRAG_MOVE_MS : HOVER_MOVE_MS;
+    const due = lastMoveAt + gap - performance.now();
+    if (due <= 0) flushMove();
+    else if (!moveTimer) moveTimer = setTimeout(flushMove, due);
+  });
+
+  screen.addEventListener('pointerup', (e) => {
+    if (!held || e.pointerId !== held.pointerId) return;
+    e.preventDefault();
+    release(toPage(e, true));
+  });
+  // The press ending some other way — a system gesture, the window losing
+  // focus mid-hold — still lets go, at the last place it was.
+  screen.addEventListener('pointercancel', (e) => {
+    if (held && e.pointerId === held.pointerId) release(toPage(e, true));
+  });
+  screen.addEventListener('lostpointercapture', (e) => {
+    if (held && e.pointerId === held.pointerId) release(toPage(e, true));
+  });
+  window.addEventListener('blur', () => {
+    if (held) release(lastAt);
+  });
+  // Right-click goes to the remote page; this page's own menu would cover it.
+  screen.addEventListener('contextmenu', (e) => e.preventDefault());
 
   screen.addEventListener('wheel', (e) => {
     e.preventDefault();
