@@ -1624,9 +1624,30 @@ conversation may be long out of view — so include the who, what and why. A use
 directly; they may read it hours later, so the reply has to make sense on its own."""
 
 
-def _instructions(tts=False, subagent=False):
+# Added to the instructions whenever the browser is on (and so request_sign_in
+# is offered). Without it, asked to "add X to my Walmart cart", the agent filled
+# a guest cart — which can only be checked out in the browser that filled it,
+# not on the user's own phone, and isn't in their account. Measured with a
+# GPT-6-class model browsing walmart.com for real, signed out: without this, 2
+# of 2 runs searched and added as a guest; with it, 3 of 3 opened the site, saw
+# it was signed out, and called request_sign_in before touching the cart. Kept
+# in the instructions rather than in request_sign_in's description because a
+# site that lets guests through never makes the model look at that tool.
+ACCOUNT_ACTIONS_INSTRUCTION = (
+    "Accounts and checkout: when a task puts something into an account on a site (a cart, a list, "
+    "a booking, an order), first check that you are signed in to that site in your browser: their "
+    "name or an account menu on the page means yes, a \"Sign in\" link means no. If not, call "
+    "request_sign_in for that site before doing anything else, even if the site would let you carry "
+    "on as a guest, so what you do lands in their own account. Never check out, pay, or enter payment "
+    "or delivery details: once the cart is ready, tell them it is in their account and to finish "
+    "checkout themselves, on their own phone or computer.")
+
+
+def _instructions(tts=False, subagent=False, browsing=False):
     """The instruction half of the stable prefix, for this kind of conversation."""
     prompt = _INSTRUCTIONS
+    if browsing:
+        prompt += "\n\n" + ACCOUNT_ACTIONS_INSTRUCTION
     if tts:
         prompt += "\n\nYou are speaking through text-to-speech — write for clear, natural speech."
     if subagent:
@@ -1636,8 +1657,20 @@ def _instructions(tts=False, subagent=False):
 
 def _session_instructions(sess):
     """_instructions() for `sess` — a sub-agent is any conversation below
-    depth 0, so the flag can be re-derived on every turn without storing it."""
-    return _instructions(tts=sess.tts, subagent=sess.depth > 0)
+    depth 0, so the flag can be re-derived on every turn without storing it.
+    The account rule goes in exactly when request_sign_in is offered: the same
+    test _build_catalogue uses (a browser server in this user's registry)."""
+    return _instructions(tts=sess.tts, subagent=sess.depth > 0,
+                         browsing=_browser_on(approvals.current_user() or sess.name))
+
+
+def _browser_on(user):
+    """Whether `user`'s catalogue has a browser server in it. Never what fails a
+    turn: a catalogue that can't be read just leaves the rule out."""
+    try:
+        return any(e["server"].get("needs_browser") for e in registry_for(user).values())
+    except Exception:                                    # noqa: BLE001
+        return False
 
 
 def _split_system(content):
