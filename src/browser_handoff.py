@@ -8,9 +8,9 @@ gets the agent's page *with the agent's cookies*.
 
 The round trip:
 
-  1. The agent calls `request_captcha_help` (registered below, in the MCP
-     child). The child dumps its context's storage_state to a private temp
-     file and returns where it is: {url, title, state_file}.
+  1. The agent calls `request_captcha_help` (src/browser_server.py). The
+     child dumps its context's storage_state to a private temp file
+     (`write_state_file`) and returns where it is: {url, title, state_file}.
   2. agent.py intercepts that result (`accept`): the dump moves into the
      user's profile directory as handoff.json, the model is told to end its
      turn, and the chat draws a button.
@@ -21,9 +21,8 @@ The round trip:
   4. The user solves the check and saves. That writes auth.json as always,
      plus resume.json: the address they finished on (`write_resume`).
   5. Saving drops the agent's browser child (Flask/main.py). The next one
-     loads auth.json, and its first `snapshot` — which on a fresh child would
-     otherwise fail with "call navigate first" — opens resume.json's address
-     instead, so the agent carries on from the page the user left.
+     loads auth.json and, as it starts, opens resume.json's address
+     (`take_resume`), so the agent carries on from the page the user left.
 
 Why a temp file in step 1 rather than the state in the tool result: a result
 is text that gets logged, streamed to the page and stored in the conversation
@@ -101,47 +100,14 @@ def take_resume(state_path):
     return _web_url((data or {}).get("url"))
 
 
-def register(mcp, sw):
-    """Add `request_captcha_help` to the server shadow-web built, and let a
-    fresh child's first `snapshot` pick up where a handoff left off."""
-    session = sw._session
-    manager = mcp._tool_manager
-
-    @mcp.tool()
-    async def request_captcha_help(reason: str = ""):
-        """Hand the current page to the user to solve a CAPTCHA or human check. End your turn after.
-        reason: shown to them."""
-        # `reason` is read by agent.py, which owns the conversation with the user.
-        await sw._ensure_browser()
-        page = session["page"]
-        url = _web_url(page.url)
-        if not url:
-            return "Nothing to hand over: open the page with the check first."
-        state = await session["context"].storage_state()
-        try:
-            title = await page.title()
-        except Exception:                         # noqa: BLE001 — cosmetic
-            title = ""
-        # mkstemp: 0600, a name nobody can guess, and nothing to clean up
-        # here — accept() removes it whatever happens.
-        fd, path = tempfile.mkstemp(prefix=_TEMP_PREFIX, suffix=".json")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-        return json.dumps({"url": url, "title": title, "state_file": path})
-
-    upstream, navigate = manager.get_tool("snapshot"), manager.get_tool("navigate")
-    if upstream is None or navigate is None:
-        return
-
-    async def snapshot(diff: bool = False, detail: str = "terse") -> dict:
-        if "shadow_page" not in session:
-            url = take_resume(os.environ.get("FC_BROWSER_STORAGE_STATE"))
-            if url:
-                return await navigate.fn(url=url, detail=detail)
-        return await upstream.fn(diff=diff, detail=detail)
-
-    mcp.remove_tool("snapshot")
-    mcp.add_tool(snapshot, name="snapshot", description=upstream.description)
+def write_state_file(state):
+    """Step 1's dump: `state` to a private temp file, and its path. mkstemp
+    gives 0600 and a name nobody can guess; accept() removes it whatever
+    happens."""
+    fd, path = tempfile.mkstemp(prefix=_TEMP_PREFIX, suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    return path
 
 
 # ── the Flask process ────────────────────────────────────────

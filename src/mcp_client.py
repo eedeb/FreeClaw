@@ -92,42 +92,29 @@ TRANSPORTS = (HTTP, STDIO)
 
 BUILTIN_SERVERS = [
     {
-        "name": "shadow-web",
+        "name": "browser",
         "transport": STDIO,
-        # `-m` rather than the `shadow-web-mcp` console script: on Linux
+        # `-m` against sys.executable rather than a console script: on Linux
         # FreeClaw runs out of a venv whose bin/ isn't necessarily on the
         # child's PATH, while sys.executable always points at the interpreter
-        # that has the package installed.
-        #
-        # src.browser_mcp_shim rather than shadow_web.mcp.server itself: the
-        # package's MCP server hardcodes a fresh in-memory browser context, so
-        # a user who signs into a site is signed out again the moment the child
-        # restarts. The shim replaces that one function with a version that
-        # loads FC_BROWSER_STORAGE_STATE, and runs shadow-web unchanged
-        # otherwise. See src/browser_mcp_shim.py for why it's a shim and not a
-        # patch or a fork.
-        "command": f'"{sys.executable}" -m src.browser_mcp_shim',
-        "env": {
-            # shadow-web defaults to camoufox — a second ~150MB browser
-            # download, and an anti-detect Firefox whose fingerprint spoofing
-            # we have no business switching on for a user. Chromium is what
-            # `playwright install chromium` puts on disk, so ask for it by
-            # name; without this the server raises rather than falling back.
-            "SHADOW_WEB_BROWSER": "chromium",
-        },
-        # `agent_run` starts its own LLM agent loop inside the MCP server,
-        # reading DEEPSEEK_API_KEY / OPENAI_API_KEY straight out of the
-        # environment it inherited from us. That routes around provider
-        # fallback, the token counter, the Stop button and bash approvals in
-        # one call, so the model is never shown it.
-        "exclude_tools": ("agent_run",),
-        "description": "Browser automation with token-compressed page snapshots.",
+        # that has playwright installed. The server is FreeClaw's own
+        # (src/browser_server.py): screenshots the model points at, and a live
+        # view of it in the Browser app.
+        "command": f'"{sys.executable}" -m src.browser_server',
+        "description": "A web browser the agent drives by screenshot. Watch it live in the "
+                       "Browser app.",
         # Tools don't work until `playwright install chromium` has run; see
         # src/browser_setup.py, which the enable path drives.
         "needs_browser": True,
         "builtin": True,
     },
 ]
+
+# Builtins that shipped under another name. A stored entry or a user's on/off
+# choice under the old name carries over to the new one, so an update doesn't
+# switch anyone's browser off; the old entry itself is then dropped, since its
+# saved command runs a module that no longer exists.
+LEGACY_BUILTIN_NAMES = {"shadow-web": "browser"}
 
 BUILTIN_NAMES = frozenset(s["name"] for s in BUILTIN_SERVERS)
 
@@ -153,9 +140,8 @@ def for_user(server, user):
     credential, and one shared child would mean every FreeClaw user browsing as
     whoever signed in last.
 
-    A user with no saved logins gets no variable at all rather than a path to a
-    file that isn't there, so the child's signature (and its process) is shared
-    with every other signed-out user instead of one being spawned per name."""
+    A user with no saved logins gets no storage_state rather than a path to a
+    file that isn't there, but still a child of their own — see below."""
     if not server.get("needs_browser"):
         return server
     # Imported here rather than at module scope: browser_profiles imports the
@@ -164,11 +150,16 @@ def for_user(server, user):
     import src.browser_profiles as browser_profiles
 
     path = browser_profiles.state_path(user)
-    if not path or not os.path.exists(path):
+    if not path:
         return server
-    out = dict(server)
-    out["env"] = {**(server.get("env") or {}), "FC_BROWSER_STORAGE_STATE": path}
-    return out
+    # The user's name always, so every user has a browser of their own: it's
+    # what the Browser app's live view of the agent is filed under
+    # (src/browser_live.py), and one browser shared by everyone signed out
+    # would show each of them the others' browsing.
+    env = {**(server.get("env") or {}), "FC_BROWSER_USER": user.strip()}
+    if os.path.exists(path):
+        env["FC_BROWSER_STORAGE_STATE"] = path
+    return {**server, "env": env}
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "FreeClaw", "version": "1.0"}
@@ -337,6 +328,9 @@ def _apply_user_prefs(servers, user):
     prefs = read_prefs(user)
     if not prefs:
         return servers
+    for old, new in LEGACY_BUILTIN_NAMES.items():
+        if old in prefs and new not in prefs:
+            prefs[new] = prefs[old]
     return [{**s, "enabled": prefs[s["name"]]} if s.get("name") in prefs else s
             for s in servers]
 
@@ -488,6 +482,11 @@ def _merge_builtins(servers):
     the current definition on upgrade. Builtins sort first so they sit at the
     top of the Settings list rather than below whatever the user has added."""
     stored = {s.get("name"): s for s in servers if s.get("name") in BUILTIN_NAMES}
+    for old, new in LEGACY_BUILTIN_NAMES.items():
+        legacy = next((s for s in servers if s.get("name") == old), None)
+        if legacy is not None and new not in stored:
+            stored[new] = legacy
+    servers = [s for s in servers if s.get("name") not in LEGACY_BUILTIN_NAMES]
     out = []
     for spec in BUILTIN_SERVERS:
         entry = dict(spec)
@@ -535,9 +534,9 @@ def _sig(server):
     transport so an http and a stdio server can never share a cache slot, and
     the token so a rotated credential opens a fresh session rather than
     reusing one authorized with the old one. For stdio the overridden
-    environment is part of the key too: the same command run with a different
-    SHADOW_WEB_BROWSER is a different server, and reusing the running child
-    would silently ignore the change."""
+    environment is part of the key too: the same command run for a different
+    FreeClaw user (FC_BROWSER_USER) is a different server, and reusing the
+    running child would hand one user the other's browser."""
     if (server.get("transport") or HTTP) == STDIO:
         env = server.get("env") or {}
         return (STDIO, server.get("command") or "", tuple(sorted(env.items())))
@@ -796,8 +795,13 @@ class _StdioServer:
 
     def __init__(self, command, env=None):
         self.command = command
+        self.env = dict(env or {})
         self._inbox = queue.Queue()
         self._lock = threading.Lock()  # one in-flight request at a time
+        # Writes only. Separate from _lock, which is held for a whole request
+        # *and its reply*: a notification (the live view's watch lease) has to
+        # reach the child while a tool call is still waiting on its answer.
+        self._write_lock = threading.Lock()
         self._next_id = 0
 
         try:
@@ -860,17 +864,27 @@ class _StdioServer:
                 if not line:
                     continue
                 try:
-                    self._inbox.put(json.loads(line))
+                    msg = json.loads(line)
                 except json.JSONDecodeError:
                     # Not a protocol message — a banner, a progress line, or
                     # something logging to the wrong stream. Recorded, ignored.
                     logger.debug("[mcp stdio] non-JSON stdout from %r: %.300r",
                                  self.command, line)
+                    continue
+                if self._live_user and _is_live(msg):
+                    # The browser's live view, handed over here rather than
+                    # queued: it arrives many times a second, and nothing
+                    # waiting on a reply wants to wade through it.
+                    _publish_live(self, msg)
+                    continue
+                self._inbox.put(msg)
         except (ValueError, OSError):
             pass  # pipe closed — alive() reports the death
         finally:
             # Unblock anyone waiting on a reply that can now never arrive.
             self._inbox.put(None)
+            if self._live_user:
+                _live_gone(self)
 
     def _read_stderr(self):
         """Drain stderr so a chatty server can't fill the pipe buffer and
@@ -884,6 +898,12 @@ class _StdioServer:
         except (ValueError, OSError):
             pass
 
+    @property
+    def _live_user(self):
+        """The FreeClaw user whose browser this is, if it's one that sends a
+        live view (src/browser_server.py)."""
+        return self.env.get("FC_BROWSER_USER") or ""
+
     def alive(self):
         return self.proc.poll() is None
 
@@ -891,10 +911,23 @@ class _StdioServer:
         if not self.alive():
             raise StdioUnavailable(f"process exited (code {self.proc.returncode})")
         try:
-            self.proc.stdin.write(json.dumps(payload) + "\n")
-            self.proc.stdin.flush()
+            with self._write_lock:
+                self.proc.stdin.write(json.dumps(payload) + "\n")
+                self.proc.stdin.flush()
         except (BrokenPipeError, ValueError, OSError) as e:
             raise StdioUnavailable(f"couldn't write to the process: {e}")
+
+    def notify(self, method, params=None):
+        """Send a notification without waiting behind a request in flight.
+        Best effort: False if the child is gone."""
+        message = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        try:
+            self._send(message)
+            return True
+        except StdioUnavailable:
+            return False
 
     def _await(self, request_id, timeout):
         """The response carrying `request_id`, skipping anything that arrives
@@ -929,11 +962,8 @@ class _StdioServer:
                        timeout=STDIO_STARTUP_TIMEOUT)
         if "error" in msg:
             raise RuntimeError(_err_text(msg["error"]))
-        with self._lock:
-            try:
-                self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-            except StdioUnavailable:
-                pass  # a notification gets no reply and isn't worth failing over
+        # A notification gets no reply and isn't worth failing over.
+        self.notify("notifications/initialized")
 
     def shutdown(self):
         try:
@@ -947,6 +977,40 @@ class _StdioServer:
                 self.proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+
+
+# ── the browser's live view ──────────────────────────────────
+#
+# FreeClaw's browser server (src/browser_server.py) sends its live view — the
+# frames, the cursor, what it's doing — as notifications under this prefix on
+# the same stdout as its replies. They're routed to src/browser_live.py, which
+# the Browser app reads, and only from a child spawned for a FreeClaw user
+# (`for_user`), so whose browser a frame belongs to is never in doubt.
+LIVE_PREFIX = "notifications/freeclaw/"
+
+
+def _is_live(msg):
+    return (isinstance(msg, dict) and "id" not in msg
+            and str(msg.get("method") or "").startswith(LIVE_PREFIX))
+
+
+def _publish_live(proc, msg):
+    import src.browser_live as browser_live
+    try:
+        browser_live.publish(proc._live_user, proc, msg["method"][len(LIVE_PREFIX):],
+                             msg.get("params") or {})
+    except Exception:
+        # The live view is a window onto the browser, never a reason to lose
+        # the pipe the browser's replies come back on.
+        logger.exception("Couldn't relay the browser's live view")
+
+
+def _live_gone(proc):
+    import src.browser_live as browser_live
+    try:
+        browser_live.gone(proc._live_user, proc)
+    except Exception:
+        logger.exception("Couldn't mark the browser's live view closed")
 
 
 def _get_stdio(server, force=False):
@@ -1144,20 +1208,20 @@ def clear_cache():
 
 
 def release_user_browser(user):
-    """Stop the browser child running with `user`'s logins, and nobody else's.
+    """Stop the browser child running for `user`, and nobody else's.
 
     For a deleted user: their saved logins are gone from disk, and the child
-    still holding them in memory must not outlive them. Matched on the one
-    environment value that is this user's own — the storage_state path
-    `for_user` gave it — so every other user's browser keeps running."""
+    still holding them in memory must not outlive them. Matched on the
+    environment value that is this user's own — the name `for_user` gave it —
+    so every other user's browser keeps running."""
     import src.browser_profiles as browser_profiles
 
-    path = browser_profiles.state_path(user)
-    if not path:
+    if not browser_profiles.state_path(user):
         return
+    name = user.strip()
 
     def mine(sig):
-        return sig[0] == STDIO and ("FC_BROWSER_STORAGE_STATE", path) in sig[2]
+        return sig[0] == STDIO and ("FC_BROWSER_USER", name) in sig[2]
 
     for cache in (_tool_cache, _session_cache):
         for sig in [k for k in cache if mine(k)]:

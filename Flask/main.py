@@ -3,6 +3,7 @@ from werkzeug.exceptions import HTTPException
 import src.agent as agent
 import src.approvals as approvals
 import src.browser_handoff as browser_handoff
+import src.browser_live as browser_live
 import src.browser_profiles as browser_profiles
 import src.browser_setup as browser_setup
 # Neither of these imports playwright at module scope — it arrives only when a
@@ -22,6 +23,7 @@ from src.users import (
 )
 from src.logging_setup import get_logger
 import atexit
+import base64
 import uuid
 import json
 import re
@@ -1022,7 +1024,9 @@ def api_browser_status():
     name, error = _takeover_user()
     if error:
         return error
-    return jsonify(browser_takeover.status(name))
+    # The agent's own browser rides along, so the page knows whether there is
+    # one to watch (see /api/browser/agent/stream).
+    return jsonify({**browser_takeover.status(name), 'agent': browser_live.status(name)})
 
 
 @app.route('/api/browser/frame', methods=['GET'])
@@ -1091,7 +1095,66 @@ def api_browser_stream():
                     headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
 
-_INPUT_KINDS = ('click', 'down', 'move', 'up', 'text', 'key', 'scroll', 'nav', 'back',
+# Record kinds on the agent stream.
+_AGENT_KEEPALIVE, _AGENT_FRAME, _AGENT_EVENT = 0, 1, 2
+
+
+@app.route('/api/browser/agent/stream', methods=['GET'])
+def api_browser_agent_stream():
+    """The agent's own browser as it works (src/browser_live.py), on one long
+    response of records: a 1-byte kind, a 4-byte big-endian length, then that
+    many bytes. Kind 1 is a JPEG frame, 2 a JSON event — where the cursor is
+    going, which page it's on, the browser closing — and 0 a keepalive.
+
+    View only: nothing comes back the other way. Being open is what turns the
+    frames on (browser_live.watch), so they stop when the last viewer closes.
+    Answers even when the agent has no browser open, and starts showing it
+    the moment it does."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+
+    def record(kind, payload):
+        return struct.pack('>BI', kind, len(payload)) + payload
+
+    def event(data):
+        return record(_AGENT_EVENT, json.dumps(data).encode('utf-8'))
+
+    def frame(data):
+        try:
+            return record(_AGENT_FRAME, base64.b64decode(data))
+        except (ValueError, TypeError):
+            return b''
+
+    def generate():
+        browser_live.watch(name)
+        seq, latest, meta, live = browser_live.snapshot(name)
+        yield event({'t': 'live', **meta, 'live': live})
+        if latest:
+            yield frame(latest)
+        while True:
+            browser_live.watch(name)
+            seq, items = browser_live.wait(name, seq, _STREAM_KEEPALIVE)
+            if not items:
+                yield record(_AGENT_KEEPALIVE, b'')
+                continue
+            for kind, payload in items:
+                if kind == 'frame':
+                    yield frame(payload)
+                elif kind == 'cursor':
+                    yield event({'t': 'cursor', **payload})
+                elif kind == 'live':
+                    yield event({'t': 'live', **payload, 'live': True})
+                elif kind == 'gone':
+                    yield event({'t': 'live', 'live': False})
+
+    return Response(generate(), mimetype='application/octet-stream',
+                    headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+
+
+_INPUT_KINDS =('click', 'down', 'move', 'up', 'text', 'key', 'scroll', 'nav', 'back',
                 'forward', 'reload')
 # A generous burst — a long paste arrives as one 'text', not a command per key.
 _INPUT_BATCH_LIMIT = 200

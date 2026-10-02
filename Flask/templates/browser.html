@@ -163,6 +163,27 @@
     .bubble.err { color: #ffb4b4; background: #2a1618; border-color: #4a2226; white-space: normal; }
     .bubble.ok { color: var(--accent); }
 
+    /* ── Watching the agent's browser ──
+       The frames carry no pointer of their own, so the agent's cursor is
+       drawn over them here, gliding to wherever it is about to click. */
+    body.watching .viewport { box-shadow: inset 0 0 0 2px rgba(200,240,74,0.28); }
+    .agent-cursor {
+      position: absolute; left: 0; top: 0; z-index: 2; width: 20px; height: 20px;
+      pointer-events: none; opacity: 0; will-change: transform;
+      transition: opacity 0.2s; filter: drop-shadow(0 2px 3px rgba(0,0,0,0.55));
+    }
+    .agent-cursor.on { opacity: 1; }
+    .agent-cursor svg { width: 20px; height: 20px; display: block; }
+    .agent-ripple {
+      position: absolute; left: -15px; top: -15px; z-index: 2; width: 30px; height: 30px;
+      border-radius: 50%; border: 2px solid var(--accent); opacity: 0; pointer-events: none;
+    }
+    .agent-ripple.go { animation: agentRipple 0.45s ease-out; }
+    .agent-ripple.held { opacity: 0.9; scale: 0.6; }
+    @keyframes agentRipple { from { opacity: 0.95; scale: 0.3; } to { opacity: 0; scale: 1.5; } }
+    .bubble.agent { color: var(--accent); }
+    .bubble.agent::before { content: '● '; }
+
     /* ── Gear menu ── */
     .menu {
       position: absolute; top: 40px; right: 8px; z-index: 5; width: 320px; max-width: calc(100vw - 16px);
@@ -261,6 +282,9 @@
     </div>
 
     <a class="nav-btn" id="chat-link" href="/chat?user={{ user }}" hidden>Chat</a>
+    <button class="tbtn" id="watch" title="Watch the agent's browser" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
     <button class="tbtn" id="gear" title="Logins and settings" aria-haspopup="true" aria-expanded="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
@@ -314,6 +338,8 @@
       <div id="overlay-icon"></div>
       <div id="overlay-text">Type an address above to open the browser.</div>
     </div>
+    <div class="agent-ripple" id="agent-ripple"></div>
+    <div class="agent-cursor" id="agent-cursor"><svg viewBox="0 0 24 24"><path d="M5 3l14 8.2-6.3 1.4 3.6 6.9-2.6 1.3-3.6-6.9L5 18.5z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
     <div class="bubble" id="msg"></div>
   </div>
 {% endif %}
@@ -345,6 +371,16 @@
   // Arrived from the agent's CAPTCHA button: open the page it handed over,
   // with its cookies (src/browser_handoff.py), rather than an address.
   const HANDOFF = params.get('handoff') === '1';
+  // Opened as the chat's Agent window: show the agent's own browser, live.
+  const WATCH = params.get('watch') === 'agent';
+
+  // Two browsers can be shown here: the user's own (the sign-in browser this
+  // page starts and drives) and the agent's, which is only ever watched.
+  // `mode` is whichever is on screen; each stream only draws while it is.
+  let mode = 'own';
+  let agentLive = false;        // the agent has a browser open right now
+  let agentMeta = {};           // its url, title, and what it's doing
+  let leftAgent = false;        // the user switched away; don't switch them back
   // Tells the chat tab a login was saved, so its card can say so without the
   // user having to come back and report it. Absent on very old browsers; the
   // card's own "continue" button still works without it.
@@ -449,12 +485,24 @@
     return body;
   }
 
+  // The page controls drive the user's own browser, so watching the agent's
+  // turns the ones about the page on screen off.
+  function syncControls() {
+    const own = running && mode === 'own';
+    ['back', 'forward', 'reload', 'save'].forEach((id) => { el(id).disabled = !own; });
+    ['close', 'discard'].forEach((id) => { el(id).disabled = !running; });
+    screen.style.cursor = own ? 'default' : '';
+  }
+
   function setRunning(on) {
     const wasRunning = running;
     running = on;
-    ['back', 'forward', 'reload', 'save', 'close', 'discard'].forEach(
-      (id) => { el(id).disabled = !on; });
-    screen.style.cursor = on ? 'default' : '';
+    syncControls();
+    if (mode !== 'own') {
+      // Its frames start when the user switches back to it.
+      if (!on) { addrDirty = false; lastUrl = ''; lastNavError = ''; outbox.length = 0; }
+      return;
+    }
     if (on && !wasRunning) {
       // The overlay comes down when a frame actually arrives, not here. The
       // server returns from `start` as soon as the worker thread exists, which
@@ -509,12 +557,15 @@
     });
   }
 
-  function drawFrame(blob) {
-    if (!running) return;
-    if (drawing) { nextBlob = blob; return; }
+  // `source` is the browser the frame came from: 'own' or 'agent'.
+  const onScreen = (source) => source === mode && (source === 'agent' || running);
+
+  function drawFrame(blob, source) {
+    if (!onScreen(source)) return;
+    if (drawing) { nextBlob = [blob, source]; return; }
     drawing = true;
     decodeFrame(blob).then((image) => {
-      if (!running) return;
+      if (!onScreen(source)) return;
       // Resizing a canvas clears it, so only when the size actually changed.
       if (screen.width !== viewport.width) screen.width = viewport.width;
       if (screen.height !== viewport.height) screen.height = viewport.height;
@@ -524,7 +575,7 @@
       if (image.close) image.close();
     }).catch(() => { /* a torn frame; the next one replaces it */ }).finally(() => {
       drawing = false;
-      if (nextBlob) { const b = nextBlob; nextBlob = null; drawFrame(b); }
+      if (nextBlob) { const [b, s] = nextBlob; nextBlob = null; drawFrame(b, s); }
     });
   }
 
@@ -587,7 +638,7 @@
           if (len) {
             got = true;
             // Blob copies the bytes, so `buf` can move on past them.
-            drawFrame(new Blob([buf.subarray(4, 4 + len)], { type: 'image/jpeg' }));
+            drawFrame(new Blob([buf.subarray(4, 4 + len)], { type: 'image/jpeg' }), 'own');
           }
           buf = buf.subarray(4 + len);
         }
@@ -612,7 +663,7 @@
       const opts = { cache: 'no-store' };
       try { opts.signal = AbortSignal.timeout(20000); } catch (e) { /* older browser */ }
       const res = await fetch('/api/browser/frame?user=' + encodeURIComponent(USER) + '&t=' + Date.now(), opts);
-      if (res.status === 200) drawFrame(await res.blob());
+      if (res.status === 200) drawFrame(await res.blob(), 'own');
     } catch (e) { /* transient; try again */ }
     clearTimeout(pollTimer);
     pollTimer = setTimeout(pollFrame, 150);
@@ -626,7 +677,8 @@
   let sending = false;
 
   function send(command) {
-    if (!running) return;
+    // The agent's browser is watched, never driven from here.
+    if (!running || mode !== 'own') return;
     // Pointer moves queued behind a slow request collapse into the latest:
     // the path is lost only while the line is backed up, and a batch can
     // never outgrow the server's limit and take the button's release with it.
@@ -798,6 +850,8 @@
   async function go() {
     const url = el('addr').value.trim();
     if (!url) return;
+    // An address typed while watching the agent is for the user's own browser.
+    if (mode === 'agent') { leftAgent = true; setMode('own'); }
     if (running) {
       send({ kind: 'nav', url: url });
       // Say so now rather than at the next poll. A navigation freezes the
@@ -823,7 +877,11 @@
 
   el('addr').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); go(); screen.focus(); }
-    if (e.key === 'Escape') { addrDirty = false; el('addr').value = lastUrl; el('addr').blur(); }
+    if (e.key === 'Escape') {
+      addrDirty = false;
+      el('addr').value = mode === 'agent' ? (agentMeta.url || '') : lastUrl;
+      el('addr').blur();
+    }
   });
   // Like Chrome: one click in the omnibox selects the whole address.
   el('addr').addEventListener('focus', () => el('addr').select());
@@ -946,6 +1004,10 @@
         // after they pressed Enter, over a screenshot still showing the old
         // page. Nothing in that said "loading", so they typed it again.
         if (info.url && info.url !== lastUrl) { lastUrl = info.url; addrDirty = false; }
+      }
+      // The rest is about the page on screen, which is the agent's while
+      // watching it.
+      if (info.running && mode === 'own') {
         if (!addrDirty && document.activeElement !== el('addr')) {
           el('addr').value = info.url || '';
         }
@@ -966,13 +1028,205 @@
           if (navErrorShown) say('');
         }
         if (info.error) say(info.error, 'err');
-      } else if (running) {
+      } else if (!info.running && running) {
         setRunning(false);
-        showOverlay('The browser closed. Type an address to open it again.', false);
+        if (mode === 'own') showOverlay('The browser closed. Type an address to open it again.', false);
+      }
+      setAgentLive(!!(info.agent && info.agent.live));
+      // Nothing of their own open: show them what the agent is doing, which
+      // is what opening the Browser app mid-task is for.
+      if (agentLive && mode === 'own' && !running && !leftAgent && !addrDirty
+          && !ASK_URL && !HANDOFF) {
+        setMode('agent');
       }
     } catch (e) { /* transient */ }
     setTimeout(poll, 2000);
   }
+
+  // ── the agent's browser ──
+  // One long response of records (see /api/browser/agent/stream): a kind
+  // byte, a 4-byte length, the bytes. 1 is a JPEG frame, 2 a JSON event,
+  // 0 a keepalive. Open only while watching it; that's what makes the
+  // agent's browser send frames at all.
+  const cursorEl = el('agent-cursor'), rippleEl = el('agent-ripple');
+  let agentCtl = null;
+  let cursorAt = null;           // page coordinates, so a resize can re-place it
+
+  function setAgentLive(on) {
+    const was = agentLive;
+    agentLive = on;
+    el('watch').hidden = !(on || mode === 'agent' || WATCH);
+    if (mode !== 'agent' || was === on) return;
+    if (!on) {
+      gotFrame = false;
+      cursorEl.classList.remove('on');
+      agentStatus('');
+      showOverlay("The agent's browser is closed. It shows up here as soon as the agent browses.", false);
+    } else if (!gotFrame) {
+      showOverlay("Connecting to the agent's browser…", true);
+    }
+  }
+
+  function setMode(next) {
+    if (next === mode) return;
+    mode = next;
+    document.body.classList.toggle('watching', mode === 'agent');
+    el('watch').classList.toggle('on', mode === 'agent');
+    el('watch').title = mode === 'agent' ? 'Back to your own browser' : "Watch the agent's browser";
+    el('watch').hidden = !(agentLive || mode === 'agent' || WATCH);
+    gotFrame = false;
+    nextBlob = null;
+    cursorEl.classList.remove('on');
+    addrDirty = false;
+    navState('');
+    syncControls();
+    if (mode === 'agent') {
+      if (document.activeElement === el('addr')) el('addr').blur();
+      stopFrames();
+      showOverlay(agentLive ? "Connecting to the agent's browser…"
+                            : "The agent's browser is closed. It shows up here as soon as the agent browses.",
+                  agentLive);
+      renderAgent();
+      openAgentStream();
+    } else {
+      stopAgentStream();
+      agentStatus('');
+      el('addr').value = lastUrl;
+      siteIcon(lastUrl);
+      setTitle('');
+      if (running) { showOverlay('Loading the page…', true); startFrames(); }
+      else showOverlay('Type an address above to open the browser.', false);
+    }
+  }
+
+  el('watch').addEventListener('click', () => {
+    leftAgent = mode === 'agent';
+    setMode(mode === 'agent' ? 'own' : 'agent');
+  });
+
+  // Shown in the status bubble for as long as the agent is at it.
+  let agentStatusOn = false;
+  function agentStatus(text) {
+    if (!text) {
+      if (agentStatusOn) { agentStatusOn = false; msg.classList.remove('show'); }
+      return;
+    }
+    clearTimeout(bubbleTimer);
+    agentStatusOn = true;
+    msg.textContent = text;
+    msg.className = 'bubble agent show';
+  }
+
+  function renderAgent() {
+    if (mode !== 'agent') return;
+    const url = agentMeta.url || '';
+    // Focus alone doesn't hold it — the page focuses the bar on load — only
+    // something typed there does.
+    if (!addrDirty) el('addr').value = url;
+    siteIcon(url);
+    setTitle(agentMeta.title || '');
+    el('addr').title = agentMeta.title || '';
+    const action = agentMeta.busy ? (agentMeta.action || '') : '';
+    navState(/^(Opening|Going back)/.test(action) ? 'Loading…' : '');
+    agentStatus(action ? 'Agent: ' + action + '…' : '');
+  }
+
+  function agentEvent(ev) {
+    if (ev.t === 'live') {
+      if (ev.live === false) agentMeta = {};
+      for (const k of ['url', 'title', 'action', 'busy']) if (k in ev) agentMeta[k] = ev[k];
+      if ('live' in ev) setAgentLive(!!ev.live);
+      renderAgent();
+    } else if (ev.t === 'cursor' && mode === 'agent') {
+      moveCursor(ev);
+    }
+  }
+
+  // Page coordinates to this element's, through the same letterboxing the
+  // canvas is drawn with (see toPage, which goes the other way).
+  function toView(x, y) {
+    const rect = screen.getBoundingClientRect(), box = viewportEl.getBoundingClientRect();
+    const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
+    return {
+      x: rect.left - box.left + (rect.width - viewport.width * scale) / 2 + x * scale,
+      y: rect.top - box.top + (rect.height - viewport.height * scale) / 2 + y * scale,
+    };
+  }
+
+  function placeCursor(ms) {
+    if (!cursorAt) return;
+    const at = toView(cursorAt.x, cursorAt.y);
+    // The arrow's tip sits a few pixels into its box.
+    cursorEl.style.transition = `transform ${ms}ms cubic-bezier(0.3, 0.7, 0.2, 1), opacity 0.2s`;
+    cursorEl.style.transform = `translate(${at.x - 4}px, ${at.y - 2.5}px)`;
+    rippleEl.style.transform = `translate(${at.x}px, ${at.y}px)`;
+  }
+
+  function moveCursor(ev) {
+    const x = Number(ev.x), y = Number(ev.y);
+    if (!isFinite(x) || !isFinite(y)) return;
+    const first = !cursorEl.classList.contains('on');
+    cursorAt = { x: x, y: y };
+    // The first appearance jumps; after that it glides as long as the agent's
+    // own mouse takes, so the click lands as the arrow arrives.
+    placeCursor(first ? 0 : Math.max(0, Math.min(Number(ev.ms) || 0, 2000)));
+    cursorEl.classList.add('on');
+    if (ev.kind === 'click' || ev.kind === 'down') {
+      rippleEl.classList.remove('go');
+      void rippleEl.offsetWidth;
+      rippleEl.classList.add('go');
+    }
+    rippleEl.classList.toggle('held', ev.kind === 'down');
+  }
+  if (window.ResizeObserver) new ResizeObserver(() => placeCursor(0)).observe(viewportEl);
+
+  function stopAgentStream() {
+    if (agentCtl) { agentCtl.abort(); agentCtl = null; }
+  }
+
+  async function openAgentStream() {
+    stopAgentStream();
+    if (mode !== 'agent') return;
+    const ctl = new AbortController();
+    agentCtl = ctl;
+    let stall = null;
+    const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), STREAM_STALL_MS); };
+    const text = new TextDecoder();
+    try {
+      arm();
+      const res = await fetch('/api/browser/agent/stream?user=' + encodeURIComponent(USER),
+                              { signal: ctl.signal, cache: 'no-store' });
+      if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+      const reader = res.body.getReader();
+      let buf = new Uint8Array(0);
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        arm();
+        const joined = new Uint8Array(buf.length + value.length);
+        joined.set(buf); joined.set(value, buf.length);
+        buf = joined;
+        while (buf.length >= 5) {
+          const head = new DataView(buf.buffer, buf.byteOffset, 5);
+          const kind = head.getUint8(0), len = head.getUint32(1);
+          if (buf.length < 5 + len) break;
+          const body = buf.subarray(5, 5 + len);
+          if (kind === 1) {
+            drawFrame(new Blob([body], { type: 'image/jpeg' }), 'agent');
+          } else if (kind === 2) {
+            try { agentEvent(JSON.parse(text.decode(body))); } catch (e) { /* a torn event */ }
+          }
+          buf = buf.subarray(5 + len);
+        }
+      }
+    } catch (e) { /* aborted, stalled, or the connection dropped */ }
+    clearTimeout(stall);
+    if (agentCtl !== ctl || mode !== 'agent') return;
+    agentCtl = null;
+    setTimeout(() => { if (mode === 'agent' && !agentCtl) openAgentStream(); }, 1500);
+  }
+
+  if (WATCH) setMode('agent');
   poll();
 
   // The chat button opened this in a tab of its own, and the chat is still
@@ -1042,7 +1296,7 @@
 
   openRequested();
   openHandoff();
-  if (!ASK_URL && !HANDOFF) setTimeout(() => { if (!running) el('addr').focus(); }, 0);
+  if (!ASK_URL && !HANDOFF) setTimeout(() => { if (!running && mode === 'own') el('addr').focus(); }, 0);
 })();
 </script>
 <script>

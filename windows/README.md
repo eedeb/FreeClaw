@@ -207,7 +207,7 @@ Node and Python you actually have installed.
 
 ## The browser server
 
-The built-in `shadow-web` MCP server ships switched off; turning it on in
+The built-in `browser` MCP server ships switched off; turning it on in
 Settings is what downloads Chromium. Windows needs no virtual display for any
 of it — the tray runs in the interactive session, so `ensure_display()` returns
 straight away here, exactly as it does on macOS. Xvfb is a Linux answer to a
