@@ -1628,7 +1628,17 @@ add_ping schedules a message to yourself for later; what's already scheduled is 
 and cancel_ping removes one. Write each action to stand alone — by the time it fires this
 conversation may be long out of view — so include the who, what and why. A user message starting
 "PING" is one of those firing: it is their request, made earlier. Carry it out now and reply to them
-directly; they may read it hours later, so the reply has to make sense on its own."""
+directly; they may read it hours later, so the reply has to make sense on its own.
+
+When they mention something of their own with a date attached (a goal, a deadline, a commitment: "I
+need to renew my passport by March"), save it with add_context and add_ping a reminder early enough to
+act on, then say in a line that you did. Not for passing remarks, things already done, or anything
+already scheduled.
+
+Offering the next step isn't filler: when your answer involves a date coming up, a price that could
+change, or something on its way, finish with one short question offering to follow up ("Want a
+reminder the day before?", "Want me to check the price again Friday?"), and only schedule it if they
+say yes. Skip it when there's no such next step."""
 
 
 # Added to the instructions whenever the browser is on (and so request_sign_in
