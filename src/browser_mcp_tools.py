@@ -53,11 +53,11 @@ DESCRIPTIONS = {
         "click, fill or press_key. Find unlisted ones with shadow_query; read the "
         "text with content_outline, then content_blocks. \"Access Denied\" means the "
         "site blocks automation: say so, don't retry.\n"
-        "detail: terse | minimal | xml | full"),
+        "detail: terse (default) | minimal"),
     "snapshot": (
         "Re-read the current page after it changes. Same element list as navigate; "
         "diff=true lists only what changed.\n"
-        "detail: terse | minimal | xml | full"),
+        "detail: terse (default) | minimal"),
     "shadow_query": (
         "Find elements the list left out, e.g. type:input · label~/search/i · "
         "type:button intent:login · id:1,3,5\n"
@@ -75,6 +75,19 @@ FILL_DESCRIPTION = (
 PRESS_KEY_DESCRIPTION = (
     "Press a key (Enter, Escape, Tab, ArrowDown, ...) on the element with this "
     "\"id\", or wherever focus is if none is given.")
+
+# Detail levels the model may ask navigate/snapshot for. "full" returns the
+# page's cleaned HTML and whole element map, "xml" the map as XML — measured at
+# 43KB (~11k tokens) for one HowStuffWorks article, which then rode along in
+# every later request of the turn. Neither tells the model anything it can't
+# get from the terse list, shadow_query and content_outline/content_blocks, so
+# they're read as "terse".
+DETAIL_LEVELS = ("terse", "minimal")
+
+
+def _detail(detail):
+    return detail if detail in DETAIL_LEVELS else "terse"
+
 
 # What a navigation does to an action running in the page it left.
 _NAV_ERRORS = ("execution context was destroyed", "navigation",
@@ -284,6 +297,7 @@ def install(sw, mcp, log=lambda message: None):
                                        title=await page.title())
 
     async def navigate(url: str, capture_mode: str = "auto", detail: str = "terse") -> dict:
+        detail = _detail(detail)
         try:
             return await upstream_navigate(url=url, capture_mode=capture_mode, detail=detail)
         except Exception as e:                               # noqa: BLE001
@@ -300,6 +314,14 @@ def install(sw, mcp, log=lambda message: None):
     navigate_description = manager.get_tool("navigate").description
     mcp.remove_tool("navigate")
     mcp.add_tool(navigate, name="navigate", description=navigate_description)
+
+    upstream_snapshot = manager.get_tool("snapshot")
+
+    async def snapshot(diff: bool = False, detail: str = "terse") -> dict:
+        return await upstream_snapshot.fn(diff=diff, detail=_detail(detail))
+
+    mcp.remove_tool("snapshot")
+    mcp.add_tool(snapshot, name="snapshot", description=upstream_snapshot.description)
 
     for name, fn, description in (("click", click, CLICK_DESCRIPTION),
                                   ("fill", fill, FILL_DESCRIPTION),
