@@ -1241,231 +1241,15 @@
     #ctx-delete:disabled { opacity: 0.35; cursor: default; }
 
     /* ── Agent browser ──
-       A replay of the agent's browser tools, not a browser: the page is a few
-       dozen plain elements built from the tool's own result (title, and the
-       buttons/links/inputs it reported), laid out at a fixed 760px and scaled
-       to fit. Everything that moves — cursor, scroll, progress, scan — moves
-       by transform or opacity, so the compositor does the work. */
-    #win-agent .win-body { background: #0b0b0d; }
+       The agent's real browser, live: the Browser page in watch mode
+       (browser.html?watch=agent) in a window of its own, cursor and all. The
+       dot in the title bar pulses while a turn is using it. */
     .ab-live {
       width: 6px; height: 6px; border-radius: 50%;
       background: var(--muted);
       flex-shrink: 0;
     }
     #win-agent.working .ab-live { background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: pulse 1.6s ease-in-out infinite; }
-
-    .ab-chrome {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 7px 10px;
-      background: #141418;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-    .ab-nav { display: flex; gap: 9px; color: var(--muted); font-size: 12px; line-height: 1; }
-    .ab-addr {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 11px;
-      background: #0d0d0f;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      transition: border-color 0.15s;
-    }
-    .ab-addr svg { width: 11px; height: 11px; flex-shrink: 0; color: var(--muted); }
-    .ab-url { overflow: hidden; text-overflow: ellipsis; }
-    .ab-addr.editing { border-color: var(--accent-dim); }
-    .ab-caret { display: none; width: 1px; height: 12px; background: var(--accent); flex-shrink: 0; animation: caret 0.9s steps(1) infinite; }
-    .ab-addr.editing .ab-caret { display: block; }
-    @keyframes caret { 50% { opacity: 0; } }
-
-    .ab-view {
-      position: relative;
-      flex: 1;
-      min-height: 0;
-      overflow: hidden;
-      background: #111114;
-      contain: strict;
-    }
-    .ab-progress {
-      position: absolute;
-      left: 0; top: 0;
-      width: 100%; height: 2px;
-      background: var(--accent);
-      box-shadow: 0 0 8px var(--accent);
-      transform-origin: 0 50%;
-      transform: scaleX(0);
-      opacity: 0;
-      z-index: 4;
-    }
-    .ab-progress.run  { opacity: 1; transform: scaleX(0.75); transition: transform 2.4s cubic-bezier(0.1, 0.7, 0.2, 1), opacity 0.1s; }
-    .ab-progress.done { opacity: 0; transform: scaleX(1); transition: transform 0.25s ease-out, opacity 0.3s ease 0.25s; }
-
-    .ab-scan {
-      position: absolute;
-      left: 0; right: 0; top: 0;
-      height: 45%;
-      background: linear-gradient(to bottom, transparent, rgba(200,240,74,0.09) 70%, rgba(200,240,74,0.35) 99%, transparent);
-      transform: translateY(-100%);
-      opacity: 0;
-      pointer-events: none;
-      z-index: 3;
-    }
-    .ab-scan.on { opacity: 1; animation: abScan 1.5s ease-in-out infinite; }
-    @keyframes abScan { from { transform: translateY(-100%); } to { transform: translateY(230%); } }
-
-    .ab-cursor {
-      position: absolute;
-      left: 0; top: 0;
-      width: 18px; height: 18px;
-      z-index: 5;
-      opacity: 0;
-      pointer-events: none;
-      transform: translate(40px, 40px);
-      transition: transform 0.6s cubic-bezier(0.3, 0.75, 0.2, 1), opacity 0.25s;
-      filter: drop-shadow(0 2px 3px rgba(0,0,0,0.6));
-    }
-    .ab-cursor.on { opacity: 1; }
-    .ab-cursor svg { width: 18px; height: 18px; display: block; }
-    .ab-ripple {
-      position: absolute;
-      left: -14px; top: -14px;
-      width: 28px; height: 28px;
-      border-radius: 50%;
-      border: 2px solid var(--accent);
-      opacity: 0;
-      pointer-events: none;
-      z-index: 4;
-    }
-    .ab-ripple.go { animation: abRipple 0.45s ease-out; }
-    @keyframes abRipple { from { opacity: 0.9; scale: 0.3; } to { opacity: 0; scale: 1.4; } }
-
-    .ab-status {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      padding: 5px 11px;
-      border-top: 1px solid var(--border);
-      background: #141418;
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      flex-shrink: 0;
-    }
-    .ab-status span:last-child { overflow: hidden; text-overflow: ellipsis; }
-
-    /* The pretend page. Its hue comes from the site's name, so each site
-       looks a little different without anything being fetched. */
-    .abp {
-      position: absolute;
-      left: 0; top: 0;
-      width: 760px;
-      padding-bottom: 40px;
-      transform-origin: 0 0;
-      transition: transform 0.5s cubic-bezier(0.3, 0.7, 0.2, 1), opacity 0.2s;
-      color: #d6d6dc;
-      font-family: var(--sans);
-      font-size: 14px;
-      animation: abpIn 0.28s ease-out;
-    }
-    .abp.leaving { opacity: 0; }
-    @keyframes abpIn { from { opacity: 0; } to { opacity: 1; } }
-    .abp-top {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      height: 56px;
-      padding: 0 28px;
-      background: hsl(var(--h) 28% 13%);
-      border-bottom: 1px solid hsl(var(--h) 28% 20%);
-    }
-    .abp-logo {
-      width: 28px; height: 28px;
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      background: hsl(var(--h) 62% 58%);
-      color: #111;
-      font-weight: 700;
-      font-size: 15px;
-      text-transform: uppercase;
-      flex-shrink: 0;
-    }
-    .abp-site { font-weight: 700; font-size: 15px; color: #f0f0f3; white-space: nowrap; }
-    .abp-navlinks { margin-left: auto; display: flex; gap: 18px; font-size: 13px; color: hsl(var(--h) 25% 72%); white-space: nowrap; overflow: hidden; }
-    .abp-hero { padding: 34px 28px 14px; }
-    .abp-hero h1 { font-size: 30px; line-height: 1.2; font-weight: 700; color: #f4f4f6; margin-bottom: 14px; overflow-wrap: anywhere; }
-    .abp-body { padding: 8px 28px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 26px; align-items: start; }
-    .abp-wide { grid-column: 1 / -1; }
-    .abp-line { height: 10px; border-radius: 5px; background: #25252b; margin: 9px 0; }
-    .abp-link {
-      font-size: 15px;
-      color: hsl(var(--h) 72% 72%);
-      text-decoration: underline;
-      text-underline-offset: 3px;
-      padding: 5px 0;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .abp-btn {
-      justify-self: start;
-      max-width: 100%;
-      padding: 10px 18px;
-      border-radius: 9px;
-      background: hsl(var(--h) 62% 58%);
-      color: #101012;
-      font-weight: 600;
-      font-size: 14px;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .abp-input {
-      display: flex;
-      align-items: center;
-      min-height: 42px;
-      padding: 0 14px;
-      border: 1px solid #3a3a44;
-      border-radius: 9px;
-      background: #0c0c0f;
-      font-size: 14px;
-      color: #77777f;
-      overflow: hidden; white-space: nowrap;
-    }
-    .abp-input .val { color: #f0f0f3; }
-    .abp-input.focus { border-color: hsl(var(--h) 62% 58%); box-shadow: 0 0 0 3px hsl(var(--h) 62% 58% / 0.2); }
-    .hit { transition: transform 0.12s, filter 0.12s, outline-color 0.2s; outline: 2px solid transparent; outline-offset: 3px; border-radius: 6px; }
-    .hit.target  { outline-color: var(--accent); }
-    .hit.pressed { transform: scale(0.95); filter: brightness(1.25); }
-    /* Loading: one sheen crossing the page, not one per block. */
-    .abp.loading::after {
-      content: '';
-      position: absolute;
-      top: 0; bottom: 0; left: 0;
-      width: 45%;
-      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.045), transparent);
-      animation: abSheen 1.2s ease-in-out infinite;
-    }
-    @keyframes abSheen { from { transform: translateX(-100%); } to { transform: translateX(330%); } }
-    .abp-error { padding: 80px 60px; text-align: center; }
-    .abp-error .big { font-size: 46px; margin-bottom: 14px; }
-    .abp-error h1 { font-size: 22px; margin-bottom: 10px; color: #f0f0f3; }
-    .abp-error p { font-family: var(--mono); font-size: 12px; color: #88888f; line-height: 1.6; overflow-wrap: anywhere; }
-    /* Search results page. */
-    .abp-sbar { display: flex; align-items: center; gap: 16px; padding: 22px 28px 16px; border-bottom: 1px solid #222228; }
-    .abp-sbar .abp-input { flex: 1; border-radius: 999px; }
-    .abp-results { padding: 10px 28px; }
-    .abp-result { padding: 12px 0; }
-    .abp-r-url { font-family: var(--mono); font-size: 11.5px; color: #7fb069; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .abp-r-title { font-size: 17px; color: hsl(var(--h) 72% 74%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .abp-result .abp-line { width: 88%; margin: 7px 0 0; }
 
     /* Where the agent's browser lives on a phone: a picture-in-picture card
        in the corner, rather than a sheet over the chat it's working for. */
@@ -1761,22 +1545,7 @@
       </div>
       <div class="win-title"><span class="ab-live"></span>Agent browser</div>
     </div>
-    <div class="win-body">
-      <div class="ab-chrome">
-        <div class="ab-nav" aria-hidden="true"><span>←</span><span>→</span><span>↻</span></div>
-        <div class="ab-addr">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
-          <span class="ab-url"></span><span class="ab-caret"></span>
-        </div>
-      </div>
-      <div class="ab-view">
-        <div class="ab-progress"></div>
-        <div class="ab-scan"></div>
-        <div class="ab-ripple"></div>
-        <div class="ab-cursor"><svg viewBox="0 0 24 24"><path d="M5 3l14 8.2-6.3 1.4 3.6 6.9-2.6 1.3-3.6-6.9L5 18.5z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
-      </div>
-      <div class="ab-status"><span class="ab-live"></span><span class="ab-status-text">Waiting for the agent…</span></div>
-    </div>
+    <div class="win-body"></div>
     <div class="win-resize"></div>
   </section>
 
@@ -2331,7 +2100,7 @@
   // pending card asks for the handoff: it's one-shot, so an old card just
   // opens the browser.
   // A function, not a const, so it's hoisted for renders that run first.
-  function isCaptchaTool(name) { return name === 'mcp_shadow-web_request_captcha_help'; }
+  function isCaptchaTool(name) { return name === 'mcp_browser_request_captcha_help'; }
   function addCaptchaCard(reason, pending) {
     const q = new URLSearchParams({ from: 'chat' });
     if (pending) q.set('handoff', '1');
@@ -2932,7 +2701,7 @@
   // The MCP servers this user has, fetched once per load and again whenever
   // something that can change them closes or says so (the App Store, Settings,
   // an app window's switch). They drive the installed-app icons, and the
-  // Browser icon — which is only any use once the shadow-web server is on
+  // Browser icon — which is only any use once the browser server is on
   // *and* its Chromium has finished downloading.
   let mcpAppsLoaded = false;
   async function refreshMcpApps() {
@@ -3637,6 +3406,7 @@
     mcp:      { w: 380,  h: 360 },
     // Up in the top-right corner, out of the thread's way.
     agent:    { w: 540,  h: 400, place: d => ({ w: 540, h: 400, x: d.width - 540 - 18, y: 14 }),
+                src: () => '/browser?watch=agent' + (currentUser ? '&user=' + encodeURIComponent(currentUser) : ''),
                 onClose: () => { agentBrowser.closed(); return true; } },
     files:    { w: 520,  h: 560, onOpen: ctxOpen, onClose: ctxClosePanel },
   };
@@ -3891,6 +3661,7 @@
     } else if (d.type === 'freeclaw-focus') {
       const frame = [...document.querySelectorAll('.win iframe')].find(f => f.contentWindow === e.source);
       const win = frame && frame.closest('.win');
+      if (win && win.dataset.app === 'agent') agentBrowser.keep();
       if (win && wm.focused !== win.dataset.app) focusApp(win.dataset.app);
     }
   });
@@ -4125,349 +3896,25 @@
   })();
 
   // ── Agent browser ──────────────────────────────────────────────────
-  // Replays the agent's browser tool calls as they stream in: the address
-  // bar types, the page loads, a cursor goes and clicks what the agent
-  // clicked. Purely a picture of what happened, drawn from the tool_call
-  // arguments and the tool_result text — nothing here drives or fetches
-  // anything.
-  //
-  // Kept cheap on purpose: one page of at most a few dozen elements exists at
-  // a time (the old one is removed once it has faded), results are parsed and
-  // dropped, all motion is transform/opacity, and while the window is hidden
-  // or minimised every step runs with no delays at all.
+  // Pops the agent's browser up, live, when a turn starts using it, and tidies
+  // it away again after a turn that opened it if nobody touched it. What's in
+  // the window is the real thing (browser.html?watch=agent) — the agent's
+  // Chromium streamed as it works — so all this decides is when it's open.
   const agentBrowser = (() => {
-    const win      = winEl('agent');
-    const view     = win.querySelector('.ab-view');
-    const addr     = win.querySelector('.ab-addr');
-    const urlEl    = win.querySelector('.ab-url');
-    const prog     = win.querySelector('.ab-progress');
-    const scan     = win.querySelector('.ab-scan');
-    const cursor   = win.querySelector('.ab-cursor');
-    const ripple   = win.querySelector('.ab-ripple');
-    const statusEl = win.querySelector('.ab-status-text');
-    const PAGE_W = 760;   // the pretend page's layout width, scaled to fit
+    const win = winEl('agent');
+    let auto = false, touched = false, dismissed = false, closeTimer = null;
 
     // Which tool names belong to a browser. MCP tools arrive as
     // 'mcp_<server>_<tool>' (agent.py's _sanitize_tool_name), and the servers
     // that are browsers say so in /api/mcp. The built-in one always counts.
-    const BUILTIN = 'mcp_shadow-web_';
+    const BUILTIN = 'mcp_browser_';
     let prefixes = [BUILTIN];
     const sanitize = n => String(n || '').replace(/[^0-9A-Za-z_-]/g, '_').replace(/^_+|_+$/g, '');
     function setServers(names) {
       prefixes = [BUILTIN, ...(names || []).map(n => sanitize('mcp_' + n) + '_')];
     }
-    // Tools that work on HTML handed to them rather than on the browser.
-    const NOT_BROWSING = /^(compress_html|compress_html_to_xml|shadow_grep_html|schema_(table|form|list|page|json|csv))$/;
-    function kindOf(name) {
-      const p = prefixes.find(pre => String(name).startsWith(pre));
-      if (!p) return null;
-      const t = name.slice(p.length).toLowerCase();
-      if (NOT_BROWSING.test(t)) return null;
-      if (/search/.test(t)) return 'search';
-      if (/navigate|goto|go_to|open/.test(t)) return 'nav';
-      if (/click|press|tap/.test(t)) return 'click';
-      if (!/form_fill/.test(t) && /fill|type/.test(t)) return 'fill';
-      return 'read';
-    }
-
-    let page = null, scale = 1, scroll = 0, url = '', lastQuery = '';
-    let cur = { x: 40, y: 40 };
-    let chain = Promise.resolve(), pending = 0, gen = 0;
-    let auto = false, touched = false, dismissed = false, closeTimer = null;
-
-    // ── pacing ──
-    // Steps run strictly in order. When results pile up faster than the
-    // animation plays (quick clicks), it speeds up to catch up; when nobody can
-    // see it, it doesn't wait at all.
-    const shown = () => !win.hidden && !win.classList.contains('minimized') && !document.hidden;
-    const wait = ms => new Promise(r => setTimeout(r, !shown() ? 0 : pending > 2 ? ms * 0.3 : ms));
-    function queue(fn) {
-      const g = gen;
-      pending++;
-      chain = chain
-        .then(() => (g === gen ? fn() : null))
-        .catch(e => console.warn('[agent browser]', e))
-        .then(() => { if (g === gen) pending--; });
-    }
-
-    // ── little helpers ──
-    const clip = (s, n) => {
-      s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
-      return s.length > n ? s.slice(0, n - 1) + '…' : s;
-    };
-    function parseUrl(u) {
-      try { return new URL(/^[a-z][a-z0-9+.-]*:/i.test(u) ? u : 'https://' + u); } catch (_) { return null; }
-    }
-    const hostOf = u => { const p = parseUrl(u || ''); return p ? p.hostname.replace(/^www\./, '') : clip(u, 60); };
-    const pretty = u => {
-      const p = parseUrl(u || '');
-      if (!p) return clip(u, 200);
-      return clip(p.hostname.replace(/^www\./, '') + (p.pathname === '/' ? '' : p.pathname) + p.search, 200);
-    };
-    function hueOf(s) { let h = 7; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
-    function el(tag, cls, text) {
-      const e = document.createElement(tag);
-      if (cls) e.className = cls;
-      if (text != null) e.textContent = text;   // site text only ever goes in as text
-      return e;
-    }
-    function lines(parent, n, seed) {
-      for (let i = 0; i < n; i++) {
-        const l = el('div', 'abp-line');
-        l.style.width = (52 + ((seed * 7 + i * 23) % 42)) + '%';
-        parent.append(l);
-      }
-    }
-    const status = t => { statusEl.textContent = t; };
-
-    // Tool results are JSON text from shadow-web, occasionally cut short. Only
-    // the few fields drawn below are ever used.
-    function parse(res) {
-      const t = String(res || '').trim();
-      if (!t) return null;
-      if (/^(error|mcp error|no result)/i.test(t)) return { error: clip(t, 220) };
-      if (t[0] === '{') {
-        try { const o = JSON.parse(t); if (o && typeof o === 'object') return o; } catch (_) { /* salvage below */ }
-      }
-      const pick = k => { const m = t.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]{0,300})"')); return m ? m[1] : undefined; };
-      const u = pick('url'), title = pick('title');
-      return (u || title) ? { url: u, title } : null;
-    }
-
-    // shadow-web's action map: { id, label, type, href, … }. Other browser
-    // servers name things differently, so read it loosely.
-    function actionKind(a) {
-      const t = String(a.type || a.tag || a.role || '').toLowerCase();
-      if (/input|text|search|email|password|textarea|combobox|select|field/.test(t)) return 'input';
-      if (/button|submit|checkbox|radio|switch|tab|menuitem/.test(t)) return 'button';
-      if (a.href || /link|anchor|^a$/.test(t)) return 'link';
-      return 'button';
-    }
-    const sidOf = a => String(a.id ?? a.sid ?? a.ref ?? '');
-    const labelOf = a => clip(a.label || a.text || a.name || a.placeholder || a.aria_label || '', 70);
-
-    // ── page builders ──
-    function frame(host, loading) {
-      const p = el('div', 'abp' + (loading ? ' loading' : ''));
-      p.style.setProperty('--h', hueOf(host || '?'));
-      return p;
-    }
-    function topBar(host, navLinks) {
-      const top = el('div', 'abp-top');
-      top.append(el('div', 'abp-logo', (host || '?')[0]), el('div', 'abp-site', host));
-      const nav = el('div', 'abp-navlinks');
-      if (navLinks.length) navLinks.forEach(l => nav.append(el('span', null, l)));
-      else for (let i = 0; i < 3; i++) { const s = el('span', 'abp-line'); s.style.cssText = 'width:52px;margin:0'; nav.append(s); }
-      top.append(nav);
-      return top;
-    }
-    function inputNode(label, secret) {
-      const n = el('div', 'abp-input hit');
-      n.append(el('span', 'val'), el('span', 'ph', label));
-      if (secret) n.dataset.secret = '1';
-      return n;
-    }
-
-    function buildSite(u, data) {
-      const host = hostOf(u);
-      const p = frame(host, !data);
-      const actions = (data && Array.isArray(data.action_map) ? data.action_map : []).slice(0, 15);
-      const navLinks = actions.filter(a => actionKind(a) === 'link').map(labelOf)
-        .filter(l => l && l.length <= 16).slice(0, 4);
-      p.append(topBar(host, navLinks));
-
-      const hero = el('div', 'abp-hero');
-      if (data && data.title) hero.append(el('h1', null, clip(data.title, 90)));
-      else { const l = el('div', 'abp-line'); l.style.cssText = 'height:26px;width:62%;margin-bottom:16px'; hero.append(l); }
-      lines(hero, 2, host.length);
-      p.append(hero);
-
-      const body = el('div', 'abp-body');
-      if (actions.length) {
-        actions.forEach((a, i) => {
-          const kind = actionKind(a);
-          const label = labelOf(a) || (kind === 'input' ? 'Type here' : 'Untitled');
-          const node = kind === 'input'
-            ? inputNode(label, /pass/i.test(String(a.type || '') + ' ' + label))
-            : el('div', (kind === 'link' ? 'abp-link' : 'abp-btn') + ' hit', label);
-          if (kind === 'input') node.classList.add('abp-wide');
-          node.dataset.sid = sidOf(a);
-          body.append(node);
-          if (i % 5 === 4) { const t = el('div', 'abp-wide'); lines(t, 2, i); body.append(t); }
-        });
-      } else {
-        for (let i = 0; i < 6; i++) { const c = el('div'); lines(c, 3, i + host.length); body.append(c); }
-      }
-      p.append(body);
-      return p;
-    }
-
-    function buildSearch(query, data) {
-      const engine = clip((data && data.engine) || 'search', 20);
-      const p = frame(engine, !data);
-      const bar = el('div', 'abp-sbar');
-      const box = inputNode('Search the web', false);
-      box.classList.add('focus');
-      if (data) { box.querySelector('.val').textContent = clip(query, 80); box.querySelector('.ph').remove(); }
-      bar.append(el('div', 'abp-logo', engine[0]), box);
-      p.append(bar);
-
-      const list = el('div', 'abp-results');
-      const results = data && Array.isArray(data.results) ? data.results.slice(0, 8) : null;
-      if (results && results.length) {
-        results.forEach((r, i) => {
-          const item = el('div', 'abp-result');
-          const title = el('div', 'abp-r-title hit', clip(r.title || r.url || 'Result', 80));
-          title.dataset.sid = String(r.sid ?? '');
-          item.append(el('div', 'abp-r-url', pretty(r.url || '')), title);
-          lines(item, 1, i);
-          list.append(item);
-        });
-      } else if (results) {
-        list.append(el('div', 'abp-r-url', (data && data.error) ? clip(data.error, 120) : 'No results.'));
-      } else {
-        for (let i = 0; i < 5; i++) {
-          const item = el('div', 'abp-result');
-          lines(item, 2, i);
-          list.append(item);
-        }
-      }
-      p.append(list);
-      return p;
-    }
-
-    function buildError(u, msg) {
-      const p = frame(hostOf(u), false);
-      const box = el('div', 'abp-error');
-      box.append(el('div', 'big', '⚠'), el('h1', null, "This page didn't load"), el('p', null, clip(msg, 220)));
-      p.append(box);
-      return p;
-    }
-
-    // ── the view ──
-    function apply() {
-      if (page) page.style.transform = `scale(${scale}) translateY(${-scroll}px)`;
-    }
-    function measure() {
-      scale = Math.max(0.2, view.clientWidth / PAGE_W);
-      if (page) { page.style.transition = 'none'; apply(); void page.offsetWidth; page.style.transition = ''; }
-    }
-    if (window.ResizeObserver) new ResizeObserver(measure).observe(view);
-
-    function show(p) {
-      const old = page;
-      page = p;
-      scroll = 0;
-      p.style.transition = 'none';
-      view.prepend(p);
-      apply();
-      void p.offsetWidth;
-      p.style.transition = '';
-      if (old) { old.classList.add('leaving'); setTimeout(() => old.remove(), 220); }
-    }
-
-    function progress(on) {
-      prog.classList.remove('run', 'done');
-      void prog.offsetWidth;
-      prog.classList.add(on ? 'run' : 'done');
-    }
-
-    // The arrow's tip sits a few pixels into its box.
-    function cursorTo(x, y) {
-      cur = { x, y };
-      cursor.classList.add('on');
-      cursor.style.transform = `translate(${x - 4}px, ${y - 2}px)`;
-    }
-    function pointAt(node) {
-      const v = view.getBoundingClientRect(), r = node.getBoundingClientRect();
-      return { x: r.left - v.left + Math.min(r.width / 2, 40), y: r.top - v.top + r.height / 2 };
-    }
-    async function clickFx(node) {
-      ripple.style.transform = `translate(${cur.x}px, ${cur.y}px)`;
-      ripple.classList.remove('go');
-      void ripple.offsetWidth;
-      ripple.classList.add('go');
-      if (node) {
-        node.classList.add('pressed');
-        await wait(170);
-        node.classList.remove('pressed');
-      }
-    }
-    // Scroll the page (a transform, like everything else) until `node` is
-    // comfortably in view.
-    async function reveal(node) {
-      const viewH = view.clientHeight / scale;
-      const top = node.offsetTop, bottom = top + node.offsetHeight;
-      if (top >= scroll && bottom <= scroll + viewH - 16) return;
-      const next = Math.max(0, Math.min(top - viewH * 0.35, page.offsetHeight - viewH));
-      if (next === scroll) return;
-      scroll = next;
-      apply();
-      await wait(520);
-    }
-    async function typeText(node, text, perChar) {
-      const s = String(text || '');
-      if (!shown() || pending > 2 || !s) { node.textContent = s; return; }
-      const step = Math.max(1, Math.ceil(s.length / 45));   // long text types in chunks
-      for (let i = step; i < s.length + step; i += step) {
-        node.textContent = s.slice(0, i);
-        await wait(perChar);
-      }
-    }
-    // The element the agent named, or failing that something of the right
-    // sort to point at, since the page may be one we couldn't describe.
-    function targetFor(sid, selector) {
-      if (!page) return null;
-      const hits = [...page.querySelectorAll('.hit')];
-      const exact = sid != null && hits.find(n => n.dataset.sid === String(sid));
-      if (exact) return exact;
-      const loose = [...page.querySelectorAll(selector)];
-      return loose.length ? loose[Math.abs(hueOf(String(sid))) % loose.length] : null;
-    }
-
-    // ── steps ──
-    async function typeAddress(text) {
-      addr.classList.add('editing');
-      await typeText(urlEl, text, 26);
-      await wait(160);
-      addr.classList.remove('editing');
-    }
-    async function goTo(u) {
-      await typeAddress(pretty(u));
-      url = u;
-      progress(true);
-      status('Loading ' + hostOf(u) + '…');
-      cursor.classList.remove('on');
-      show(buildSite(u, null));
-    }
-    function landed(u, data) {
-      progress(false);
-      if (u) { url = u; urlEl.textContent = pretty(u); }
-      if (data && data.error && !data.title) {
-        show(buildError(url, data.error));
-        status("Couldn't load " + hostOf(url));
-        return;
-      }
-      show(buildSite(url, data));
-      status(clip((data && data.title) || hostOf(url), 90));
-    }
-
-    async function pointAndClick(node) {
-      if (node) {
-        await reveal(node);
-        node.classList.add('target');
-        const pt = pointAt(node);
-        cursorTo(pt.x, pt.y);
-        await wait(650);
-        await clickFx(node);
-        await wait(140);
-        node.classList.remove('target');
-      } else {
-        cursorTo(view.clientWidth / 2, view.clientHeight / 2);
-        await wait(650);
-        await clickFx(null);
-      }
-    }
+    // Handing a page over for a CAPTCHA isn't browsing; it has a card of its own.
+    const browsing = name => !isCaptchaTool(name) && prefixes.some(p => String(name).startsWith(p));
 
     function launchIcon() {
       const ic = document.getElementById('icon-browser');
@@ -4486,10 +3933,8 @@
     // one ever did.
     const ownTurn = () => sendBtn.disabled;
 
-    function call(name, args) {
-      const kind = kindOf(name || '');
-      if (!kind || !ownTurn()) return;
-      args = (args && typeof args === 'object') ? args : {};
+    function call(name) {
+      if (!browsing(name || '') || !ownTurn()) return;
       clearTimeout(closeTimer);
       if (win.hidden) {
         if (dismissed) return;          // closed during this turn: stay closed
@@ -4499,134 +3944,33 @@
         openApp('agent');
       }
       win.classList.add('working');
-
-      if (kind === 'nav') {
-        const u = String(args.url || '');
-        if (u) queue(() => goTo(u));
-      } else if (kind === 'search') {
-        queue(async () => {
-          lastQuery = String(args.query || '');
-          await typeAddress('search?q=' + lastQuery);
-          url = '';
-          show(buildSearch(lastQuery, null));
-          status('Searching “' + clip(lastQuery, 60) + '”');
-          const box = page.querySelector('.abp-input');
-          await pointAndClick(box);
-          box.querySelector('.ph').remove();
-          await typeText(box.querySelector('.val'), clip(lastQuery, 80), 32);
-          progress(true);
-        });
-      } else if (kind === 'click') {
-        queue(async () => {
-          const node = targetFor(args.sid ?? args.ref ?? args.element, '.abp-link, .abp-btn, .abp-r-title');
-          status('Clicking ' + (node ? '“' + clip(node.textContent, 50) + '”' : 'the page'));
-          await pointAndClick(node);
-        });
-      } else if (kind === 'fill') {
-        queue(async () => {
-          const node = targetFor(args.sid ?? args.ref ?? args.element, '.abp-input');
-          const value = String(args.value ?? args.text ?? '');
-          const label = node && node.querySelector('.ph') ? node.querySelector('.ph').textContent : 'a field';
-          status('Typing into “' + clip(label, 40) + '”');
-          await pointAndClick(node);
-          if (!node) return;
-          node.classList.add('focus');
-          const ph = node.querySelector('.ph');
-          if (ph) ph.remove();
-          const shownValue = node.dataset.secret ? '•'.repeat(Math.min(value.length, 16)) : clip(value, 80);
-          await typeText(node.querySelector('.val'), shownValue, 45);
-          await wait(200);
-          node.classList.remove('focus');
-        });
-      } else {
-        queue(async () => {
-          if (args.url) await goTo(String(args.url));
-          scan.classList.add('on');
-          status(args.goal ? 'Working on: ' + clip(args.goal, 70) : 'Reading the page…');
-        });
-      }
     }
 
-    function result(name, res) {
-      const kind = kindOf(name || '');
-      if (!kind || win.hidden || !ownTurn()) return;
-      const data = parse(res);   // dropped once this step has drawn it
-      queue(async () => {
-        scan.classList.remove('on');
-        if (kind === 'nav') {
-          landed((data && data.url) || url, data);
-        } else if (kind === 'search') {
-          progress(false);
-          show(buildSearch(lastQuery, data || { results: [] }));
-          const n = data && Array.isArray(data.results) ? data.results.length : 0;
-          status(n ? n + ' results' + (data.engine ? ' · ' + data.engine : '') : 'No results');
-        } else if (kind === 'click' || kind === 'fill') {
-          if (data && data.error) { status('Didn’t work: ' + clip(data.error, 70)); return; }
-          // A click that went somewhere: the address changes and a page loads.
-          // What's on it arrives with the next snapshot, if there is one.
-          if (kind === 'click' && data && data.url && data.url !== url) {
-            url = data.url;
-            urlEl.textContent = pretty(url);
-            progress(true);
-            status('Loading ' + hostOf(url) + '…');
-            show(buildSite(url, null));
-            await wait(700);
-            progress(false);
-            show(buildSite(url, {}));
-            status(hostOf(url));
-          }
-        } else if (data && Array.isArray(data.action_map)) {
-          landed(data.url || url, data);
-        } else if (data && data.error) {
-          status('Didn’t work: ' + clip(data.error, 70));
-        } else {
-          status(url ? 'Read ' + hostOf(url) : 'Done reading');
-        }
-      });
-    }
+    function result() { /* the window shows the result itself */ }
 
     function turnEnd() {
       dismissed = false;
+      win.classList.remove('working');
       if (win.hidden) return;
-      queue(async () => {
-        scan.classList.remove('on');
-        if (prog.classList.contains('run')) progress(false);
-        await wait(400);
-        cursor.classList.remove('on');
-        win.classList.remove('working');
-        status(url ? 'Done · ' + hostOf(url) : 'Done');
-        // Opened by itself and never touched: tidy itself away again.
-        if (auto && !touched) {
-          clearTimeout(closeTimer);
-          closeTimer = setTimeout(() => { if (!touched && !win.hidden) closeApp('agent'); }, 6000);
-        }
-      });
+      // Opened by itself and never touched: tidy itself away again, after
+      // long enough to see where the agent ended up.
+      if (auto && !touched) {
+        clearTimeout(closeTimer);
+        closeTimer = setTimeout(() => { if (!touched && !win.hidden) closeApp('agent'); }, 8000);
+      }
     }
 
-    // Closing throws the page away, so an idle desktop holds nothing for it.
     function closed() {
       clearTimeout(closeTimer);
       if (sendBtn.disabled) dismissed = true;
-      gen++;
-      pending = 0;
-      chain = Promise.resolve();
-      setTimeout(() => {
-        if (page) { page.remove(); page = null; }
-        url = '';
-        scroll = 0;
-        urlEl.textContent = '';
-        scan.classList.remove('on');
-        prog.classList.remove('run', 'done');
-        cursor.classList.remove('on');
-        win.classList.remove('working');
-        status('Waiting for the agent…');
-      }, 160);
+      win.classList.remove('working');
     }
 
-    // Anyone who reaches in (drags it, clicks it) is keeping it.
-    win.addEventListener('pointerdown', () => { touched = true; clearTimeout(closeTimer); });
+    // Anyone who reaches in (drags it, clicks into it) is keeping it.
+    function keep() { touched = true; clearTimeout(closeTimer); }
+    win.addEventListener('pointerdown', keep);
 
-    return { call, result, turnEnd, closed, setServers };
+    return { call, result, turnEnd, closed, setServers, keep };
   })();
 
   syncThreadState();

@@ -9,7 +9,7 @@ user opens /browser?user=…, sees the page rendered as a stream of screenshots,
 clicks and types into it, and signs in. On "Done", the context's cookies and
 localStorage are written to that user's storage_state (src/browser_profiles.py)
 and the browser closes. The agent's next tool call spawns an MCP child that
-loads them (src/browser_mcp_shim.py).
+loads them (src/browser_server.py).
 
 Two decisions worth knowing about:
 
@@ -50,8 +50,8 @@ import time
 
 import src.browser_handoff as browser_handoff
 import src.browser_profiles as profiles
-from src.browser_mcp_shim import (OFFSCREEN_ANIMATION_PAUSE_JS, VIEWPORT, context_kwargs,
-                                  launch_kwargs)
+from src.browser_server import (OFFSCREEN_ANIMATION_PAUSE_JS, VIEWPORT, context_kwargs,
+                                launch_kwargs)
 from src.logging_setup import get_logger
 
 logger = get_logger(__name__)

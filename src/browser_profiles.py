@@ -1,8 +1,8 @@
 """Where a FreeClaw user's browser logins live.
 
-The agent's browser starts from a blank slate on every spawn — shadow-web's MCP
-server builds an in-memory context and throws it away with the process — so any
-site behind a login is simply unreachable to it. What fixes that is a
+The agent's browser starts from a blank slate on every spawn — its MCP server
+(src/browser_server.py) builds an in-memory context and throws it away with the
+process — so any site behind a login would simply be unreachable to it. What fixes that is a
 `storage_state`: playwright's JSON dump of a context's cookies and localStorage,
 which one browser can write and another can load.
 

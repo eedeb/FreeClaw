@@ -792,6 +792,12 @@ def _clear_turn_prefix():
 
 TOOL_CALL_RUN_LIMIT = 2
 
+# The built-in browser's actions whose identical repeat is progress, not a
+# loop: scrolling on down a long page, a carousel's "next" at the same x,y,
+# Tab through a form. Each answers with a fresh screenshot, so the model sees
+# for itself whether it's getting anywhere.
+_REPEATABLE_TOOLS = frozenset(f"mcp_browser_{t}" for t in ("click", "scroll", "key", "back", "drag"))
+
 THROTTLE_NOTICE = (
     "'{name}' was NOT run. You have called it {limit} times in a row{same} without answering the "
     "user, so this call was held back automatically. Stop and reconsider: has the request already "
@@ -846,7 +852,8 @@ def _throttle_tool_call(name, args_dict=None):
     # Same name as last time — which for an MCP tool says nothing about whether
     # the model is progressing, so only the arguments are counted there.
     identical = signature == sess.last_call_signature
-    if identical and sess.identical_tool_calls >= TOOL_CALL_RUN_LIMIT:
+    if (identical and name not in _REPEATABLE_TOOLS
+            and sess.identical_tool_calls >= TOOL_CALL_RUN_LIMIT):
         held = IDENTICAL_REPEAT
     elif (not name.startswith(_MCP_TOOL_PREFIX)
             and sess.consecutive_tool_calls >= TOOL_CALL_RUN_LIMIT):
@@ -2971,7 +2978,7 @@ def _hand_over_page(result, reason):
     host = urlparse(url).hostname or url
     return (f"The user now has a button to open {host} in their FreeClaw browser and solve the "
             f"check. End your turn: tell them to press it, solve it, save, and say when they're "
-            f"done. Then call snapshot: your browser reopens on the page they left.")
+            f"done. Then call screenshot: your browser reopens on the page they left.")
 
 
 def _run_tool(command_name, args_dict, bash_approved=False):

@@ -1,8 +1,8 @@
-"""Chromium bootstrap for the shipped `shadow-web` MCP server.
+"""Chromium bootstrap for the shipped browser MCP server (src/browser_server.py).
 
-FreeClaw installs the `shadow-web` Python package like any other dependency —
-it's a couple of hundred kilobytes. The browser it drives is not: Chromium is a
-few hundred megabytes on disk plus a set of system libraries, which is most of
+FreeClaw installs the `playwright` Python package like any other dependency.
+The browser it drives is another matter: Chromium is a few hundred megabytes
+on disk plus a set of system libraries, which is most of
 what a FreeClaw install weighs today. Downloading that for every user, when the
 server ships switched off, would make the common install pay for a feature it
 never turns on.
@@ -125,12 +125,12 @@ def chromium_present():
 
 
 def package_available():
-    """Whether `shadow_web` is importable. It's pinned to Python 3.10+ in
-    requirements.txt, so a FreeClaw running on 3.9 has everything else but not
-    this. `find_spec` locates the package without executing it, which keeps
-    playwright out of the web process."""
+    """Whether `playwright` is importable. It's pinned to Python 3.10+ in
+    requirements.txt, so a FreeClaw running on something older has everything
+    else but not this. `find_spec` locates the package without executing it,
+    which keeps playwright out of the web process."""
     try:
-        return importlib.util.find_spec("shadow_web") is not None
+        return importlib.util.find_spec("playwright") is not None
     except (ImportError, ValueError):
         return False
 
@@ -144,7 +144,7 @@ def state():
     forever against a thread that no longer exists."""
     if not package_available():
         return {"status": ERROR,
-                "message": "The shadow-web package isn't installed — it needs Python 3.10 "
+                "message": "The playwright package isn't installed — it needs Python 3.10 "
                            f"or newer, and FreeClaw is running on "
                            f"{sys.version_info.major}.{sys.version_info.minor}."}
     with _lock:
@@ -288,7 +288,7 @@ def _finish(status, message):
         _state["status"] = status
         _state["message"] = message
     if status == READY:
-        logger.info("Chromium ready for the shadow-web MCP server")
+        logger.info("Chromium ready for the browser MCP server")
     else:
         logger.warning("Chromium setup finished as %s: %s", status, message)
     # The server's tools couldn't be listed while the browser was missing, so
