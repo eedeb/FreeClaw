@@ -50,7 +50,8 @@ import time
 
 import src.browser_handoff as browser_handoff
 import src.browser_profiles as profiles
-from src.browser_mcp_shim import VIEWPORT, context_kwargs, launch_kwargs
+from src.browser_mcp_shim import (OFFSCREEN_ANIMATION_PAUSE_JS, VIEWPORT, context_kwargs,
+                                  launch_kwargs)
 from src.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -300,6 +301,7 @@ class TakeoverSession:
             existing = profiles.state_path(self.user)
             state = existing if existing and os.path.exists(existing) else None
             context = browser.new_context(**context_kwargs(browser, state))
+            context.add_init_script(OFFSCREEN_ANIMATION_PAUSE_JS)
             if self._start_cookies:
                 self._add_cookies(context, self._start_cookies)
 

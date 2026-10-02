@@ -53,6 +53,48 @@ IGNORE_DEFAULT_ARGS = ["--enable-automation"]
 LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled"]
 
 
+# Run in every page of both browsers (context.add_init_script): pause looping
+# animations while their element is off-screen, and play them again when it
+# scrolls into view.
+#
+# A server has no GPU, so Chromium paints in software, and a page's looping
+# animations cost CPU whether or not anybody can see them. walmart.com's home
+# page runs 81 copies of an infinite loading shimmer, all off-screen; with them
+# running, Chromium alone held one core at 63-82% while the page sat idle, and
+# a click took seconds to show. Paused, 20-41%. Nothing visible changes: only
+# infinite animations are touched, only ones this script paused are resumed,
+# and an animation is only paused while nothing of its element is on screen.
+OFFSCREEN_ANIMATION_PAUSE_JS = r"""
+(() => {
+  if (window.__fcAnimationPause || typeof document.getAnimations !== "function") return;
+  window.__fcAnimationPause = true;
+  const paused = new Set();
+  const onScreen = (target) => {
+    const el = target && (target.element || target);   // a pseudo-element's host
+    if (!el || !el.isConnected || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0
+        && r.top < innerHeight && r.left < innerWidth;
+  };
+  const sweep = () => {
+    for (const a of document.getAnimations()) {
+      const timing = a.effect && a.effect.getTiming ? a.effect.getTiming() : null;
+      if (!timing || timing.iterations !== Infinity) continue;
+      const visible = onScreen(a.effect.target);
+      if (a.playState === "running" && !visible) { a.pause(); paused.add(a); }
+      else if (paused.has(a) && visible) { a.play(); paused.delete(a); }
+    }
+    for (const a of paused) if (a.playState !== "paused") paused.delete(a);
+  };
+  let queued = false;
+  const soon = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; sweep(); }); } };
+  addEventListener("scroll", soon, { passive: true, capture: true });
+  addEventListener("resize", soon, { passive: true });
+  setInterval(sweep, 1000);
+})();
+"""
+
+
 def launch_kwargs(headless, channel=None):
     """The `chromium.launch()` arguments both browsers share."""
     kwargs = {"headless": headless, "ignore_default_args": list(IGNORE_DEFAULT_ARGS),
@@ -194,6 +236,7 @@ def _install_browser_hook(sw):
             context = await browser.new_context(**context_kwargs(browser))
             state = None
 
+        await context.add_init_script(OFFSCREEN_ANIMATION_PAUSE_JS)
         page = await context.new_page()
 
         # Every key upstream's own _ensure_browser sets. browser_info() and the
