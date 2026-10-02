@@ -88,6 +88,24 @@ MAX_SESSION = 60 * 60
 # as PNG and a tenth of that as JPEG, and this is re-sent a few times a second.
 FRAME_QUALITY = 60
 
+
+def _frame_scale():
+    """How large the frames sent to the page are, relative to the viewport.
+
+    The page lays out and renders at full size whatever this is — the site sees
+    an ordinary 1280x800 browser — and only the picture sent to the person is
+    scaled, by Chromium before it encodes the JPEG; their browser scales it
+    back up onto the canvas, and clicks map through the viewport, not the frame.
+    Measured on walmart.com while scrolling: frames averaged 59KB at 1.0 and
+    21KB at 0.5, which is the difference that matters on a phone connection.
+    Softer text is the cost, so 1.0 (unchanged) unless FC_TAKEOVER_FRAME_SCALE
+    says otherwise; clamped to 0.25-1."""
+    try:
+        scale = float((os.environ.get("FC_TAKEOVER_FRAME_SCALE") or "1").strip())
+    except ValueError:
+        return 1.0
+    return min(max(scale, 0.25), 1.0)
+
 # The virtual display we start when there isn't one. :99 by convention.
 XVFB_DISPLAY = ":99"
 
@@ -512,9 +530,11 @@ class TakeoverSession:
             # one.
             cdp.on("Page.screencastFrame",
                    lambda params, c=cdp: self._on_cast_frame(c, params))
+            scale = _frame_scale()
             cdp.send("Page.startScreencast", {
                 "format": "jpeg", "quality": FRAME_QUALITY,
-                "maxWidth": VIEWPORT["width"], "maxHeight": VIEWPORT["height"],
+                "maxWidth": round(VIEWPORT["width"] * scale),
+                "maxHeight": round(VIEWPORT["height"] * scale),
             })
             self._cdp = cdp
         except Exception:                         # noqa: BLE001 — fall back, don't die
