@@ -527,6 +527,14 @@
 
     /* Thinking dots */
     .thinking .bubble { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
+
+    /* A line from FreeClaw itself in the thread — a follow-through nudge, a
+       reconnect — not a message from either side. */
+    .sys-note {
+      align-self: center; max-width: 88%; text-align: center;
+      font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+      letter-spacing: 0.04em; padding: 2px 8px;
+    }
     .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s ease-in-out infinite; }
     .dot:nth-child(2) { animation-delay: 0.2s; }
     .dot:nth-child(3) { animation-delay: 0.4s; }
@@ -1810,6 +1818,13 @@
       const d = section(`Other requests, listed one line each (${route.digest.length})`);
       route.digest.forEach(x => d.appendChild(rpEl('div', 'rp-digest', '· ' + x)));
     }
+    if (route.follow) {
+      const f = route.follow, sh = f.shares || {};
+      const pct = k => Math.round((sh[k] || 0) * 100) + '%';
+      row(section('Follow-through check'), f.nudge ? 'nudged' : 'verdict',
+          `${f.status || '?'} — done ${pct('done')} · partway ${pct('partway')} · `
+          + `needs you ${pct('needs_user')} · can't ${pct('cant')}`);
+    }
     const c = route.chars || {};
     panel.appendChild(rpEl('div', 'rp-foot',
       `Request ${rpTokens((c.system || 0) + (c.history || 0) + (c.tools || 0))} tokens — `
@@ -1893,6 +1908,18 @@
     const lbl = wrap.querySelector('.msg-label');
     if (lbl) fillAgentLabel(lbl, provider, usage, intent, false, currentRoute);
   }
+
+  // ── A note from FreeClaw itself, between messages ───────
+  function addSystemNote(text) {
+    removeEmpty();
+    const note = document.createElement('div');
+    note.className = 'sys-note';
+    note.textContent = text;
+    messagesEl.appendChild(note);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return note;
+  }
+  const FOLLOW_NOTE = '↻ Jev: that looked unfinished — nudged the agent to carry on';
 
   // ── Render a single user/agent text bubble ──────────────
   // opts.countTokens (default true) controls whether this call bumps the
@@ -2162,13 +2189,16 @@
 
     // A sign-in card is still live only if the user hasn't spoken since.
     let lastUserIdx = -1;
-    conversation.forEach((m, i) => { if (m.role === 'user') lastUserIdx = i; });
+    conversation.forEach((m, i) => { if (m.role === 'user' && !m.auto) lastUserIdx = i; });
 
     for (const [i, msg] of conversation.entries()) {
       // Skip system messages and tool result messages (rendered inline)
       if (msg.role === 'system' || msg.role === 'tool') continue;
 
-      if (msg.role === 'user') {
+      if (msg.role === 'user' && msg.auto) {
+        // A follow-through nudge FreeClaw sent on its own — not the user's words.
+        addSystemNote(FOLLOW_NOTE);
+      } else if (msg.role === 'user') {
         // user content can be string or array
         const rawText = typeof msg.content === 'string'
           ? msg.content
@@ -2627,7 +2657,18 @@
           let evt;
           try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
-          if (evt.type === 'route') {
+          if (evt.type === 'follow_through') {
+            // The reply so far stays; the agent carries on below it.
+            finishReasoning();
+            liveWrap = null; liveBubble = null; liveText = '';
+            addSystemNote(FOLLOW_NOTE);
+            if (!thinking.parentNode) thinking = addThinking();
+
+          } else if (evt.type === 'reconnecting') {
+            addSystemNote(`Connection to the model dropped — retrying in ${evt.seconds}s…`);
+            if (!thinking.parentNode) thinking = addThinking();
+
+          } else if (evt.type === 'route') {
             // A Jev-routed turn: what it was sent, for the tag's panel.
             currentRoute = evt.route;
             if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null, currentIntent);

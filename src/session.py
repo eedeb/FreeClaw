@@ -28,6 +28,7 @@ and a nested run just binds a different Session for the duration.
     turn_route_notes         } own live-tail lines (agent._jev_notes), and
     turn_route               } what it was sent, for the chat
     turn_tool_names          which tools the turn in flight actually ran
+    turn_follow_ups          follow-through nudges given this turn
     consecutive_tool_calls   } the runaway-tool throttle's run: calls to the
     last_tool_name           } same tool, and of those the ones that repeated
     identical_tool_calls     } the previous call's arguments exactly, both
@@ -160,6 +161,7 @@ class Session:
         # turn's record, and it's what lets the finished reply be stamped
         # with whether it consulted a source or answered from weights alone.
         self.turn_tool_names = []
+        self.turn_follow_ups = 0
 
         # Both default to the safe answer, so a turn that never called
         # approvals.begin_turn() gets refusals rather than unattended
@@ -195,6 +197,8 @@ class Session:
         self.identical_tool_calls = 0
         self.last_call_signature = None
         self.turn_tool_names = []
+        # Follow-through nudges given this turn (agent._follow_through).
+        self.turn_follow_ups = 0
 
     def note_tool_used(self, name):
         """Record that this turn ran `name`."""
