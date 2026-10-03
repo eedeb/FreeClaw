@@ -141,9 +141,12 @@ class Session:
         # A Jev-routed turn's withheld tool groups ({id: (short name, tools)},
         # for load_tools) and the rest of its live-tail lines.
         self.turn_withheld = {}
+        self.turn_trimmed = {}
         self.turn_route_notes = ""
-        # What a Jev-routed turn was sent, for the chat (agent._jev_route_details).
+        # What a Jev-routed turn was sent, for the chat (agent._jev_route_details),
+        # and its tool groups, so load_tools can redraw that record.
         self.turn_route = None
+        self.turn_route_groups = []
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
         # The arguments half of the throttle's run. An MCP server often puts
@@ -217,8 +220,10 @@ class Session:
         self.turn_tag = None
         self.turn_notes = ""
         self.turn_withheld = {}
+        self.turn_trimmed = {}
         self.turn_route_notes = ""
         self.turn_route = None
+        self.turn_route_groups = []
 
     def note_new_section(self, name):
         """Remember a context.md section created mid-conversation so the next

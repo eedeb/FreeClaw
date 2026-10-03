@@ -21,6 +21,7 @@ import src.browser_handoff as browser_handoff
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
 import src.jev as jev
+import src.mcp_catalog as mcp_catalog
 import src.mcp_client as mcp_client
 import src.responses_api as responses_api
 import src.scraper as scraper
@@ -3872,14 +3873,15 @@ def _tool_name(t):
 
 
 def _jev_tool_groups(user):
-    """[(group_id, short name for the model, tools)] for `user`: the built-in
-    groups, then one per MCP server they have on."""
+    """([(group_id, short name for the model, tools)], [(group_id, what the
+    server is for)]) for `user`: the built-in groups, then one per MCP server
+    they have on; and, for Jev's choice between servers, a line on each."""
     groups = [(gid, short, globals()[builder]())
               for gid, builder, short in _JEV_BUILTIN_GROUPS]
     registry = registry_for(user)
     browser = next((e["server"] for e in registry.values()
                     if e["server"].get("needs_browser")), None)
-    by_server = {}
+    by_server, info = {}, {}
     for t in mcp_tools_for(user):
         entry = registry.get(_tool_name(t))
         # request_sign_in isn't an MCP tool, but it only means anything next
@@ -3887,10 +3889,88 @@ def _jev_tool_groups(user):
         server = entry["server"] if entry else browser
         if server is None:
             continue
-        by_server.setdefault(server.get("name") or "mcp", []).append(t)
+        name = server.get("name") or "mcp"
+        by_server.setdefault(name, []).append(t)
+        info.setdefault(name, server)
+    usage = _jev_server_usage()
     groups += [(f"mcp:{name}", f"the {name} MCP server", ts)
                for name, ts in by_server.items()]
-    return groups
+    servers = [(f"mcp:{name}", _jev_server_about(info[name], ts, usage.get(f"mcp:{name}")))
+               for name, ts in by_server.items()]
+    return groups, servers
+
+
+def _jev_server_about(server, server_tools, used_for):
+    """One line on what an MCP server is for: its own description, else the
+    App Store's, then its tools, then what it has actually been used for.
+
+    The last part is what lets Jev tell two servers apart that both describe
+    themselves in general terms — "1,000+ apps behind one server" says nothing
+    about whether *this* user's Gmail is behind it, and "what are my emails"
+    used to send both it and the browser."""
+    name = server.get("name") or "mcp"
+    about = server.get("description") or ""
+    if not about:
+        entry = next((c for c in mcp_catalog.CATALOG
+                      if (c.get("url") and c.get("url") == server.get("url"))
+                      or (c.get("name") or "").lower() == name.lower()), None)
+        about = (entry or {}).get("description") or ""
+    names = [_tool_name(t).removeprefix(f"mcp_{name}_") for t in server_tools]
+    line = f"{name}: {jev.one_line(about, 200)} Tools: {', '.join(names[:10])}"
+    if len(names) > 10:
+        line += " …"
+    if used_for:
+        line += ". Used before for: " + "; ".join(f'"{u}"' for u in used_for)
+    return line
+
+
+# What each MCP server has been used for, per user: the last few requests a
+# turn answered with one of its tools. Kept beside context.md as a dotfile, so
+# the Files app doesn't list it (Flask/main.py _hidden_entry).
+_JEV_USAGE_FILE = ".jev_servers.json"
+_JEV_USAGE_KEEP = 6
+_JEV_USAGE_CHARS = 90
+
+
+def _jev_server_usage():
+    try:
+        with open(_sess().static_dir + _JEV_USAGE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _jev_note_server_usage():
+    """After a turn: file its request under every MCP server whose tools it
+    actually ran. Learned from what happened, not from what Jev predicted —
+    a turn that had to load_tools its way to the right server teaches the
+    next one where to go."""
+    sess = _sess()
+    ran = set(sess.turn_tool_names or ())
+    if not ran:
+        return
+    registry = registry_for(_tools_user())
+    servers = {f"mcp:{registry[n]['server'].get('name') or 'mcp'}" for n in ran if n in registry}
+    if "request_sign_in" in ran:
+        servers |= {f"mcp:{e['server'].get('name')}" for e in registry.values()
+                    if e["server"].get("needs_browser")}
+    if not servers:
+        return
+    request = next((m.get("content") for m in reversed(sess.messages)
+                    if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+    request = jev.one_line(request, _JEV_USAGE_CHARS)
+    if not request or request.startswith(PING_PREFIX):
+        return
+    usage = _jev_server_usage()
+    for gid in servers:
+        seen = [u for u in usage.get(gid, []) if u != request]
+        usage[gid] = (seen + [request])[-_JEV_USAGE_KEEP:]
+    try:
+        with open(sess.static_dir + _JEV_USAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(usage, f)
+    except OSError:
+        logger.warning("Couldn't save %s", _JEV_USAGE_FILE)
 
 
 def _jev_tool_choices(groups):
@@ -3969,8 +4049,9 @@ def _load_tools_tool(withheld):
         "type": "function",
         "function": {
             "name": LOAD_TOOLS_NAME,
-            "description": "Loads tool groups that weren't loaded for this message. Call it "
-                           "instead of saying you can't do something, or answering without a tool you need.",
+            "description": "Fallback, not a first step: adds a tool group held back for this "
+                           "message, once the tools you have have proved unable to do the request. "
+                           "Never call it first. Use it rather than saying you can't do something.",
             "parameters": {
                 "type": "object",
                 "properties": {"groups": {"type": "array",
@@ -3981,31 +4062,50 @@ def _load_tools_tool(withheld):
     }
 
 
+def _short_tool_name(t, gid):
+    """A tool's name without its server prefix — this line is resent on every
+    request of the turn, and "mcp_Composio_COMPOSIO_" eleven times over is
+    most of it."""
+    name = _tool_name(t)
+    server = gid.removeprefix("mcp:")
+    return name.removeprefix(f"mcp_{server}_") if gid.startswith("mcp:") else name
+
+
 def _jev_notes(sess):
     """The routed turn's live-tail lines: what's withheld and how to get it,
     the user's skipped requests, and the opened memory sections."""
+    # Worded as a fallback, and offering only groups that sent nothing: with
+    # "Not loaded: … (mcp:browser: drag)" in view, the model loaded the server
+    # it already had before doing anything, on every tool turn (6/6, live). As
+    # below it went straight to the right tool 10/10, and still loads a group
+    # that's genuinely missing.
     withheld = sess.turn_withheld
     note = ""
     if withheld:
-        note = ("\nNot loaded for this message: "
-                + "; ".join(f"{short} ({gid}: {', '.join(_tool_name(t) for t in ts)})"
-                            for gid, (short, ts) in withheld.items())
-                + ". If you need one, call load_tools — don't answer from stale weights.")
+        note = ("\nStart with the tools you have — they were picked for this request. Only if "
+                "they turn out unable to do it, load_tools can add: "
+                + "; ".join(f"{gid} ({', '.join(_short_tool_name(t, gid) for t in ts)})"
+                            for gid, (_short, ts) in withheld.items())
+                + ".")
     return note + sess.turn_route_notes
 
 
 def _jev_turn_tools(groups, picked_names, sess):
-    """The routed turn's tool list, recording what each group had withheld on
-    the Session for load_tools."""
+    """The routed turn's tool list, recording on the Session which groups it
+    withheld whole (loadable with load_tools) and which tools it trimmed from
+    a group it did send (not loadable — see _jev_notes for why)."""
     turn_tools = [t for t in build_context_tools() + build_time_tools()
                   if _tool_name(t) in _JEV_ALWAYS]
     sess.turn_withheld = {}
+    sess.turn_trimmed = {}
     for gid, short, ts in groups:
         kept = [t for t in ts if _tool_name(t) in picked_names]
         rest = [t for t in ts if _tool_name(t) not in picked_names
                 and _tool_name(t) not in _JEV_ALWAYS]
         turn_tools += kept
-        if rest:
+        if rest and kept:
+            sess.turn_trimmed[gid] = rest
+        elif rest:
             sess.turn_withheld[gid] = (short, rest)
     if sess.turn_withheld:
         turn_tools.append(_load_tools_tool(sess.turn_withheld))
@@ -4058,11 +4158,15 @@ def _jev_route_details(route, groups, messages, full_start, picked, eco_messages
         "ms": route.ms,
         "questions": len(route.questions),
         "label": route.tag,
+        # Each MCP server that went, with its share of Jev's choice between them.
+        "servers": route.servers,
         "style": route.style,
         "temperature": route.temperature,
         "tools": _route_tool_list(turn_tools, groups),
         "withheld": [{"group": gid, "names": [_tool_name(t) for t in ts]}
                      for gid, (_short, ts) in sess.turn_withheld.items()],
+        "trimmed": [{"group": gid, "names": [_tool_name(t) for t in ts]}
+                    for gid, ts in sess.turn_trimmed.items()],
         "loaded": [],
         "history": history,
         "earlier": sum(1 for m in messages[1:full_start]
@@ -4100,6 +4204,8 @@ def _load_tools(args_dict):
         sess.turn_route["loaded"] += got
         sess.turn_route["withheld"] = [w for w in sess.turn_route["withheld"]
                                        if w["group"] not in got]
+        sess.turn_route["tools"] = _route_tool_list(
+            sess.turn_prefix.get("tools") or tools_now, sess.turn_route_groups)
     return "Loaded: " + ", ".join(got) + ". Their tools are available from your next step."
 
 
@@ -4109,11 +4215,11 @@ def _jev_route(user_input, sess):
     if not jev.enabled():
         return None
     try:
-        groups = _jev_tool_groups(_tools_user())
+        groups, servers = _jev_tool_groups(_tools_user())
         routed_memory = _CTX_ROUTED in (sess.messages[0].get("content") or "")
         sections = _jev_sections() if routed_memory else []
         route = jev.route(user_input, sess.messages, len(sess.messages),
-                          _jev_tool_choices(groups), sections)
+                          _jev_tool_choices(groups), sections, servers)
     except Exception:
         logger.exception("Jev routing failed; falling back to the classifier")
         return None
@@ -4221,6 +4327,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             sections_block, opened = _jev_sections_block(route.sections, sections)
             sess.turn_route_notes = _digest(skipped) + sections_block
             check_tools = _jev_turn_tools(groups, route.tools, sess)
+            sess.turn_route_groups = groups
             sess.turn_notes = _jev_notes(sess)
             _refresh_volatile()
             eco_messages = _history_for_request(agent_messages, full_start,
@@ -4767,6 +4874,13 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     if usage_seen:
         final_msg["usage"] = usage_seen
     agent_messages.append(final_msg)
+    # Which MCP servers this request was answered with, for Jev's next choice
+    # between them (_jev_server_about). Kept whichever router ran the turn.
+    if jev.enabled():
+        try:
+            _jev_note_server_usage()
+        except Exception:
+            logger.exception("Couldn't note which MCP servers this turn used")
     # The model answered instead of calling another tool, so the turn is over
     # and its pinned prefix goes with it.
     _clear_turn_prefix()
