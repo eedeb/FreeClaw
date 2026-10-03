@@ -11,6 +11,7 @@ import src.browser_setup as browser_setup
 # it was for everyone who never uses one (the reasoning in browser_setup.py).
 import src.browser_takeover as browser_takeover
 import src.cancellation as cancellation
+import src.jev as jev
 import src.mcp_client as mcp_client
 import src.mcp_catalog as mcp_catalog
 import src.session as sessions
@@ -2310,6 +2311,37 @@ def api_set_vision_model():
     except Exception as e:
         return _log_and_error(e, message=str(e))
     return jsonify({'ok': True, 'provider': name})
+
+
+# ── JEV (optional turn routing; see src/jev.py) ─────────────
+
+@app.route('/api/jev', methods=['GET'])
+def api_get_jev():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    # Write-only, like provider keys: say whether one is set, never echo it.
+    return jsonify({'has_key': jev.enabled()})
+
+
+@app.route('/api/jev', methods=['POST'])
+def api_set_jev():
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    key = str(data.get('key', '')).strip()
+    if any(c in key for c in "'\"\r\n "):
+        return jsonify({'error': "That doesn't look like a Jev key."}), 400
+    if key:
+        # Tried before it's saved, so a typo is caught here rather than as
+        # every turn quietly falling back to the classifier.
+        ok, message = jev.check_key(key)
+        if not ok:
+            return jsonify({'error': message}), 400
+    try:
+        _write_env({jev.ENV_KEY: key})
+    except Exception as e:
+        return _log_and_error(e, message=str(e))
+    return jsonify({'ok': True, 'has_key': bool(key)})
 
 
 # ── SERVER RESTART ───────────────────────────────────────────

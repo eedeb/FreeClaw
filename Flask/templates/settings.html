@@ -217,7 +217,7 @@
     <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
     <div>
       <h1>Settings</h1>
-      <div class="sub">providers · vision · mcp · approvals · environment</div>
+      <div class="sub">providers · vision · jev · mcp · approvals · environment</div>
     </div>
     <div class="spacer"></div>
     <a class="nav-btn" href="/">⌂ home</a>
@@ -273,6 +273,19 @@
       <select id="vision-select"></select>
       <button id="vision-save" class="primary">Save vision model</button>
       <div id="vision-msg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- ── JEV ── -->
+  <section>
+    <div class="sec-head"><h2>Jev</h2></div>
+    <div class="sec-desc">Optional. With a key from <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener">console.typesafe.ai</a>, Jev reads each message first and sends the model only the tools, earlier messages and memory it needs — fewer tokens per turn. Leave it blank and FreeClaw routes messages with its built-in classifier.</div>
+    <div class="form">
+      <input id="jev-key" type="password" placeholder="Jev API key" autocomplete="new-password" spellcheck="false"/>
+      <button id="jev-save" class="primary">Save key</button>
+      <button id="jev-clear">Remove key</button>
+      <div id="jev-status" class="sec-desc" style="margin-top:8px"></div>
+      <div id="jev-msg" class="msg"></div>
     </div>
   </section>
 
@@ -964,6 +977,39 @@
   $('mcp-token').addEventListener('keydown', e => { if (e.key === 'Enter') addMcp(); });
   $('mcp-command').addEventListener('keydown', e => { if (e.key === 'Enter') addMcp(); });
   syncMcpTransport();
+
+  // ── Jev ──
+  // Write-only key (JEV_API_KEY in .env). The server tries it before saving.
+  const jevKey = $('jev-key'), jevMsg = $('jev-msg'), jevStatus = $('jev-status');
+  function renderJev(hasKey) {
+    jevStatus.textContent = hasKey ? 'Key set — Jev routes each message.'
+                                   : 'No key — messages are routed by the built-in classifier.';
+    $('jev-clear').style.display = hasKey ? '' : 'none';
+  }
+  async function loadJev() {
+    try {
+      const res = await fetch('/api/jev');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      renderJev(data.has_key);
+    } catch (e) { showMsg(jevMsg, e.message, false); }
+  }
+  async function saveJev(key) {
+    jevMsg.style.display = 'none';
+    const btn = key ? $('jev-save') : $('jev-clear'); btn.disabled = true;
+    try {
+      const res = await fetch('/api/jev', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      jevKey.value = '';
+      renderJev(data.has_key);
+      showMsg(jevMsg, data.has_key ? 'Key saved and working.' : 'Key removed.', true);
+    } catch (e) { showMsg(jevMsg, e.message, false); }
+    finally { btn.disabled = false; }
+  }
+  $('jev-save').addEventListener('click', () => { if (jevKey.value.trim()) saveJev(jevKey.value.trim()); });
+  $('jev-clear').addEventListener('click', () => saveJev(''));
+  loadJev();
 
   // ── Environment (.env keys) ──
   const envFields = $('env-fields'), envMsg = $('env-msg');

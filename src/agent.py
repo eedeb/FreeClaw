@@ -20,6 +20,7 @@ import src.approvals as approvals
 import src.browser_handoff as browser_handoff
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
+import src.jev as jev
 import src.mcp_client as mcp_client
 import src.responses_api as responses_api
 import src.scraper as scraper
@@ -740,10 +741,10 @@ def _reset_turn_usage():
 # no originating turn is told to fall back to working the window out for itself.
 
 
-def _pin_turn_prefix(start, turn_tools, lean_start=None):
+def _pin_turn_prefix(start, turn_tools, lean_start=None, picked=None):
     """Record the prefix this turn's first request used."""
     _sess().pin_turn_prefix(start, turn_tools,
-                            start if lean_start is None else lean_start)
+                            start if lean_start is None else lean_start, picked)
 
 
 def _clear_turn_prefix():
@@ -1305,6 +1306,10 @@ def _now_line():
 
 # Marks where the injected context.md copy starts.
 _CTX_HEADER = "\ncontext.md:\n"
+# Heads the section list when Jev picks which sections each turn sees. Also how
+# _stable_prefix tells a snapshot taken with routing on from one taken without.
+_CTX_ROUTED = ("Other sections — the ones this message needs are opened in the live context "
+               "below; search_context opens any other: ")
 
 # What a brand-new context.md is seeded with. Headings only: they give the
 # model somewhere obvious to file a new fact, which keeps memory grouped
@@ -1539,7 +1544,11 @@ def _context_block():
         name, body = sections[idx]
         parts.append(f"## {name}\n{_section_text(body) or '(empty)'}")
 
-    budget = CONTEXT_INLINE_BUDGET
+    # With Jev routing a turn, nothing past the always-sent sections is
+    # inlined here: Jev opens the sections each message needs in the live
+    # context instead (_jev_sections_block), and the rest stay named.
+    routed = jev.enabled()
+    budget = 0 if routed else CONTEXT_INLINE_BUDGET
     listed, empty = [], []
     for i, (name, body) in enumerate(sections):
         if i in always:
@@ -1552,7 +1561,11 @@ def _context_block():
             budget -= len(text)
         else:
             listed.append(f"{name} ({_entry_count(body)} entries)")
-    if listed:
+    if routed:
+        # Written even when there's nothing to list: it doubles as the marker
+        # _stable_prefix checks.
+        parts.append(_CTX_ROUTED + (", ".join(listed) or "(none yet)"))
+    elif listed:
         parts.append("Not shown — open with search_context: " + ", ".join(listed))
     if empty:
         parts.append("Empty sections: " + ", ".join(empty))
@@ -1610,9 +1623,9 @@ What you can see, and how to get the rest:
 - Memory is context.md, filed under headers. Below is as much of it as fits; any section not shown
   is named, and search_context opens it — or finds a fact by keywords when you don't know where it
   was filed.
-- This conversation: the latest messages in full; before those, what was said without the tool
-  details; before that, a digest of older requests in the live context. search_history finds the
-  exact wording of anything older, including conversations from before the last reset.
+- This conversation: the messages this request needs — recent work in full, older exchanges
+  without the tool details — and a digest of other requests in the live context. search_history
+  finds the exact wording of anything else, including conversations from before the last reset.
 Before you say you don't know or don't remember something about them, or ask them something they
 may already have told you, check memory and then search_history. Never pretend to remember what you
 can't see, and never invent what was said before — if you checked and it isn't there, say so.
@@ -1724,7 +1737,10 @@ def _stable_prefix(content):
     sess = _sess()
     instructions, snapshot = _split_system(content)
     current = _session_instructions(sess)
-    if snapshot is None or instructions != current:
+    # Routing switched on or off since the snapshot was taken: the two lay
+    # memory out differently (see _context_block), so it's re-read too.
+    if (snapshot is None or instructions != current
+            or (_CTX_ROUTED in snapshot) != jev.enabled()):
         snapshot = _context_block()
         # The fresh snapshot names every section, so the running tally of
         # ones created mid-conversation starts over with it — same as reset().
@@ -3217,6 +3233,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             return f"Image description failed — vision provider '{vision_provider_name}' returned an error: {e}"
         return completion.choices[0].message.content or "No description returned."
 
+    if command_name == LOAD_TOOLS_NAME:
+        return _load_tools(args_dict)
+
     if command_name == 'get_time':
         # Deliberately exactly PING_TIME_FORMAT, with no weekday appended: the
         # model's whole reason for calling this is usually to hand the result
@@ -3654,10 +3673,12 @@ _LEAN_CLIP_NOTE = " … [trimmed — search_history has the full text]"
 LEAN_CHAR_BUDGET = 8000
 
 
-def _lean_message(m):
+def _lean_message(m, clip=True):
     """One history message as it goes into the lean half of the window, or None
     if nothing of it survives — a tool result, or an assistant message that was
-    a tool call and no text. Long text is clipped (LEAN_MESSAGE_CHAR_LIMIT)."""
+    a tool call and no text. Long text is clipped (LEAN_MESSAGE_CHAR_LIMIT)
+    unless `clip` is off — for a message Jev picked as needed, where the whole
+    of it is the point."""
     role = m.get("role")
     if role == "tool":
         return None
@@ -3670,7 +3691,7 @@ def _lean_message(m):
         if any(m.get(k) for k in _LEAN_STRIPPED_KEYS):
             m = {k: v for k, v in m.items() if k not in _LEAN_STRIPPED_KEYS}
     content = m.get("content")
-    if isinstance(content, str) and len(content) > LEAN_MESSAGE_CHAR_LIMIT:
+    if clip and isinstance(content, str) and len(content) > LEAN_MESSAGE_CHAR_LIMIT:
         m = {**m, "content": content[:LEAN_MESSAGE_CHAR_LIMIT].rstrip() + _LEAN_CLIP_NOTE}
     return m
 
@@ -3718,8 +3739,13 @@ DIGEST_ITEM_CHARS = 140
 def _older_digest(messages, lean_start):
     """The live-tail line listing the user's messages from before `lean_start`,
     or "" when the window already reaches back to the start."""
+    return _digest(messages[1:lean_start])
+
+
+def _digest(older):
+    """The digest line for the user messages among `older` (oldest first)."""
     items = []
-    for m in reversed(messages[1:lean_start]):
+    for m in reversed(older):
         if m.get("role") != "user" or not isinstance(m.get("content"), str):
             continue
         text = " ".join(m["content"].split())
@@ -3736,13 +3762,24 @@ def _older_digest(messages, lean_start):
             "(search_history for detail):" + "".join(reversed(items)))
 
 
-def _history_for_request(messages, full_start, lean_start):
+def _history_for_request(messages, full_start, lean_start, picked=None):
     """The slice a request actually sends: the system message, then the lean
     half, then everything from `full_start` verbatim.
 
-    Both indices are pinned for the turn (see _pin_turn_prefix) rather than
+    With `picked` (a Jev-routed turn — see _jev_picked) the lean half is
+    replaced by exactly the earlier messages Jev chose, in order: "full" ones
+    verbatim, "text" ones without their tool details.
+
+    All of it is pinned for the turn (see _pin_turn_prefix) rather than
     recomputed per request, so every tool continuation rebuilds the identical
     prefix and the provider's cache still matches."""
+    if picked is not None:
+        chosen = []
+        for i, kind in picked:
+            m = messages[i] if kind == "full" else _lean_message(messages[i], clip=False)
+            if m is not None:
+                chosen.append(m)
+        return [messages[0], *chosen, *messages[full_start:]]
     lean = [] if lean_start >= full_start else [
         lm for lm in (_lean_message(m) for m in messages[lean_start:full_start])
         if lm is not None
@@ -3795,6 +3832,213 @@ def _append_tool_response(call_id, name, content):
         _prune_history_images(messages)
 
 
+# ── Jev routing ──────────────────────────────────────────────
+#
+# With a Jev key set (Settings → Jev, src/jev.py), a typed message is routed by
+# Jev instead of the Classy tag table above: it picks the tool groups, the
+# earlier messages and the memory sections this one turn is sent. Everything
+# here builds what Jev is shown and applies what it answers; when it doesn't
+# answer, agent_stream routes the old way and none of this runs.
+
+# The built-in tool groups Jev chooses between, beside one group per MCP
+# server. Memory and the clock aren't offered: every turn keeps them, for the
+# reasons build_time_tools() and the 'file' mode above give.
+_JEV_BUILTIN_GROUPS = (
+    ("files", "The user's files, notes and pages: read, write, edit, delete; add or cancel "
+              "scheduled reminders (pings); describe an image.", "build_file_tools",
+     "your files and reminders"),
+    ("search", "Web search, for anything current or not already in the conversation.",
+     "build_search_tools", "web search"),
+    ("device", "Open a link or app on the user's device, run a shell command, or hand a task "
+               "to a sub-agent.", "build_utility_tools", "opening links, the shell and sub-agents"),
+)
+
+# Most of a group's tools Jev is told the names of.
+_JEV_TOOL_NAMES_SHOWN = 12
+
+
+def _jev_tool_groups(user):
+    """[(group_id, description for Jev, short name for the model, tools)] for
+    `user`: the built-in groups, then one per MCP server they have on."""
+    groups = [(gid, desc, short, globals()[builder]())
+              for gid, desc, builder, short in _JEV_BUILTIN_GROUPS]
+    registry = registry_for(user)
+    browser = next((e["server"] for e in registry.values()
+                    if e["server"].get("needs_browser")), None)
+    by_server = {}
+    for t in mcp_tools_for(user):
+        entry = registry.get(t["function"]["name"])
+        # request_sign_in isn't an MCP tool, but it only means anything next
+        # to the browser (see _build_catalogue), so it travels with it.
+        server = entry["server"] if entry else browser
+        if server is None:
+            continue
+        name = server.get("name") or "mcp"
+        if name not in by_server:
+            tool_names = sorted({e["tool"] for e in registry.values()
+                                 if e["server"].get("name") == name})
+            about = " ".join(str(server.get("description") or "").split())[:200]
+            by_server[name] = [
+                f"The '{name}' MCP server. {about} Tools: "
+                + ", ".join(tool_names[:_JEV_TOOL_NAMES_SHOWN])
+                + (" …" if len(tool_names) > _JEV_TOOL_NAMES_SHOWN else ""),
+                []]
+        by_server[name][1].append(t)
+    groups += [(f"mcp:{name}", desc, f"the {name} MCP server", ts)
+               for name, (desc, ts) in by_server.items()]
+    return groups
+
+
+def _jev_sections():
+    """[(name, body)] of the memory sections Jev may open for a turn — every
+    non-empty one but those always sent."""
+    _preamble, sections = _split_context(_read_context())
+    always = {_norm_header(h) for h in _CTX_ALWAYS}
+    return [(name, _section_text(body)) for name, body in sections
+            if _norm_header(name) not in always and _section_text(body)]
+
+
+def _jev_picked(messages, end, route):
+    """The earlier messages a routed turn is sent, as [(index, "full"|"text")]
+    oldest first — pinned for the turn and read by _history_for_request.
+
+    A "raw" pick is the reply plus the tool calls and results that led to it,
+    sent verbatim from just after the user message that asked — which comes
+    along as text, since tool output with no question in front of it reads as
+    an answer to nothing. The last exchange always comes, as text at least: a
+    follow-up is about it far more often than not, and it is cheap."""
+    full, text = set(), set()
+    for i, kind in route.messages:
+        if i >= end:
+            continue
+        if kind == "raw":
+            j = i
+            while j > 1 and messages[j - 1].get("role") != "user":
+                j -= 1
+            full.update(range(j, i + 1))
+            if j > 1:
+                text.add(j - 1)
+        else:
+            text.add(i)
+    last_user = next((i for i in range(end - 1, 0, -1)
+                      if messages[i].get("role") == "user"), None)
+    if last_user is not None:
+        text.add(last_user)
+        text.update(i for i in range(last_user + 1, end)
+                    if messages[i].get("role") == "assistant"
+                    and isinstance(messages[i].get("content"), str)
+                    and messages[i]["content"].strip())
+    return [(i, "full" if i in full else "text") for i in sorted(full | text)]
+
+
+def _jev_sections_block(names, sections):
+    """The memory sections Jev opened for this turn, for the live tail, within
+    CONTEXT_INLINE_BUDGET."""
+    bodies = dict(sections)
+    parts, budget = [], CONTEXT_INLINE_BUDGET
+    for name in names:
+        body = bodies.get(name, "")
+        if not body or len(body) > budget:
+            continue
+        parts.append(f"## {name}\n{body}")
+        budget -= len(body)
+    if not parts:
+        return ""
+    return "\nMemory sections for this message:\n" + "\n".join(parts)
+
+
+LOAD_TOOLS_NAME = "load_tools"
+
+
+def _load_tools_tool(withheld):
+    """The tool a routed turn asks for a withheld group with — offered only
+    while something is withheld."""
+    return {
+        "type": "function",
+        "function": {
+            "name": LOAD_TOOLS_NAME,
+            "description": "Loads tool groups that weren't loaded for this message. Call it "
+                           "instead of saying you can't do something, or answering without a tool you need.",
+            "parameters": {
+                "type": "object",
+                "properties": {"groups": {"type": "array",
+                                          "items": {"type": "string", "enum": list(withheld)}}},
+                "required": ["groups"],
+            },
+        },
+    }
+
+
+def _jev_notes(sess):
+    """The routed turn's live-tail lines: what's withheld and how to get it,
+    the user's skipped requests, and the opened memory sections."""
+    withheld = sess.turn_withheld
+    note = ""
+    if withheld:
+        note = ("\nNot loaded for this message: "
+                + "; ".join(f"{short} ({gid})" for gid, (short, _t) in withheld.items())
+                + ". If you need one, call load_tools — don't answer from stale weights.")
+    return note + sess.turn_route_notes
+
+
+def _jev_turn_tools(groups, picked_ids, sess):
+    """The routed turn's tool list, recording the withheld groups on the
+    Session for load_tools."""
+    turn_tools = build_context_tools() + build_time_tools()
+    sess.turn_withheld = {}
+    for gid, _desc, short, ts in groups:
+        if gid in picked_ids:
+            turn_tools += ts
+        elif ts:
+            sess.turn_withheld[gid] = (short, ts)
+    if sess.turn_withheld:
+        turn_tools.append(_load_tools_tool(sess.turn_withheld))
+    return turn_tools
+
+
+def _load_tools(args_dict):
+    """load_tools: add withheld groups to the pinned tool list, so the next
+    request of this turn — and every one after — carries them. Costs the
+    provider's cached prefix once; a turn that lacked a tool costs more."""
+    sess = _sess()
+    asked = args_dict.get("groups") or []
+    if isinstance(asked, str):
+        asked = [asked]
+    got = [g for g in asked if g in sess.turn_withheld]
+    if not got:
+        available = ", ".join(sess.turn_withheld) or "none — everything is already loaded"
+        return f"Nothing loaded. Groups you can load: {available}."
+    tools_now = [t for t in (sess.turn_prefix.get("tools") or [])
+                 if (t.get("function") or {}).get("name") != LOAD_TOOLS_NAME]
+    for g in got:
+        tools_now += sess.turn_withheld.pop(g)[1]
+    if sess.turn_withheld:
+        tools_now.append(_load_tools_tool(sess.turn_withheld))
+    if sess.turn_prefix:
+        sess.turn_prefix["tools"] = _apply_depth_limit(tools_now, sess)
+    sess.turn_notes = _jev_notes(sess)
+    return "Loaded: " + ", ".join(got) + ". Their tools are available from your next step."
+
+
+def _jev_route(user_input, sess):
+    """Route a typed message with Jev: (route, groups, sections), or None to
+    route it the old way."""
+    if not jev.enabled():
+        return None
+    try:
+        groups = _jev_tool_groups(_tools_user())
+        routed_memory = _CTX_ROUTED in (sess.messages[0].get("content") or "")
+        sections = _jev_sections() if routed_memory else []
+        route = jev.route(user_input, sess.messages, len(sess.messages),
+                          [(gid, desc) for gid, desc, _s, _t in groups], sections)
+    except Exception:
+        logger.exception("Jev routing failed; falling back to the classifier")
+        return None
+    if route is None:
+        return None
+    return route, groups, sections
+
+
 def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None,
                  ping=False):
     """Generator version of the agent loop. Yields small dict events as the
@@ -3842,10 +4086,21 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # last one ended.
         _reset_tool_run()
 
+        routed = None
         if ping:
             tag = PING_TAG
             recent, lean, temp, tool_mode, _ = _PING_SETTINGS
         else:
+            # Jev first, when there's a key: it decides the tools, history and
+            # memory below. None — no key, or no answer in time — means the
+            # Classy tag table routes the turn exactly as it did before.
+            routed = _jev_route(user_input, sess)
+        if routed:
+            tag = routed[0].tag
+            # The tag only sets the temperature now; Jev picked the rest.
+            temp = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)[2]
+            print('Jev route: ' + routed[0].summary())
+        elif not ping:
             intent, certainty = Classy.classify(user_input, CLASSIFIER_PATH)
             tag = intent[0]
             recent, lean, temp, tool_mode, min_certainty = _TAG_SETTINGS.get(
@@ -3870,71 +4125,90 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         agent_messages.append({"role": "user", "content": user_input,
                                "ts": datetime.now().strftime(PING_TIME_FORMAT)})
         agent_input = user_input
-        # Normalised to an index either way (1 is "everything after the system
-        # message"), so there's a single number to pin for the continuations.
-        if len(agent_messages) > recent + 2:
-            window_start = _window_start(agent_messages, recent)
+        if routed:
+            route, groups, sections = routed
+            # Everything from the message just appended is this turn's own and
+            # goes verbatim; before it, exactly what Jev picked.
+            full_start = len(agent_messages) - 1
+            picked = _jev_picked(agent_messages, full_start, route)
+            included = {i for i, _kind in picked}
+            sess.turn_route_notes = (
+                _digest([m for n, m in enumerate(agent_messages[:full_start])
+                         if n and n not in included])
+                + _jev_sections_block(route.sections, sections))
+            check_tools = _jev_turn_tools(groups, route.tools, sess)
+            sess.turn_notes = _jev_notes(sess)
+            _refresh_volatile()
+            eco_messages = _history_for_request(agent_messages, full_start,
+                                                full_start, picked)
+            check_tools = _apply_depth_limit(check_tools, sess)
+            _pin_turn_prefix(full_start, check_tools, full_start, picked=picked)
         else:
-            window_start = 1
-        # Behind the verbatim window, the same conversation reaches `lean`
-        # messages further back with the tool traffic stripped out. lean == 0
-        # would mean no cheap half: the slice ends where the full one does.
-        lean_start = _lean_window_start(agent_messages, window_start, lean)
-        # What this turn adds to the live tail: which tools it lacks (tool_mode
-        # is final by now — the fallback above may have widened it back to
-        # 'all', which writes no line) and a digest of what the user said
-        # before the lean half begins. Held on the Session so every tool
-        # continuation's rebuild of the tail keeps them; rendered in now.
-        sess.turn_notes = (_withheld_tools_note(tool_mode)
-                           + _older_digest(agent_messages, lean_start))
-        _refresh_volatile()
-        eco_messages = _history_for_request(agent_messages, window_start,
-                                            lean_start)
-        # The '+mcp' modes keep the user's MCP servers on top of the trimmed
-        # built-in set. Without them a restricted turn drops every MCP tool,
-        # because these lists are rebuilt from the build_*() helpers and those
-        # only know about the built-ins — so a user whose browser lives behind
-        # an MCP server would lose it the moment a turn got trimmed, and the
-        # model would (correctly but uselessly) report that it can't browse.
-        # 'file' stays MCP-free for Smalltalk: greetings and jokes need nothing,
-        # and MCP tool definitions are the most expensive part of the payload.
-        if tool_mode == 'none':
-            check_tools = None
-        elif tool_mode in ('search', 'search+mcp'):
-            # Memory tools are here as well as in 'file' mode: a search turn
-            # both needs to read memory (looking something up "near home" or
-            # "for my sister" depends on a section the prompt only names) and
-            # to write it, since the system prompt tells the model to save what
-            # it learns on every turn and this was the one mode with no tool to
-            # do it with. get_time rides along with every restricted set — see
-            # build_time_tools() for why it can't be left out of one.
-            check_tools = (build_search_tools() + build_context_tools()
-                           + build_time_tools())
-            if tool_mode == 'search+mcp':
-                check_tools += mcp_tools_for(_tools_user())
-        elif tool_mode in ('file', 'file+mcp'):
-            # Memory tools ride along here too: these are the tags (Memory,
-            # Smalltalk) most likely to turn up something worth remembering,
-            # and the system prompt tells the model to save it.
-            #
-            check_tools = (build_file_tools() + build_context_tools()
-                           + build_time_tools())
-            if tool_mode == 'file+mcp':
-                # Search rides along in '+mcp' only — i.e. for Memory and
-                # Files, not Smalltalk and Control. Those two are the tags
-                # that carry real subject matter, and a Memory-tagged message
-                # is very often a statement of fact wrapped around a question
-                # about it ("I've switched to the Tuesday class, is that one
-                # still full?"): the classifier reads the statement, which is
-                # the half that doesn't need a source. Withholding search there
-                # doesn't make the model decline — it makes it answer from
-                # stale weights in the confident register a search would have
-                # earned. Smalltalk and Control genuinely need nothing, and
-                # stay as cheap as they were.
-                check_tools += build_search_tools()
-                check_tools += mcp_tools_for(_tools_user())
-        check_tools = _apply_depth_limit(check_tools, sess)
-        _pin_turn_prefix(window_start, check_tools, lean_start)
+            # Normalised to an index either way (1 is "everything after the system
+            # message"), so there's a single number to pin for the continuations.
+            if len(agent_messages) > recent + 2:
+                window_start = _window_start(agent_messages, recent)
+            else:
+                window_start = 1
+            # Behind the verbatim window, the same conversation reaches `lean`
+            # messages further back with the tool traffic stripped out. lean == 0
+            # would mean no cheap half: the slice ends where the full one does.
+            lean_start = _lean_window_start(agent_messages, window_start, lean)
+            # What this turn adds to the live tail: which tools it lacks (tool_mode
+            # is final by now — the fallback above may have widened it back to
+            # 'all', which writes no line) and a digest of what the user said
+            # before the lean half begins. Held on the Session so every tool
+            # continuation's rebuild of the tail keeps them; rendered in now.
+            sess.turn_notes = (_withheld_tools_note(tool_mode)
+                               + _older_digest(agent_messages, lean_start))
+            _refresh_volatile()
+            eco_messages = _history_for_request(agent_messages, window_start,
+                                                lean_start)
+            # The '+mcp' modes keep the user's MCP servers on top of the trimmed
+            # built-in set. Without them a restricted turn drops every MCP tool,
+            # because these lists are rebuilt from the build_*() helpers and those
+            # only know about the built-ins — so a user whose browser lives behind
+            # an MCP server would lose it the moment a turn got trimmed, and the
+            # model would (correctly but uselessly) report that it can't browse.
+            # 'file' stays MCP-free for Smalltalk: greetings and jokes need nothing,
+            # and MCP tool definitions are the most expensive part of the payload.
+            if tool_mode == 'none':
+                check_tools = None
+            elif tool_mode in ('search', 'search+mcp'):
+                # Memory tools are here as well as in 'file' mode: a search turn
+                # both needs to read memory (looking something up "near home" or
+                # "for my sister" depends on a section the prompt only names) and
+                # to write it, since the system prompt tells the model to save what
+                # it learns on every turn and this was the one mode with no tool to
+                # do it with. get_time rides along with every restricted set — see
+                # build_time_tools() for why it can't be left out of one.
+                check_tools = (build_search_tools() + build_context_tools()
+                               + build_time_tools())
+                if tool_mode == 'search+mcp':
+                    check_tools += mcp_tools_for(_tools_user())
+            elif tool_mode in ('file', 'file+mcp'):
+                # Memory tools ride along here too: these are the tags (Memory,
+                # Smalltalk) most likely to turn up something worth remembering,
+                # and the system prompt tells the model to save it.
+                #
+                check_tools = (build_file_tools() + build_context_tools()
+                               + build_time_tools())
+                if tool_mode == 'file+mcp':
+                    # Search rides along in '+mcp' only — i.e. for Memory and
+                    # Files, not Smalltalk and Control. Those two are the tags
+                    # that carry real subject matter, and a Memory-tagged message
+                    # is very often a statement of fact wrapped around a question
+                    # about it ("I've switched to the Tuesday class, is that one
+                    # still full?"): the classifier reads the statement, which is
+                    # the half that doesn't need a source. Withholding search there
+                    # doesn't make the model decline — it makes it answer from
+                    # stale weights in the confident register a search would have
+                    # earned. Smalltalk and Control genuinely need nothing, and
+                    # stay as cheap as they were.
+                    check_tools += build_search_tools()
+                    check_tools += mcp_tools_for(_tools_user())
+            check_tools = _apply_depth_limit(check_tools, sess)
+            _pin_turn_prefix(window_start, check_tools, lean_start)
     elif system_input:
         # Kept for direct/external callers only — note that appending a
         # second system-role message breaks the single-leading-system-message
@@ -3964,6 +4238,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             start_index = sess.turn_prefix["start"]
             check_tools = sess.turn_prefix["tools"]
             lean_index = sess.turn_prefix.get("lean_start", start_index)
+            picked = sess.turn_prefix.get("picked")
         else:
             # No turn in flight: a direct tool_input caller. Resume from 2 user
             # messages ago, or the first user message if there aren't 2. A
@@ -3978,8 +4253,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 start_index = 1
             # No turn to inherit a lean half from: send this slice verbatim.
             lean_index = start_index
+            picked = None
         eco_messages = _history_for_request(agent_messages, start_index,
-                                            lean_index)
+                                            lean_index, picked)
     else:
         raise Exception("You must have either user input or system input.")
     print('Received: ' + agent_input)

@@ -161,6 +161,7 @@ You can type these directly into the chat box:
 
 - **Smart intent classification** — a local `Classy` classifier reads your message and tags its intent (greeting, search, coding, logic, banter, etc.) before any API call is made
 - **Adaptive turns** — the intent tag decides how much chat history is sent, the sampling temperature, and which tools are offered: small talk gets a short verbatim window and only memory and file tools, precision work runs colder with the full toolset. Scheduled pings skip the classifier and always get every tool
+- **Precise routing with Jev (optional)** — add a [Jev](https://console.typesafe.ai/keys) key in **Settings → Jev** and each message is read by TypeSafe's decision model first (~0.2s). It picks which tool groups and MCP servers the turn gets, exactly which earlier messages it sees (any of them, not just the last few — with the tool results behind a reply only when they're needed), and which memory sections are opened. The model can still load a withheld tool group mid-turn. Leave it blank and the local classifier routes as before
 - **Two-tier context windowing** — the last few messages go in full, tool calls and results included; behind them, roughly the last ten exchanges go in as plain text with the tool traffic stripped (and long messages clipped), which is cheap. Anything older is summarised as a one-line-per-message digest, and `search_history` brings back exact wording from anywhere in the conversation — or from past conversations, which are archived on reset instead of deleted
 - **Multi-provider fallback** — add any OpenAI-compatible endpoint from Settings → Providers (URL, API key, model); the agent tries them in the order you list them, falling through to the next if one fails or is rate-limited — including when a provider accepts the request and then drops the response stream before a single token arrives
 - **Persistent memory, paged in when it outgrows the prompt** — the agent keeps durable facts about you in `context.md`, filed under `##` headers alongside your other files. The **About** and **Preferences** sections always go in full, and every other section is inlined too while it fits a ~6k-character budget; beyond that, sections are listed by name and entry count. `search_context` opens a section by name or finds entries by keyword, and `add_context` saves. A correction made with `edit_file` reaches the prompt on the very next turn
@@ -184,8 +185,11 @@ Browser (chat UI, behind /login)
 Flask server (Flask/main.py, port 6767)
     │
     ▼
-Classy.classify()       ← local intent classifier using models/data.pth
-    │                      picks temperature, tools + how much history to send
+Jev (optional) or Classy.classify()
+    │   with a Jev key: Jev picks the exact tool groups, earlier messages and
+    │   memory sections this message needs (src/jev.py)
+    │   without one: the local classifier (models/data.pth) picks temperature,
+    │   tools + how much history to send
     ▼
 Configured provider API call ← trimmed message history + tools
     │  (falls back to the next provider in Settings → Providers on failure)
@@ -415,6 +419,7 @@ Settings live in a `.env` file in the project root, created for you during insta
 | `FC_PASSWORD` | Yes | Password for the web UI login screen |
 | `SECRET_KEY` | Yes | Flask session secret (auto-generated at install time) |
 | `PROVIDER_NAMES` / `PROVIDER_URLS` / `PROVIDER_KEYS` / `PROVIDER_MODELS` / `PROVIDER_ENABLED` | Yes | Your LLM provider(s) — managed entirely from **Settings → Providers**; the agent has nothing to call until at least one exists here |
+| `JEV_API_KEY` | No | Turns on Jev routing — set it in **Settings → Jev**. Blank means the local classifier routes every message |
 | `VISION_PROVIDER` | No | Name of the configured provider (from **Settings → Providers**) used to describe uploaded images — pick it in **Settings → Vision Model** |
 | `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` / `MCP_TRANSPORTS` / `MCP_COMMANDS` | No | Connected MCP servers — managed from **Settings → MCP Servers**. `MCP_TRANSPORTS` is `http` or `stdio` per entry (missing = `http`); `MCP_COMMANDS` holds the command line for stdio ones. `MCP_ENABLED` is the default a user inherits until they switch a server on or off for themselves |
 | `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns. Set it from **Settings → Custom Domain** if you reach FreeClaw through a name rather than an address |
