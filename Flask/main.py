@@ -2319,8 +2319,10 @@ def api_set_vision_model():
 def api_get_jev():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
-    # Write-only, like provider keys: say whether one is set, never echo it.
-    return jsonify({'has_key': jev.enabled()})
+    # Write-only, like provider keys: say whether one is set and how it ends —
+    # enough to tell which key it is, never enough to use it.
+    key = jev.api_key()
+    return jsonify({'has_key': bool(key), 'hint': key[-4:] if len(key) >= 12 else ''})
 
 
 @app.route('/api/jev', methods=['POST'])
@@ -2344,7 +2346,8 @@ def api_set_jev():
     # The fast browser (browser_do) is offered only with a key: rebuild the
     # tool lists so it appears or goes on the next message.
     agent.invalidate_tools()
-    return jsonify({'ok': True, 'has_key': bool(key)})
+    return jsonify({'ok': True, 'has_key': bool(key),
+                    'hint': key[-4:] if len(key) >= 12 else ''})
 
 
 # ── SERVER RESTART ───────────────────────────────────────────

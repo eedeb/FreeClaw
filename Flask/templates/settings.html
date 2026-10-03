@@ -279,11 +279,11 @@
   <!-- ── JEV ── -->
   <section>
     <div class="sec-head"><h2>Jev</h2></div>
-    <div class="sec-desc">Optional. With a key from <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener">console.typesafe.ai</a>, Jev reads each message first and sends the model only the tools, earlier messages and memory it needs — fewer tokens per turn. Leave it blank and FreeClaw routes messages with its built-in classifier.</div>
+    <div class="sec-desc">Optional. With a key from <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener" style="color:var(--accent-dim)">console.typesafe.ai</a>, Jev reads each message first and sends the model only the tools, earlier messages and memory it needs — fewer tokens per turn. Leave it blank and FreeClaw routes messages with its built-in classifier.</div>
     <div class="form">
       <input id="jev-key" type="password" placeholder="Jev API key" autocomplete="new-password" spellcheck="false"/>
       <button id="jev-save" class="primary">Save key</button>
-      <button id="jev-clear">Remove key</button>
+      <button id="jev-clear" class="ghost">Remove key</button>
       <div id="jev-status" class="sec-desc" style="margin-top:8px"></div>
       <div id="jev-msg" class="msg"></div>
     </div>
@@ -415,7 +415,14 @@
   const $ = id => document.getElementById(id);
   function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
-  function showMsg(el, text, ok) { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err'); }
+  // Every save handler hides its message first with an inline display:none;
+  // the class alone can't undo that (inline wins), so without clearing it here
+  // no Settings section ever showed its "saved" or its error.
+  function showMsg(el, text, ok) {
+    el.textContent = text;
+    el.className = 'msg ' + (ok ? 'ok' : 'err');
+    el.style.display = '';
+  }
 
   // Delete button needs a confirm tap before firing (shared by both lists).
   function wireDelete(btn, onConfirm) {
@@ -981,9 +988,10 @@
   // ── Jev ──
   // Write-only key (JEV_API_KEY in .env). The server tries it before saving.
   const jevKey = $('jev-key'), jevMsg = $('jev-msg'), jevStatus = $('jev-status');
-  function renderJev(hasKey) {
-    jevStatus.textContent = hasKey ? 'Key set — Jev routes each message.'
-                                   : 'No key — messages are routed by the built-in classifier.';
+  function renderJev(hasKey, hint) {
+    jevStatus.textContent = hasKey
+      ? `Key saved${hint ? ` (ends in …${hint})` : ''} — Jev routes each message.`
+      : 'No key — messages are routed by the built-in classifier.';
     $('jev-clear').style.display = hasKey ? '' : 'none';
   }
   async function loadJev() {
@@ -991,7 +999,7 @@
       const res = await fetch('/api/jev');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-      renderJev(data.has_key);
+      renderJev(data.has_key, data.hint);
     } catch (e) { showMsg(jevMsg, e.message, false); }
   }
   async function saveJev(key) {
@@ -1002,7 +1010,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       jevKey.value = '';
-      renderJev(data.has_key);
+      renderJev(data.has_key, data.hint);
       showMsg(jevMsg, data.has_key ? 'Key saved and working.' : 'Key removed.', true);
     } catch (e) { showMsg(jevMsg, e.message, false); }
     finally { btn.disabled = false; }
