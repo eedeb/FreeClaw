@@ -1766,6 +1766,11 @@
     panel.setAttribute('role', 'tooltip');
     panel.appendChild(rpEl('div', 'rp-head',
       `Routed by Jev · ${route.ms}ms · ${route.questions} questions · ${route.style}, temp ${route.temperature}`));
+    const servers = Object.entries(route.servers || {});
+    if (servers.length) {
+      panel.appendChild(rpEl('div', 'rp-none', 'Way chosen: ' + servers
+        .map(([g, share]) => rpGroup(g) + (share != null ? ` ${Math.round(share * 100)}%` : '')).join(' · ')));
+    }
     const section = title => {
       const s = rpEl('div');
       s.appendChild(rpEl('div', 'rp-title', title));
@@ -1784,6 +1789,10 @@
     if ((route.withheld || []).length) {
       const w = section('Not sent — loadable mid-turn');
       route.withheld.forEach(g => row(w, rpGroup(g.group), g.names.join(', ')));
+    }
+    if ((route.trimmed || []).length) {
+      const tr = section('Trimmed from groups that were sent');
+      route.trimmed.forEach(g => row(tr, rpGroup(g.group), g.names.join(', ')));
     }
     if ((route.loaded || []).length) {
       row(section('Loaded mid-turn'), 'groups', route.loaded.map(rpGroup).join(', '));

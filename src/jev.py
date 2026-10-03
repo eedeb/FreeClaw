@@ -7,6 +7,8 @@ that one turn is sent:
   * which tools — each one on its own, built-in and MCP alike, so a turn that
     only needs to read a file gets read_file and not the other eight file
     tools, and a browser turn gets navigate and click but not drag;
+  * which MCP server is the way to do it, as one choice between them — see
+    PATH_SHARE;
   * which earlier messages, picked individually — message 2 and message 4 and
     nothing in between is a valid answer — and for each picked reply, whether
     the tool results behind it come too;
@@ -74,10 +76,21 @@ MAX_TOOLS_PER_SERVER = 30
 
 # Probability at or above which something is included. Low on purpose — see
 # the module docstring.
-TOOL_THRESHOLD = 0.25
+TOOL_THRESHOLD = 0.3
 MESSAGE_THRESHOLD = 0.3
 RAW_THRESHOLD = 0.5
 SECTION_THRESHOLD = 0.3
+
+# Which MCP server the request goes through is asked once, as a choice between
+# them, not server by server. Asked one at a time, "could the browser do it?"
+# and "could Composio do it?" are both fair yeses for "what are my recent
+# emails" — Gmail is a website too — so both went out, and they are the two
+# most expensive tool sets there are. A choice has to put its weight
+# somewhere. The winner always goes; a runner-up only with at least this
+# share, for requests that genuinely need two ("send me those prices on
+# Discord"), or where Jev is torn.
+PATH_SHARE = 0.2
+PATH_NONE = "none"
 
 # The one-word label shown on the reply. Nothing else reads it.
 TAG_CRITERIA = {
@@ -210,8 +223,12 @@ def _units(tools):
     return units
 
 
-def _state(user_input, cands, units, sections):
+def _state(user_input, cands, units, sections, servers=()):
     parts = []
+    if servers:
+        parts.append("MCP SERVERS:")
+        parts += [f"[{_qid(gid)}] {about}" for gid, about in servers]
+        parts.append("")
     if sections:
         parts.append("SAVED MEMORY SECTIONS:")
         parts += [f"[s{n}] {name}: {one_line(body, SECTION_PREVIEW)}"
@@ -233,7 +250,7 @@ def _state(user_input, cands, units, sections):
     return "\n".join(parts)
 
 
-def _questions(cands, units, sections):
+def _questions(cands, units, sections, servers=()):
     qs = {
         "tag": {"type": "choice",
                 "instructions": "What kind of request is the CURRENT REQUEST?",
@@ -242,6 +259,13 @@ def _questions(cands, units, sections):
                   "instructions": "How exact does the answer to the CURRENT REQUEST have to be?",
                   "criteria": dict(STYLE_CRITERIA)},
     }
+    if servers:
+        criteria = {_qid(gid): about for gid, about in servers}
+        criteria[PATH_NONE] = ("None of the MCP servers: built-in tools only (files, memory, "
+                               "web search, links) or no tools at all.")
+        qs["path"] = {"type": "choice",
+                      "instructions": "Which MCP server is the way to handle the CURRENT REQUEST?",
+                      "criteria": criteria}
     for qid, _label, _names in units:
         qs[qid] = {"type": "noul",
                    "instructions": f"Could fully handling the CURRENT REQUEST need tool [{qid}]?"}
@@ -274,8 +298,10 @@ class Route:
     """What one turn is sent. `tools` is the picked tool names; `messages` is
     [(index, "text"|"raw")] oldest first; `sections` memory section names."""
 
-    def __init__(self, tag, style, tools, messages, sections, ms, questions):
+    def __init__(self, tag, style, tools, messages, sections, ms, questions, servers=None):
         self.tag, self.style = tag, style
+        # {server group: share of the path choice} for the servers that went.
+        self.servers = servers or {}
         self.tools, self.messages, self.sections = tools, messages, sections
         self.ms, self.questions = ms, questions
 
@@ -285,28 +311,31 @@ class Route:
 
     def summary(self):
         picked = [str(i) + ("+raw" if k == "raw" else "") for i, k in self.messages]
-        return (f"tag={self.tag} style={self.style} tools={sorted(self.tools)} "
+        return (f"tag={self.tag} style={self.style} servers={self.servers} tools={sorted(self.tools)} "
                 f"messages={picked} sections={self.sections} "
                 f"({len(self.questions)} questions, {self.ms}ms)")
 
 
-def route(user_input, messages, end, tools, sections):
+def route(user_input, messages, end, tools, sections, servers=()):
     """Ask Jev what this turn needs.
 
     `messages[:end]` is the conversation before the current request, system
     message first. `tools` is [(name, group, description)] for every tool Jev
     may choose; `sections` is [(name, body)] of the memory sections that
-    aren't always sent. Returns a Route, or None when there's no key or Jev
-    didn't answer in time — the caller's cue to route the old way."""
+    aren't always sent; `servers` is [(group, what it's for)] of the MCP
+    servers, whose tools are only sent if the server wins the path choice.
+    Returns a Route, or None when there's no key or Jev didn't answer in time
+    — the caller's cue to route the old way."""
     key = api_key()
     if not key:
         return None
     cands = candidates(messages, end)
     sections = sections[:MAX_SECTIONS]
     units = _units(tools)
-    questions = _questions(cands, units, sections)
+    servers = list(servers)
+    questions = _questions(cands, units, sections, servers)
     started = time.monotonic()
-    answers = ask(_state(user_input, cands, units, sections), questions, key=key)
+    answers = ask(_state(user_input, cands, units, sections, servers), questions, key=key)
     ms = int((time.monotonic() - started) * 1000)
     if not answers:
         return None
@@ -317,8 +346,21 @@ def route(user_input, messages, end, tools, sections):
     if style not in STYLE_CRITERIA:
         style = "balanced"
 
+    # The servers that go. Unanswered, every one does: leaning wide.
+    chosen = {gid: None for gid, _about in servers}
+    path = answers.get("path") or {}
+    shares = path.get("probabilities") or {}
+    if servers and shares:
+        chosen = {gid: round(float(shares.get(_qid(gid)) or 0), 2) for gid, _about in servers
+                  if _qid(gid) == path.get("choice")
+                  or float(shares.get(_qid(gid)) or 0) >= PATH_SHARE}
+    server_groups = {gid for gid, _about in servers}
+
     picked_tools = set()
     for qid, _label, names in units:
+        group = next((g for n, g, _d in tools if n == names[0]), None)
+        if group in server_groups and group not in chosen:
+            continue
         p = _p(answers, qid)
         # An unanswered question counts as "yes": leaning wide.
         if p is None or p >= TOOL_THRESHOLD:
@@ -333,4 +375,4 @@ def route(user_input, messages, end, tools, sections):
 
     chosen_sections = [name for n, (name, _b) in enumerate(sections)
                        if (_p(answers, f"sec_{n}") or 0) >= SECTION_THRESHOLD]
-    return Route(tag, style, picked_tools, picked, chosen_sections, ms, questions)
+    return Route(tag, style, picked_tools, picked, chosen_sections, ms, questions, chosen)
