@@ -2341,6 +2341,9 @@ def api_set_jev():
         _write_env({jev.ENV_KEY: key})
     except Exception as e:
         return _log_and_error(e, message=str(e))
+    # The fast browser (browser_do) is offered only with a key: rebuild the
+    # tool lists so it appears or goes on the next message.
+    agent.invalidate_tools()
     return jsonify({'ok': True, 'has_key': bool(key)})
 
 

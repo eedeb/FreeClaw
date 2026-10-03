@@ -261,6 +261,15 @@ TOOLS = [
                     "screenshot leaves you unsure.",
      "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}},
                      "required": ["text"]}},
+    # Internal: FreeClaw's fast loop (browser_do) only — the builtin entry in
+    # src/mcp_client.py excludes it from the model's tool list. Does one plain
+    # action and answers with the page's controls as JSON, no screenshot.
+    {"name": "fast_step",
+     "description": "Internal to browser_do.",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["observe", "click", "type", "select", "scroll", "back"]},
+         **_XY, "text": {"type": "string"}, "enter": {"type": "boolean"},
+         "label": {"type": "string"}, "ref": {"type": "integer"}, "link": {"type": "boolean"}}}},
     {"name": "request_captcha_help",
      "description": "Hand the current page to the user to solve a CAPTCHA or human check. "
                     "End your turn after.\nreason: shown to them.",
@@ -333,6 +342,122 @@ _FIND_JS = r"""
   }
   out.sort((a, b) => (b.onScreen - a.onScreen) || (b.interactive - a.interactive) || (a.y - b.y));
   return out.slice(0, 12);
+}
+"""
+
+
+# What the fast loop (FreeClaw's browser_do, src/agent.py) reads instead of a
+# screenshot: the page's headings, the start of its visible text, and every
+# control on screen — kind, label, where to click, a field's current value —
+# numbered. Same idea of a control as _FIND_JS, without a query. On-screen
+# first, then a few just below the fold so "scroll down" has something to
+# point at.
+_ELEMENTS_JS = r"""
+() => {
+  const W = innerWidth, H = innerHeight;
+  const INTERACTIVE = 'a[href],button,input:not([type=hidden]),select,textarea,summary,' +
+    '[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],' +
+    '[role=option],[role=combobox],[role=textbox],[role=searchbox],[role=switch],[onclick],' +
+    '[contenteditable=""],[contenteditable=true]';
+  const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const label = (el) => {
+    const bits = [el.getAttribute("aria-label"), el.getAttribute("placeholder"),
+                  el.getAttribute("title"), el.getAttribute("alt")];
+    if (el.tagName === "INPUT" && /^(button|submit|reset)$/i.test(el.type)) bits.push(el.value);
+    if (el.labels && el.labels.length) bits.push(el.labels[0].innerText);
+    bits.push(el.innerText);
+    const img = el.querySelector && el.querySelector("img[alt]");
+    if (img) bits.push(img.getAttribute("alt"));
+    return [...new Set(bits.map(clean).filter(Boolean))].join(" ").slice(0, 90);
+  };
+  const kind = (el) => {
+    const tag = el.tagName.toLowerCase();
+    // The tag decides for form controls whatever their role says: a <select>
+    // with role=combobox is still picked from, an <input> one still typed in.
+    if (tag === "select") return "dropdown";
+    const role = el.getAttribute("role");
+    if (role && tag !== "input" && tag !== "textarea") return role;
+    if (tag === "a") return "link";
+    if (tag === "input") {
+      const t = (el.type || "text").toLowerCase();
+      return /^(text|search|email|tel|url|number|password)$/.test(t) ? (t === "search" ? "searchbox" : "text field")
+           : t === "checkbox" || t === "radio" ? t : t + " button";
+    }
+    if (tag === "textarea") return "text field";
+    if (tag === "select") return "dropdown";
+    return tag;
+  };
+  // Which part of the page a control sits in — "Filters", "Sort", the nav —
+  // from the nearest labelled ancestor or the heading above it in its
+  // section. A bare "Price" means nothing until it's "Price (in: Filters)".
+  const area = (el) => {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
+      const by = node.getAttribute("aria-labelledby");
+      const byEl = by && document.getElementById(by.split(" ")[0]);
+      const named = node.getAttribute("aria-label") || (byEl && byEl.innerText) || (node.tagName === "FIELDSET" &&
+        node.querySelector("legend") && node.querySelector("legend").innerText);
+      if (named) return clean(named).slice(0, 40);
+      const h = node.querySelector(":scope > h2, :scope > h3, :scope > h4, :scope > header");
+      if (h && !h.contains(el)) return clean(h.innerText).slice(0, 40);
+      if (/^(NAV|HEADER|FOOTER|ASIDE)$/.test(node.tagName)) return node.tagName.toLowerCase();
+    }
+    return "";
+  };
+  document.querySelectorAll("[data-fc-ref]").forEach(e => e.removeAttribute("data-fc-ref"));
+  const out = [], below = [], seen = new Set(), refs = [];
+  for (const el of document.querySelectorAll(INTERACTIVE)) {
+    if (seen.has(el)) continue;
+    seen.add(el);
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    const st = getComputedStyle(el);
+    if (st.visibility === "hidden" || st.display === "none" || +st.opacity === 0) continue;
+    const text = label(el);
+    const k = kind(el);
+    if (!text && !/field|box|dropdown|combobox/.test(k)) continue;
+    const x = Math.round((Math.max(r.left, 0) + Math.min(r.right, W)) / 2);
+    const y = Math.round((Math.max(r.top, 0) + Math.min(r.bottom, H)) / 2);
+    const item = { kind: k, text, x, y };
+    const where = area(el);
+    if (where && where.toLowerCase() !== text.toLowerCase()) item.area = where;
+    if (el.tagName === "SELECT") {
+      item.options = [...el.options].map(o => clean(o.text)).filter(Boolean).slice(0, 12);
+      item.value = clean(el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : "");
+    }
+    if (el.value && el.tagName !== "SELECT" && /field|box|combobox/.test(k)) item.value = clean(el.value).slice(0, 60);
+    if (el.checked) item.checked = true;
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") item.disabled = true;
+    if (r.right <= 0 || r.left >= W) continue;
+    // Generous caps: a shop's header and nav alone can be 70 controls, and
+    // the filter the goal needs comes after them. Jev reads 150 options in
+    // one call as easily as 15.
+    let list = null;
+    if (r.bottom > 0 && r.top < H) { if (out.length < 130) list = out; }
+    else if (r.top >= H && r.top < 3 * H && below.length < 80) { item.below = true; list = below; }
+    if (!list) continue;
+    list.push(item);
+    // Stamped so a later step can find this very element again — by
+    // position alone a dropdown a shop has drawn its own box over is the
+    // box, not the <select>, and a control below the screen has no
+    // position worth clicking until it's scrolled to.
+    item.ref = refs.length + 1;
+    refs.push(el);
+    el.setAttribute("data-fc-ref", String(item.ref));
+  }
+  const headings = [...document.querySelectorAll("h1,h2,h3")].map(h => clean(h.innerText))
+    .filter(Boolean).slice(0, 8);
+  const text = clean(document.body ? document.body.innerText : "").slice(0, 700);
+  // A human check over the page (PerimeterX, reCAPTCHA, hCaptcha,
+  // Cloudflare): invisible in the controls, and nothing the loop can do.
+  const check = document.querySelector(
+    'iframe[id*="captcha" i], iframe[src*="captcha" i], iframe[title*="challenge" i], ' +
+    'iframe[src*="challenges.cloudflare.com"], #px-captcha, .g-recaptcha, .h-captcha, #cf-challenge-running');
+  const shown = check && (() => { const r = check.getBoundingClientRect();
+    return r.width > 50 && r.height > 50 && getComputedStyle(check).visibility !== "hidden"; })();
+  const human = /press (&|and) hold|verify (that )?you are (a )?human|are you a robot|unusual traffic/i
+    .test(text);
+  return { headings, text, elements: out.concat(below), blocker: (shown || human) ? "human check" : "" };
 }
 """
 
@@ -866,6 +991,158 @@ class Tools:
         content = await self._reply(image=False)
         content[0]["text"] = found + "\n" + content[0]["text"]
         return content
+
+    # ── the fast loop's eyes and hands ──
+
+    async def _await_change(self, page, url_before, budget):
+        """After a fast_step action: wait (up to `budget` seconds) for the URL
+        to change — a search submitted with Enter can take a second to start
+        navigating, and settle() alone would read the page being left — then
+        for the page's content to stop changing, so results that render in
+        after load (most shops) are there to be read."""
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            page = self.b.current() or page
+            if self.b.new_tab or page.url != url_before:
+                break
+            await asyncio.sleep(0.15)
+        await self.b.settle()
+        page = self.b.current() or page
+        last = None
+        for _ in range(8):
+            try:
+                size = await page.evaluate(
+                    "() => (document.body ? document.body.innerText.length : 0) + ':' + "
+                    "document.querySelectorAll('a,button,input').length")
+            except Exception:                                # noqa: BLE001 — mid-navigation
+                size = None
+            if size is not None and size == last:
+                break
+            last = size
+            await asyncio.sleep(0.3)
+        return page
+
+    async def t_fast_step(self, action="observe", x=None, y=None, text="", enter=False, label="",
+                          ref=0, link=False):
+        page = await self.b.ensure()
+        url_before = page.url
+        what = str(label or "")[:40]
+        stale = False
+        if action in ("click", "type", "select") and ref:
+            # Jev may pick a control below the screen: bring that very element
+            # into view and click where it now is.
+            # Scroll first and measure after, separately: a page with smooth
+            # scrolling is still moving when scrollIntoView returns, and a rect
+            # read then sends the click to where the control was mid-scroll.
+            found = await page.evaluate("""(ref) => {
+                const el = document.querySelector(`[data-fc-ref="${ref}"]`);
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                if (r.top < 0 || r.bottom > innerHeight)
+                    el.scrollIntoView({block: "center", behavior: "instant"});
+                return true;
+            }""", int(ref))
+            spot = None
+            if found:
+                await asyncio.sleep(0.3)
+                spot = await page.evaluate("""(ref) => {
+                    const el = document.querySelector(`[data-fc-ref="${ref}"]`);
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+                    const hit = document.elementFromPoint(x, y);
+                    // The control's own label or row counts as the control: a
+                    // shop's radio is a hidden <input> under a styled label,
+                    // and clicking the label is how a person picks it.
+                    const own = el.closest("label, li, [role=option], [role=radio], [role=menuitemradio]");
+                    const ok = !!hit && (hit === el || el.contains(hit) || hit.contains(el)
+                        || (own && own.contains(hit))
+                        || [...(el.labels || [])].some(l => l.contains(hit)));
+                    return [x, y, ok];
+                }""", int(ref))
+            if not spot:
+                # The page changed under the pick (a sort reloaded it): don't
+                # click where that control used to be — report the page as it
+                # is now and let the loop decide again.
+                action = "observe"
+                stale = True
+            else:
+                x, y, reachable = spot
+                if not reachable and action == "click":
+                    # Something sits over it (a sticky bar, a leftover popover):
+                    # click the element itself rather than whatever is on top.
+                    self._status(f"Clicking “{what}”" if what else "Clicking")
+                    await page.evaluate("(ref) => document.querySelector(`[data-fc-ref=\"${ref}\"]`).click()",
+                                        int(ref))
+                    action = "clicked"
+        if action in ("click", "type"):
+            x, y = self._xy(x, y)
+            self._status((f"Clicking “{what}”" if action == "click" else f"Typing into “{what}”")
+                         if what else "Clicking")
+            await self.b.glide(x, y)
+            self.b.mark("click")
+            await page.mouse.click(x, y)
+            if action == "type":
+                await page.keyboard.press("Control+A")
+                await page.keyboard.type(str(text or ""), delay=0)
+                if enter:
+                    await page.keyboard.press("Enter")
+        elif action == "select":
+            # A <select> at x,y, set to the option whose text is `text`, the
+            # way a person picking from it would: change and input fire.
+            x, y = self._xy(x, y)
+            self._status(f"Choosing “{str(text)[:40]}”")
+            await self.b.glide(x, y)
+            ok = await page.evaluate("""([x, y, want, ref]) => {
+                const hit = document.querySelector(`[data-fc-ref="${ref}"]`) || document.elementFromPoint(x, y);
+                const sel = hit && (hit.tagName === "SELECT" ? hit : hit.closest("select") ||
+                                    (hit.tagName === "LABEL" && hit.control));
+                if (!sel || sel.tagName !== "SELECT") return false;
+                const norm = s => String(s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const opt = [...sel.options].find(o => norm(o.text) === norm(want))
+                         || [...sel.options].find(o => norm(o.text).includes(norm(want)));
+                if (!opt) return false;
+                sel.value = opt.value;
+                sel.dispatchEvent(new Event("input", { bubbles: true }));
+                sel.dispatchEvent(new Event("change", { bubbles: true }));
+                return true;
+            }""", [x, y, str(text or ""), int(ref or 0)])
+            if not ok:
+                raise ToolError(f"No dropdown option “{text}” at {x},{y}.")
+        elif action == "scroll":
+            self._status("Scrolling down")
+            await page.mouse.wheel(0, VIEWPORT["height"] * 0.8)
+            await asyncio.sleep(0.35)
+        elif action == "back":
+            self._status("Going back")
+            try:
+                await page.go_back(wait_until="domcontentloaded", timeout=15000)
+            except Exception:                                # noqa: BLE001 — landed regardless
+                pass
+        # How long a new page may take to *start* loading. A link almost always
+        # leads somewhere, and on a slow box a shop's next page can start well
+        # after a second; a button often just opens a menu, so it gets less.
+        clicked = action in ("click", "clicked")
+        budget = (4.0 if (action == "type" and enter) else 5.0 if (clicked and link)
+                  else 5.0 if action == "select" else 1.5 if clicked else 0.0)
+        page = await self._await_change(page, url_before, budget)
+        try:
+            state = await page.evaluate(_ELEMENTS_JS)
+        except Exception as e:                               # noqa: BLE001 — mid-navigation
+            await self.b.settle()
+            try:
+                state = await page.evaluate(_ELEMENTS_JS)
+            except Exception:                                # noqa: BLE001
+                raise ToolError(f"Couldn't read the page yet ({str(e).splitlines()[0]}).")
+        where = await self.b.where()
+        self._status("", busy=False, **where)
+        state.update({"url": where.get("url") or "", "title": where.get("title") or ""})
+        if self.b.new_tab:
+            self.b.new_tab = False
+            state["new_tab"] = True
+        if stale:
+            state["stale"] = True
+        return [{"type": "text", "text": json.dumps(state)}]
 
     # ── handing over ──
 

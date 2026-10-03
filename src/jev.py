@@ -438,3 +438,123 @@ def follow_through(request, actions, reply):
         and blocked < BLOCKED_CEILING
     return {"status": status, "shares": {k: round(v, 2) for k, v in shares.items()},
             "promise": round(promise, 2), "nudge": bool(nudge), "ms": ms}
+
+
+# ── browser steps: the fast loop's next move (src/fast_browser.py) ──
+
+# Controls the fast loop never touches, whatever Jev picks: money, messages,
+# deletion. A goal that needs one hands the page back to the main model, which
+# answers to the user and the approval rules.
+RISKY_CONTROL = re.compile(
+    r"\b(place (your )?order|buy now|pay( now)?|checkout|check ?out|purchase|"
+    r"complete (your )?(order|purchase)|submit (order|payment)|confirm (order|purchase|payment)|"
+    r"delete|remove account|close account|send|unsubscribe|subscribe|transfer|donate|"
+    r"book now|reserve now|sign out|log ?out)\b", re.I)
+
+STEP_DONE_THRESHOLD = 0.7
+STEP_MIN_CONFIDENCE = 0.35
+STEP_DONE_PICK = 0.6
+
+
+# Where on a 1280x800 page a control is, in words. A shop's "Price" facet in
+# the left column and its "Sort by" at the top right read alike as labels;
+# the position is what tells a filter list from the sort control.
+def _position(e):
+    x, y = e.get("x") or 0, e.get("y") or 0
+    col = "left" if x < 320 else "right" if x > 960 else "middle"
+    row = "top" if y < 200 else "bottom" if y > 600 else "middle"
+    return "below the screen" if e.get("below") else f"{row} {col}"
+
+
+def _control_line(n, e):
+    line = f'[e{n}] {e.get("kind")} "{e.get("text") or ""}" [{_position(e)}]'
+    if e.get("area"):
+        line += f' (in: {e["area"]})'
+    if e.get("value"):
+        line += f' (now: "{e["value"]}")'
+    if e.get("checked"):
+        line += " (checked)"
+    if e.get("disabled"):
+        line += " (disabled)"
+    return line
+
+
+def browser_step(goal, page, done_so_far):
+    """The fast loop's next move on `page` (fast_step's JSON) toward `goal`.
+
+    Returns {"move": "click"|"type"|"scroll"|"back"|"done"|"stop"|"unsure",
+    "element": the control for click/type, "p": Jev's share for the pick,
+    "done": P(goal already met), "ms"} — or None when Jev didn't answer.
+    Only on-screen, enabled, non-risky controls are offered; "unsure" is a
+    pick Jev itself gave less than STEP_MIN_CONFIDENCE."""
+    elements = page.get("elements") or []
+    options = {}
+    for n, e in enumerate(elements, 1):
+        # Below-the-screen controls are offered too — the browser scrolls to
+        # the one picked. Offering only what's on screen made a "4 stars &
+        # up" filter further down the column invisible, and Jev settled for
+        # "sort by reviews", the nearest thing it could see.
+        if e.get("disabled") or RISKY_CONTROL.search(e.get("text") or ""):
+            continue
+        if e.get("options"):
+            # A dropdown is a choice of its options, each its own move.
+            for k, opt in enumerate(e["options"]):
+                if opt != e.get("value"):
+                    options[f"e{n}o{k}"] = (f'choose "{opt}" in dropdown "{e.get("text") or ""}"'
+                                            + (f' (in: {e["area"]})' if e.get("area") else ""))
+            continue
+        options[f"e{n}"] = _control_line(n, e)[len(f"[e{n}] "):]
+    options["scroll"] = "What the GOAL needs isn't among any of these controls: scroll down."
+    options["back"] = "This page is a wrong turn for the GOAL: go back."
+    options["done"] = "The GOAL is already achieved on this page."
+    options["stop"] = ("Can't go on without the user (sign-in, CAPTCHA, payment, a choice only "
+                       "they can make), the next step is a purchase, message or deletion, or the "
+                       "page is blocked or broken.")
+    state = "\n".join([
+        "GOAL: " + one_line(goal, 400),
+        f"PAGE: {one_line(page.get('title'), 120)} | {one_line(page.get('url'), 160)}",
+        "HEADINGS: " + "; ".join(page.get("headings") or []),
+        "VISIBLE TEXT: " + one_line(page.get("text"), 700),
+        "DONE SO FAR: " + ("; ".join(done_so_far[-8:]) or "nothing yet"),
+        "CONTROLS:",
+        *(_control_line(n, e) + (" (not allowed)" if RISKY_CONTROL.search(e.get("text") or "") else "")
+          for n, e in enumerate(elements, 1)),
+    ])
+    questions = {
+        "next": {"type": "choice",
+                 "instructions": "Which ONE move gets closest to the GOAL from this page? Match "
+                                 "what the GOAL asks to do — search, sort, filter, open, go to a "
+                                 "page — to a control that does that, not just one that shares a "
+                                 "word with it: sorting is the sort control, a filter only narrows "
+                                 "the results. A text field or search box means typing into it.",
+                 "criteria": options},
+        "done": {"type": "noul",
+                 "instructions": "Is the GOAL already achieved on this page?"},
+    }
+    started = time.monotonic()
+    answers = ask(state, questions)
+    ms = int((time.monotonic() - started) * 1000)
+    if not answers:
+        return None
+    nxt = answers.get("next") or {}
+    pick = nxt.get("choice")
+    p = float((nxt.get("probabilities") or {}).get(pick) or 0)
+    done = _p(answers, "done") or 0.0
+    out = {"p": round(p, 2), "done": round(done, 2), "ms": ms}
+    # "Done" has to be meant: a hesitant one (Walmart, a price *filter*
+    # clicked for "sort by price", called done at 0.46) hands back instead.
+    if done >= STEP_DONE_THRESHOLD or (pick == "done" and p >= STEP_DONE_PICK):
+        return {**out, "move": "done"}
+    if pick == "done":
+        return {**out, "move": "unsure"}
+    if pick in ("stop", "scroll", "back"):
+        return {**out, "move": pick}
+    if not pick or p < STEP_MIN_CONFIDENCE or pick not in options:
+        return {**out, "move": "unsure"}
+    if "o" in pick[1:]:
+        n, k = pick[1:].split("o")
+        element = elements[int(n) - 1]
+        return {**out, "move": "select", "element": element, "option": element["options"][int(k)]}
+    element = elements[int(pick[1:]) - 1]
+    typing = any(k in (element.get("kind") or "") for k in ("field", "box", "combobox", "textbox"))
+    return {**out, "move": "type" if typing else "click", "element": element}
