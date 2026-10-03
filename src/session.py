@@ -24,6 +24,8 @@ and a nested run just binds a different Session for the duration.
     turn_usage               token tally for the turn in flight
     turn_prefix              pinned history window + tool set for the turn
     turn_notes               per-turn lines for the prompt's live tail
+    turn_withheld            } a Jev-routed turn's withheld tool groups and
+    turn_route_notes         } its own live-tail lines (agent._jev_notes)
     turn_tool_names          which tools the turn in flight actually ran
     consecutive_tool_calls   } the runaway-tool throttle's run: calls to the
     last_tool_name           } same tool, and of those the ones that repeated
@@ -135,6 +137,10 @@ class Session:
         # the top of every tool continuation and anything appended directly
         # would be gone by the turn's second request.
         self.turn_notes = ""
+        # A Jev-routed turn's withheld tool groups ({id: (short name, tools)},
+        # for load_tools) and the rest of its live-tail lines.
+        self.turn_withheld = {}
+        self.turn_route_notes = ""
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
         # The arguments half of the throttle's run. An MCP server often puts
@@ -189,13 +195,15 @@ class Session:
         if name:
             self.turn_tool_names.append(name)
 
-    def pin_turn_prefix(self, start, turn_tools, lean_start=None):
+    def pin_turn_prefix(self, start, turn_tools, lean_start=None, picked=None):
         # "lean_start" is where the tool-stripped half of the history window
-        # begins; == start when the turn has no lean half at all.
+        # begins; == start when the turn has no lean half at all. "picked" is
+        # set instead on a Jev-routed turn: the earlier messages it chose.
         self.turn_prefix = {
             "start": start,
             "tools": turn_tools,
             "lean_start": start if lean_start is None else lean_start,
+            "picked": picked,
         }
 
     def clear_turn_prefix(self):
@@ -205,6 +213,8 @@ class Session:
         # that message still carries the tag.
         self.turn_tag = None
         self.turn_notes = ""
+        self.turn_withheld = {}
+        self.turn_route_notes = ""
 
     def note_new_section(self, name):
         """Remember a context.md section created mid-conversation so the next
