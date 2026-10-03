@@ -458,6 +458,27 @@
     }
     .message.user .msg-label { color: var(--accent-dim); }
 
+    /* What a Jev-routed turn was sent: hover (or tap) the tag on the reply.
+       The panel is one fixed element on <body> (showRoutePanel), not a child
+       of the message: #messages scrolls, so it would clip it, and each
+       .message's fade-in transform would trap it under the ones after. */
+    .route-tag { cursor: help; border-bottom: 1px dotted currentColor; outline: none; }
+    .route-tag:focus-visible { color: var(--accent); }
+    .route-panel {
+      position: fixed; z-index: 1000; overflow: auto;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      padding: 10px 12px; color: var(--text);
+      font-family: var(--mono); font-size: 11px; line-height: 1.5;
+    }
+    .rp-head { color: var(--accent); }
+    .rp-title { color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; margin: 9px 0 3px; }
+    .rp-row { display: flex; gap: 10px; }
+    .rp-k { flex: 0 0 100px; color: var(--muted); }
+    .rp-v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .rp-none, .rp-digest { color: var(--muted); overflow-wrap: anywhere; }
+    .rp-foot { margin-top: 9px; padding-top: 6px; border-top: 1px solid var(--border); color: var(--muted); }
+
     .bubble {
       padding: 11px 14px;
       border-radius: var(--radius);
@@ -1714,15 +1735,154 @@
   // knows yet whether it will search) — it appears when the 'done' event
   // re-renders the thread from the saved conversation.
   function agentLabelText(provider, usage, intent, sourced) {
-    return (intent || 'agent')
-         + (provider ? ' · via ' + provider : '')
+    return (intent || 'agent') + agentLabelRest(provider, usage, sourced);
+  }
+
+  function agentLabelRest(provider, usage, sourced) {
+    return (provider ? ' · via ' + provider : '')
          + (sourced ? ' · sourced' : '')
          + tokenLabel(usage);
   }
 
+  // ── What a Jev-routed turn was sent ─────────────────────
+  // `route` is the reply's saved record of it (agent._jev_route_details): the
+  // tools, the earlier messages, the memory, and the size of the request.
+  // Built from text nodes only — previews are the user's and the model's own
+  // words, and none of it is ever parsed as HTML.
+  function rpEl(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function rpGroup(g) {
+    if (g === 'always') return 'always';
+    return g.startsWith('mcp:') ? g.slice(4) + ' (mcp)' : g;
+  }
+  function rpTokens(chars) { return '~' + fmt(Math.round((chars || 0) / 4)); }
+
+  function buildRoutePanel(route) {
+    const panel = rpEl('div', 'route-panel');
+    panel.setAttribute('role', 'tooltip');
+    panel.appendChild(rpEl('div', 'rp-head',
+      `Routed by Jev · ${route.ms}ms · ${route.questions} questions · ${route.style}, temp ${route.temperature}`));
+    const section = title => {
+      const s = rpEl('div');
+      s.appendChild(rpEl('div', 'rp-title', title));
+      panel.appendChild(s);
+      return s;
+    };
+    const row = (parent, k, v) => {
+      const r = rpEl('div', 'rp-row');
+      r.appendChild(rpEl('span', 'rp-k', k));
+      r.appendChild(rpEl('span', 'rp-v', v));
+      parent.appendChild(r);
+    };
+    const tools = route.tools || [];
+    const t = section(`Tools sent (${tools.reduce((n, g) => n + g.names.length, 0)})`);
+    tools.forEach(g => row(t, rpGroup(g.group), g.names.join(', ')));
+    if ((route.withheld || []).length) {
+      const w = section('Not sent — loadable mid-turn');
+      route.withheld.forEach(g => row(w, rpGroup(g.group), g.names.join(', ')));
+    }
+    if ((route.loaded || []).length) {
+      row(section('Loaded mid-turn'), 'groups', route.loaded.map(rpGroup).join(', '));
+    }
+    const history = route.history || [];
+    const h = section(`Earlier messages sent (${history.length} of ${route.earlier || 0})`);
+    if (!history.length) h.appendChild(rpEl('div', 'rp-none', 'none — just this message'));
+    history.forEach(m => row(h, `#${m.i} ${m.role === 'user' ? 'you' : 'agent'}`,
+      m.preview + (m.kind === 'full'
+        ? `  [+ tool results${m.tools && m.tools.length ? ': ' + m.tools.join(', ') : ''}]` : '')));
+    const mem = section('Memory');
+    row(mem, 'always', (route.memory && route.memory.always || []).join(', ') || 'none');
+    row(mem, 'opened', (route.memory && route.memory.opened || []).join(', ') || 'none');
+    if ((route.digest || []).length) {
+      const d = section(`Other requests, listed one line each (${route.digest.length})`);
+      route.digest.forEach(x => d.appendChild(rpEl('div', 'rp-digest', '· ' + x)));
+    }
+    const c = route.chars || {};
+    panel.appendChild(rpEl('div', 'rp-foot',
+      `Request ${rpTokens((c.system || 0) + (c.history || 0) + (c.tools || 0))} tokens — `
+      + `system ${rpTokens(c.system)} · history ${rpTokens(c.history)} · tools ${rpTokens(c.tools)}`));
+    return panel;
+  }
+
+  // The one open panel, if any, and whether a tap pinned it open.
+  let routeFloat = null, routePinnedTo = null, routeHideTimer = null;
+
+  function hideRoutePanel() {
+    clearTimeout(routeHideTimer);
+    if (routeFloat) routeFloat.remove();
+    routeFloat = null;
+    routePinnedTo = null;
+  }
+  function hideRoutePanelSoon() {
+    clearTimeout(routeHideTimer);
+    if (!routePinnedTo) routeHideTimer = setTimeout(hideRoutePanel, 160);
+  }
+
+  // Below the tag if it fits, otherwise above — whichever has more room
+  // between the top bar and the input box — and never taller than that.
+  function showRoutePanel(tagEl, route, pin) {
+    hideRoutePanel();
+    const panel = buildRoutePanel(route);
+    panel.addEventListener('mouseenter', () => clearTimeout(routeHideTimer));
+    panel.addEventListener('mouseleave', hideRoutePanelSoon);
+    const r = tagEl.getBoundingClientRect();
+    const topBar = document.getElementById('topbar');
+    const inputArea = document.getElementById('input-area');
+    const ceiling = topBar ? topBar.getBoundingClientRect().bottom : 0;
+    const floor = inputArea ? inputArea.getBoundingClientRect().top : window.innerHeight;
+    const below = floor - r.bottom - 12;
+    const above = r.top - ceiling - 12;
+    const up = below < 280 && above > below;
+    const width = Math.min(460, window.innerWidth - 24);
+    panel.style.width = width + 'px';
+    panel.style.maxHeight = Math.max(140, Math.min(window.innerHeight * 0.6, up ? above : below)) + 'px';
+    panel.style.left = Math.max(12, Math.min(r.left, window.innerWidth - width - 12)) + 'px';
+    if (up) panel.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+    else panel.style.top = (r.bottom + 6) + 'px';
+    document.body.appendChild(panel);
+    routeFloat = panel;
+    routePinnedTo = pin ? tagEl : null;
+  }
+
+  // The reply's label. With a route, the tag becomes the panel's handle:
+  // hover or focus opens it, and a tap pins it (phones have no hover).
+  function fillAgentLabel(label, provider, usage, intent, sourced, route) {
+    label.textContent = '';
+    if (!route) {
+      label.textContent = agentLabelText(provider, usage, intent, sourced);
+      return;
+    }
+    const tag = rpEl('span', 'route-tag', intent || 'agent');
+    tag.tabIndex = 0;
+    tag.setAttribute('aria-label', (intent || 'agent') + ' — what this turn was sent');
+    tag.addEventListener('mouseenter', () => { if (!routePinnedTo) showRoutePanel(tag, route, false); });
+    tag.addEventListener('mouseleave', hideRoutePanelSoon);
+    tag.addEventListener('focus', () => { if (!routePinnedTo) showRoutePanel(tag, route, false); });
+    tag.addEventListener('blur', hideRoutePanelSoon);
+    tag.addEventListener('click', e => {
+      e.stopPropagation();
+      if (routePinnedTo === tag) hideRoutePanel();
+      else showRoutePanel(tag, route, true);
+    });
+    label.appendChild(tag);
+    label.appendChild(document.createTextNode(agentLabelRest(provider, usage, sourced)));
+  }
+  document.addEventListener('click', e => {
+    if (routeFloat && !e.target.closest('.route-panel')) hideRoutePanel();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') hideRoutePanel(); });
+  messagesEl.addEventListener('scroll', hideRoutePanel, { passive: true });
+
+  // The route of the turn streaming now; reset as each message is sent.
+  let currentRoute = null;
+
   function updateLiveLabel(wrap, provider, usage, intent) {
     const lbl = wrap.querySelector('.msg-label');
-    if (lbl) lbl.textContent = agentLabelText(provider, usage, intent);
+    if (lbl) fillAgentLabel(lbl, provider, usage, intent, false, currentRoute);
   }
 
   // ── Render a single user/agent text bubble ──────────────
@@ -1743,9 +1903,9 @@
     const label = document.createElement('div');
     label.className = 'msg-label';
     const provider = opts && opts.provider;
-    label.textContent = role === 'user' ? 'you'
-      : agentLabelText(provider, opts && opts.usage, opts && opts.intent,
-                       opts && opts.sourced);
+    if (role === 'user') label.textContent = 'you';
+    else fillAgentLabel(label, provider, opts && opts.usage, opts && opts.intent,
+                        opts && opts.sourced, opts && opts.route);
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
@@ -2038,7 +2198,7 @@
         if (text && text.trim()) {
           addMessage('agent', text, null,
                      { countTokens: false, provider: msg.provider, usage: msg.usage,
-                       intent: msg.intent, sourced: msg.sourced });
+                       intent: msg.intent, sourced: msg.sourced, route: msg.route });
         }
       }
     }
@@ -2395,6 +2555,7 @@
     let activeToolIndicator = null;
     let currentProvider = null;
     let currentIntent = null;
+    currentRoute = null;
     let activeApproval = null;
     let activeReasoning = null;
     let activeMcp = null;       // the installed app the running tool belongs to
@@ -2457,7 +2618,12 @@
           let evt;
           try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
-          if (evt.type === 'intent') {
+          if (evt.type === 'route') {
+            // A Jev-routed turn: what it was sent, for the tag's panel.
+            currentRoute = evt.route;
+            if (liveWrap) updateLiveLabel(liveWrap, currentProvider, null, currentIntent);
+
+          } else if (evt.type === 'intent') {
             // Fires once per user turn, before the first token, so the label
             // reads the tag from the moment the reply starts rendering.
             currentIntent = evt.tag;
@@ -2498,7 +2664,7 @@
               liveWrap.className = 'message agent';
               const label = document.createElement('div');
               label.className = 'msg-label';
-              label.textContent = agentLabelText(currentProvider, null, currentIntent);
+              fillAgentLabel(label, currentProvider, null, currentIntent, false, currentRoute);
               liveBubble = document.createElement('div');
               liveBubble.className = 'bubble';
               liveWrap.appendChild(label);
