@@ -185,6 +185,8 @@ def candidates(messages, end):
     for i in range(1, end):
         m = messages[i]
         role = m.get("role")
+        if role == "user" and m.get("auto"):
+            continue  # a follow-through nudge, not something the user said
         if role == "user" and isinstance(m.get("content"), str):
             tools_used = []
             out.append((i, "user", m["content"], ()))
@@ -376,3 +378,63 @@ def route(user_input, messages, end, tools, sections, servers=()):
     chosen_sections = [name for n, (name, _b) in enumerate(sections)
                        if (_p(answers, f"sec_{n}") or 0) >= SECTION_THRESHOLD]
     return Route(tag, style, picked_tools, picked, chosen_sections, ms, questions, chosen)
+
+
+# ── follow-through: did the reply actually finish the job? ───
+
+# How sure Jev must be that a reply stopped with work it could still do before
+# the agent is nudged to carry on. High on purpose: this is a nudge toward
+# being proactive, never a push into something the agent can't do — any
+# real chance that it's waiting on the user or has hit a wall, and nothing
+# happens.
+PARTWAY_THRESHOLD = 0.7
+PROMISE_THRESHOLD = 0.85
+BLOCKED_CEILING = 0.2
+REPLY_CLIP = 1500
+ACTIONS_SHOWN = 25
+
+FOLLOW_CRITERIA = {
+    "done": "The reply finishes what was asked: it answers, or reports the work as done.",
+    "partway": "Work the assistant could still do itself is left undone: steps or items "
+               "skipped, only part of the questions answered, or a next step announced "
+               "and not taken.",
+    "needs_user": "It is waiting on the user: a question, a choice, a sign-in, an approval, "
+                  "or information only they have.",
+    "cant": "It can't be done with the tools it has, or it hit a wall (blocked site, error, "
+            "missing access) and said so.",
+}
+
+
+def follow_through(request, actions, reply):
+    """Did `reply` finish `request`? Returns {"status", "shares", "promise",
+    "nudge", "ms"} — `nudge` True only when Jev is confident the reply
+    stopped partway on work the agent can do, and sees no sign it is waiting
+    on the user or blocked — or None when Jev isn't available."""
+    if not enabled():
+        return None
+    state = ("REQUEST:\n" + one_line(request, 1200)
+             + "\n\nACTIONS TAKEN THIS TURN:\n" + ("\n".join(actions[-ACTIONS_SHOWN:]) or "(none)")
+             + "\n\nREPLY:\n" + str(reply or "")[-REPLY_CLIP:])
+    questions = {
+        "status": {"type": "choice",
+                   "instructions": "Where does the REPLY leave the REQUEST?",
+                   "criteria": dict(FOLLOW_CRITERIA)},
+        "promise": {"type": "noul",
+                    "instructions": "Does the REPLY say it will do something next (\"I'll check…\", "
+                                    "\"Next, I'll…\", \"Let me…\") that it has not done?"},
+    }
+    started = time.monotonic()
+    answers = ask(state, questions)
+    ms = int((time.monotonic() - started) * 1000)
+    if not answers:
+        return None
+    status = (answers.get("status") or {}).get("choice")
+    shares = {k: float(v) for k, v in
+              ((answers.get("status") or {}).get("probabilities") or {}).items()}
+    promise = _p(answers, "promise") or 0.0
+    blocked = shares.get("needs_user", 0.0) + shares.get("cant", 0.0)
+    nudge = ((status == "partway" and shares.get("partway", 0.0) >= PARTWAY_THRESHOLD)
+             or (promise >= PROMISE_THRESHOLD and blocked < BLOCKED_CEILING)) \
+        and blocked < BLOCKED_CEILING
+    return {"status": status, "shares": {k: round(v, 2) for k, v in shares.items()},
+            "promise": round(promise, 2), "nudge": bool(nudge), "ms": ms}

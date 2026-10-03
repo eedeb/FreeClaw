@@ -661,7 +661,7 @@ def _cache_breakpoint_messages(messages):
 # "ts" is when a user message was sent or a reply finished, so search_history
 # and the digest of older messages can say *when* something was said.
 _INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items",
-                          "intent", "sourced", "images", "ts", "route")
+                          "intent", "sourced", "images", "ts", "route", "auto", "follow")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -2907,8 +2907,9 @@ def _search_history(query):
     # message matches its own keywords by definition ("what did I say about
     # X" contains X), and what the turn did since is already in view.
     last_user = next((i for i in range(len(messages) - 1, 0, -1)
-                      if messages[i].get("role") == "user"), len(messages))
-    candidates = [("", m) for m in messages[1:last_user]]
+                      if messages[i].get("role") == "user"
+                      and not messages[i].get("auto")), len(messages))
+    candidates = [("", m) for m in messages[1:last_user] if not m.get("auto")]
 
     directory = _history_dir(sess)
     if directory and os.path.isdir(directory):
@@ -3747,7 +3748,8 @@ def _digest(older):
     """The digest line for the user messages among `older` (oldest first)."""
     items = []
     for m in reversed(older):
-        if m.get("role") != "user" or not isinstance(m.get("content"), str):
+        if (m.get("role") != "user" or m.get("auto")
+                or not isinstance(m.get("content"), str)):
             continue
         text = " ".join(m["content"].split())
         if not text:
@@ -3958,7 +3960,8 @@ def _jev_note_server_usage():
     if not servers:
         return
     request = next((m.get("content") for m in reversed(sess.messages)
-                    if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+                    if m.get("role") == "user" and not m.get("auto")
+                    and isinstance(m.get("content"), str)), "")
     request = jev.one_line(request, _JEV_USAGE_CHARS)
     if not request or request.startswith(PING_PREFIX):
         return
@@ -4228,8 +4231,83 @@ def _jev_route(user_input, sess):
     return route, groups, sections
 
 
+# ── follow-through ───────────────────────────────────────────
+#
+# With a Jev key, a finished reply gets one look before the turn ends: did it
+# stop with work it could still do itself (src/jev.py follow_through)? If Jev
+# is confident it did — and sees no sign it's waiting on the user or blocked —
+# the agent gets one gentle nudge and carries on in the same turn, everything
+# it has done still in view. It is a nudge, not an order: the message tells it
+# to say so and stop if it can't. Once per turn at most.
+
+FOLLOW_THROUGH_MAX = 1
+FOLLOW_THROUGH_NUDGE = (
+    "[Automatic follow-through check, not typed by the user] Before you finish: if part of "
+    "the request is still undone and you can do it with the tools you have, carry on now, "
+    "without redoing what's already done above. If it can't be done, or you need something "
+    "from the user, just say so in a sentence.")
+
+
+def _turn_actions(messages):
+    """This turn's tool calls as short lines for Jev: name, the argument that
+    says what it was for, and how the result began."""
+    start = next((i for i in range(len(messages) - 1, 0, -1)
+                  if messages[i].get("role") == "user" and not messages[i].get("auto")), 0)
+    results = {m.get("tool_call_id"): str(m.get("content") or "")
+               for m in messages[start:] if m.get("role") == "tool"}
+    out = []
+    for m in messages[start:]:
+        for call in m.get("tool_calls") or ():
+            fn = call.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except ValueError:
+                args = {}
+            what = next((str(args[k]) for k in ("url", "query", "filename", "command", "text", "header")
+                         if isinstance(args, dict) and args.get(k)), "")
+            out.append(f"{fn.get('name')}({jev.one_line(what, 80)}) -> "
+                       f"{jev.one_line(results.get(call.get('id'), ''), 80)}")
+    return out, (messages[start].get("content") if start else "")
+
+
+def _follow_through(reply):
+    """Jev's look at a finished reply, or None when it doesn't apply: no key,
+    Stop pressed, already nudged this turn, nothing said, a question back to
+    the user, or a reply that is FreeClaw's own error text."""
+    sess = _sess()
+    text = (reply or "").strip()
+    if (not jev.enabled() or cancellation.is_stopped() or not sess.turn_prefix
+            or sess.turn_follow_ups >= FOLLOW_THROUGH_MAX or not text
+            or text.endswith("?") or text.startswith("(No response")):
+        return None
+    actions, request = _turn_actions(sess.messages)
+    try:
+        return jev.follow_through(request, actions, text)
+    except Exception:
+        logger.exception("Follow-through check failed")
+        return None
+
+
+# How long a turn that has already done work waits for a provider to come back
+# before giving up, attempt by attempt. A dropped connection or a full
+# per-minute window usually clears inside a minute — and ending the turn
+# instead throws away its progress: told "continue", the agent re-read the
+# worksheet and re-visited pages it had already read.
+_RESUME_WAITS = (10, 25, 45)
+
+
+def _wait_to_resume(seconds):
+    """Sleep `seconds` unless Stop is pressed first. True if it waited."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if cancellation.is_stopped():
+            return False
+        time.sleep(0.5)
+    return True
+
+
 def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None,
-                 ping=False):
+                 ping=False, resume=False):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
     them to the browser in real time:
@@ -4238,6 +4316,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
       {"type": "tool_call", "name": "...", "arguments": {...}} - tool invocation started
       {"type": "tool_result", "name": "...", "result": "..."}  - tool finished
     The full, final conversation is available afterwards via get_messages().
+
+    `resume=True` carries the turn in flight on after a follow-through nudge
+    (see _follow_through), from its pinned prefix.
 
     `ping=True` marks `user_input` as a scheduled ping firing rather than
     something the user just typed: it skips the classifier and runs with every
@@ -4454,24 +4535,50 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             picked = None
         eco_messages = _history_for_request(agent_messages, start_index,
                                             lean_index, picked)
+    elif resume and sess.turn_prefix:
+        # The nudge was just appended as the turn's latest message; continue
+        # from exactly the prefix and tools the turn was pinned to.
+        temp = 0.2
+        agent_input = agent_messages[-1].get("content") or ""
+        eco_messages = _history_for_request(
+            agent_messages, sess.turn_prefix["start"],
+            sess.turn_prefix.get("lean_start", sess.turn_prefix["start"]),
+            sess.turn_prefix.get("picked"))
+        check_tools = sess.turn_prefix["tools"]
     else:
         raise Exception("You must have either user input or system input.")
     print('Received: ' + agent_input)
-    try:
-        stream, provider = _create_completion(
-            model=model,
-            messages=eco_messages,
-            temperature=temp,
-            tools=check_tools,
-            top_p=1,
-            stream=True,
-        )
-    except AllProvidersFailedError as e:
-        # Each provider's full traceback was already logged individually
-        # inside _create_completion — this ties them together as one
-        # incident so they're easy to find by searching the log.
-        logger.error("All providers failed for this turn: %s", e.failures)
-        raise Exception(_user_facing_error(e.failures))
+    # Waits used up on this request (_RESUME_WAITS), shared by both places a
+    # request can fail below.
+    resumes = 0
+    while True:
+        try:
+            stream, provider = _create_completion(
+                model=model,
+                messages=eco_messages,
+                temperature=temp,
+                tools=check_tools,
+                top_p=1,
+                stream=True,
+            )
+            break
+        except AllProvidersFailedError as e:
+            # A turn that has already run tools has progress to lose: wait for
+            # a provider to come back rather than end it (_RESUME_WAITS).
+            if (sess.turn_tool_names and resumes < len(_RESUME_WAITS)
+                    and not cancellation.is_stopped()):
+                wait = _RESUME_WAITS[resumes]
+                resumes += 1
+                logger.warning("No provider answered mid-turn (%s); waiting %ss to resume",
+                               e.failures, wait)
+                yield {"type": "reconnecting", "seconds": wait}
+                if _wait_to_resume(wait):
+                    continue
+            # Each provider's full traceback was already logged individually
+            # inside _create_completion — this ties them together as one
+            # incident so they're easy to find by searching the log.
+            logger.error("All providers failed for this turn: %s", e.failures)
+            raise Exception(_user_facing_error(e.failures))
 
     # Providers whose stream broke mid-response on this request. The
     # cooldowns _create_completion keeps can't sideline these on their own:
@@ -4630,12 +4737,41 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     logger.info("Retrying this request on '%s' after waiting out its "
                                 "rate limit", provider)
                     continue
+            # A turn with progress waits for a provider to come back first
+            # (_RESUME_WAITS) — the same request again, from the top.
+            resumed = False
+            while (sess.turn_tool_names and resumes < len(_RESUME_WAITS)
+                   and not cancellation.is_stopped()):
+                wait = _RESUME_WAITS[resumes]
+                resumes += 1
+                logger.warning("No provider left mid-turn after %s broke; waiting %ss "
+                               "to resume", ", ".join(dead_streams), wait)
+                yield {"type": "reconnecting", "seconds": wait}
+                if not _wait_to_resume(wait):
+                    break
+                try:
+                    stream, provider = _create_completion(
+                        model=model,
+                        messages=eco_messages,
+                        temperature=temp,
+                        tools=check_tools,
+                        top_p=1,
+                        stream=True,
+                    )
+                except AllProvidersFailedError as again:
+                    e = again
+                    continue
+                dead_streams, resumed = [], True
+                break
+            if resumed:
+                logger.info("Resumed this turn on '%s'", provider)
+                continue
             # Nothing left to fall through to. Say so in the reply rather than
             # raising: the turn is salvageable on a retry, and an error here
             # would read as though the request never got out at all.
             logger.error("No provider left after %s broke mid-stream: %s",
-                         ", ".join(dead_streams), e.failures)
-            buffer = (f"(No response — the connection to {dead_streams[-1]} was "
+                         ", ".join(dead_streams or ["the provider"]), e.failures)
+            buffer = (f"(No response — the connection to {(dead_streams or ['the provider'])[-1]} was "
                       "interrupted before anything came back, and no other "
                       "provider could take over. Please try again.)")
             break
@@ -4874,6 +5010,21 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     if usage_seen:
         final_msg["usage"] = usage_seen
     agent_messages.append(final_msg)
+    # One look at whether the reply finished the job (_follow_through). The
+    # verdict is kept on the reply either way, for the chat's route panel.
+    follow = _follow_through(buffer)
+    if follow:
+        final_msg["follow"] = follow
+        if sess.turn_route is not None:
+            sess.turn_route["follow"] = follow
+    if follow and follow["nudge"]:
+        sess.turn_follow_ups += 1
+        agent_messages.append({"role": "user", "content": FOLLOW_THROUGH_NUDGE, "auto": True,
+                               "ts": datetime.now().strftime(PING_TIME_FORMAT)})
+        logger.info("Follow-through: reply looked unfinished (%s); nudging once", follow)
+        yield {"type": "follow_through", "follow": follow}
+        yield from agent_stream(resume=True)
+        return
     # Which MCP servers this request was answered with, for Jev's next choice
     # between them (_jev_server_about). Kept whichever router ran the turn.
     if jev.enabled():
