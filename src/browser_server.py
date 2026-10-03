@@ -1024,7 +1024,20 @@ class Server:
         await self.browser.close()
 
 
+# Playwright drives Chromium through a Node.js driver, and each user's browser
+# server starts its own: measured at 144MB PSS, nearly as much as the Chromium
+# beside it (~190MB). Its JavaScript is plumbing — relaying protocol messages
+# and screenshots — so a small heap and no JIT cost it nothing measurable:
+# 104MB with these, the same steps in the same time, every tool and the live
+# view's frames still working. That's ~40MB a user back on a small machine.
+# (--lite-mode went further and broke the driver outright.) Only a default:
+# whatever NODE_OPTIONS the environment already has is left alone.
+DRIVER_NODE_OPTIONS = "--max-old-space-size=64 --max-semi-space-size=1 --jitless"
+
+
 def main():
+    # Before anything starts the driver: it reads NODE_OPTIONS when it launches.
+    os.environ.setdefault("NODE_OPTIONS", DRIVER_NODE_OPTIONS)
     if sys.platform == "win32":
         # Playwright drives Chromium through a subprocess, which only the
         # proactor loop supports on Windows. The default since 3.8; pinned so
