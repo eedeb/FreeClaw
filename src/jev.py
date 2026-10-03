@@ -59,8 +59,11 @@ JEV_MODEL = os.environ.get("JEV_MODEL", "jev-1.13.0")
 TIMEOUT_SECONDS = 3.0
 
 # How far back Jev may reach, in messages that carry text (user messages and
-# assistant replies; pure tool traffic rides with the reply it led to).
-MAX_CANDIDATES = 80
+# assistant replies; pure tool traffic rides with the reply it led to). Every
+# candidate is a line of state and a question or two, so this is most of a
+# long conversation's routing cost; picks come overwhelmingly from the recent
+# stretch, and anything older is still a search_history away.
+MAX_CANDIDATES = 30
 # Characters of each earlier message shown to Jev. Enough to tell what it was
 # about; the model gets the real thing if it's picked.
 STATE_CLIP = 300
@@ -296,12 +299,43 @@ def _p(answers, qid):
         return None
 
 
+# Messages routed without asking Jev: greetings, thanks, a laugh. They can't
+# need a tool and only lean on the last exchange, so the ~4k-token routing call
+# would buy nothing. Deliberately not "ok", "yes", "sure", "do it": those are
+# usually a go-ahead for something just offered, and need what it needs.
+_TINY = re.compile(
+    r"^\s*(hi+|hey+|hello+|yo|hiya|howdy|good (morning|afternoon|evening|night)|"
+    r"thanks?( you| so much| a lot)?|thank you( so much)?|thx|ty|cheers|"
+    r"cool|nice|great|awesome|perfect|lol+|lmao|haha+|ha|wow|"
+    r"[\U0001F300-\U0001FAFF\u2600-\u27BF\u2764\uFE0F]+)"
+    r"[\s!.,~]*(\w+)?[\s!.,~\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]*$", re.I)
+
+
+def is_tiny(text):
+    """True for a greeting, a thanks or a laugh — at most one extra word, so
+    "thanks elliot" counts and "thanks, now book it" doesn't."""
+    return bool(text) and len(text) <= 40 and bool(_TINY.match(text))
+
+
+def _local_route(messages, end):
+    """The route for a tiny message, without a Jev call: the last exchange,
+    no tools (load_tools still offers them all), no memory sections."""
+    cands = candidates(messages, end)
+    last_user = max((i for i, role, _t, _u in cands if role == "user"), default=None)
+    picked = [(i, "text") for i, role, _t, _u in cands
+              if last_user is not None and i >= last_user]
+    return Route("Smalltalk", "balanced", set(), picked, [], 0, {}, {}, local=True)
+
+
 class Route:
     """What one turn is sent. `tools` is the picked tool names; `messages` is
     [(index, "text"|"raw")] oldest first; `sections` memory section names."""
 
-    def __init__(self, tag, style, tools, messages, sections, ms, questions, servers=None):
+    def __init__(self, tag, style, tools, messages, sections, ms, questions, servers=None,
+                 local=False):
         self.tag, self.style = tag, style
+        # Routed without a Jev call (_local_route).
+        self.local = local
         # {server group: share of the path choice} for the servers that went.
         self.servers = servers or {}
         self.tools, self.messages, self.sections = tools, messages, sections
@@ -331,6 +365,8 @@ def route(user_input, messages, end, tools, sections, servers=()):
     key = api_key()
     if not key:
         return None
+    if is_tiny(user_input):
+        return _local_route(messages, end)
     cands = candidates(messages, end)
     sections = sections[:MAX_SECTIONS]
     units = _units(tools)
@@ -463,6 +499,8 @@ def _position(e):
     x, y = e.get("x") or 0, e.get("y") or 0
     col = "left" if x < 320 else "right" if x > 960 else "middle"
     row = "top" if y < 200 else "bottom" if y > 600 else "middle"
+    if e.get("above"):
+        return "above the screen"
     return "below the screen" if e.get("below") else f"{row} {col}"
 
 
@@ -489,7 +527,16 @@ def browser_step(goal, page, done_so_far):
     pick Jev itself gave less than STEP_MIN_CONFIDENCE."""
     elements = page.get("elements") or []
     options = {}
+    seen = set()
     for n, e in enumerate(elements, 1):
+        # One option per distinct control: a results page repeats "Rated 4.6
+        # out of 5 stars" and "Add to cart" by the dozen, and a copy adds
+        # tokens without adding a choice. The first (on screen, or nearest
+        # below it) is the one kept.
+        key = (e.get("kind"), (e.get("text") or "").lower(), e.get("area"))
+        if key in seen and not e.get("options"):
+            continue
+        seen.add(key)
         # Below-the-screen controls are offered too — the browser scrolls to
         # the one picked. Offering only what's on screen made a "4 stars &
         # up" filter further down the column invisible, and Jev settled for
@@ -510,15 +557,25 @@ def browser_step(goal, page, done_so_far):
     options["stop"] = ("Can't go on without the user (sign-in, CAPTCHA, payment, a choice only "
                        "they can make), the next step is a purchase, message or deletion, or the "
                        "page is blocked or broken.")
+    # The controls Jev may pick are in the options, and only there: listing
+    # them in the state as well sent every label twice. What the state still
+    # names is what can't be picked, so Jev knows it exists and can stop.
+    off_limits = [one_line(e.get("text"), 40) for e in elements
+                  if RISKY_CONTROL.search(e.get("text") or "")][:12]
+    settings = [f'{one_line(e.get("text"), 30)} = "{one_line(e["value"], 40)}"'
+                for e in elements if e.get("value")][:8]
+    settings += [f'{one_line(e.get("text"), 40)} (checked)' for e in elements if e.get("checked")][:8]
     state = "\n".join([
         "GOAL: " + one_line(goal, 400),
         f"PAGE: {one_line(page.get('title'), 120)} | {one_line(page.get('url'), 160)}",
         "HEADINGS: " + "; ".join(page.get("headings") or []),
         "VISIBLE TEXT: " + one_line(page.get("text"), 700),
         "DONE SO FAR: " + ("; ".join(done_so_far[-8:]) or "nothing yet"),
-        "CONTROLS:",
-        *(_control_line(n, e) + (" (not allowed)" if RISKY_CONTROL.search(e.get("text") or "") else "")
-          for n, e in enumerate(elements, 1)),
+        # What's set right now — which sort, what's in the search box. With
+        # the controls listed only as options this was the missing piece for
+        # "is the GOAL met?": "Sort by: Featured" means not yet.
+        "CURRENT SETTINGS: " + ("; ".join(settings) or "none"),
+        "NOT ALLOWED HERE (purchases, messages, deletion): " + ("; ".join(off_limits) or "none"),
     ])
     questions = {
         "next": {"type": "choice",
@@ -543,7 +600,10 @@ def browser_step(goal, page, done_so_far):
     out = {"p": round(p, 2), "done": round(done, 2), "ms": ms}
     # "Done" has to be meant: a hesitant one (Walmart, a price *filter*
     # clicked for "sort by price", called done at 0.46) hands back instead.
-    if done >= STEP_DONE_THRESHOLD or (pick == "done" and p >= STEP_DONE_PICK):
+    # A picked "done" needs the separate "is the GOAL met?" answer to agree
+    # at least half way: Walmart, a price filter clicked, was "done" at 0.72
+    # with that answer at 0.42.
+    if done >= STEP_DONE_THRESHOLD or (pick == "done" and p >= STEP_DONE_PICK and done >= 0.5):
         return {**out, "move": "done"}
     if pick == "done":
         return {**out, "move": "unsure"}

@@ -368,7 +368,7 @@ _ELEMENTS_JS = r"""
     bits.push(el.innerText);
     const img = el.querySelector && el.querySelector("img[alt]");
     if (img) bits.push(img.getAttribute("alt"));
-    return [...new Set(bits.map(clean).filter(Boolean))].join(" ").slice(0, 90);
+    return [...new Set(bits.map(clean).filter(Boolean))].join(" ").slice(0, 60);
   };
   const kind = (el) => {
     const tag = el.tagName.toLowerCase();
@@ -405,7 +405,7 @@ _ELEMENTS_JS = r"""
     return "";
   };
   document.querySelectorAll("[data-fc-ref]").forEach(e => e.removeAttribute("data-fc-ref"));
-  const out = [], below = [], seen = new Set(), refs = [];
+  const out = [], below = [], above = [], seen = new Set(), refs = [];
   for (const el of document.querySelectorAll(INTERACTIVE)) {
     if (seen.has(el)) continue;
     seen.add(el);
@@ -434,7 +434,8 @@ _ELEMENTS_JS = r"""
     // one call as easily as 15.
     let list = null;
     if (r.bottom > 0 && r.top < H) { if (out.length < 130) list = out; }
-    else if (r.top >= H && r.top < 3 * H && below.length < 80) { item.below = true; list = below; }
+    else if (r.top >= H && r.top < 3 * H) { item.below = true; list = below; }
+    else if (r.bottom <= 0 && r.bottom > -2 * H) { item.above = true; list = above; }
     if (!list) continue;
     list.push(item);
     // Stamped so a later step can find this very element again — by
@@ -457,7 +458,14 @@ _ELEMENTS_JS = r"""
     return r.width > 50 && r.height > 50 && getComputedStyle(check).visibility !== "hidden"; })();
   const human = /press (&|and) hold|verify (that )?you are (a )?human|are you a robot|unusual traffic/i
     .test(text);
-  return { headings, text, elements: out.concat(below), blocker: (shown || human) ? "human check" : "" };
+  // Below the screen, only the nearest: a sidebar filter just under the fold
+  // is worth offering, the thirtieth product further down is not.
+  // Above it too: scroll down a results page and its sort control is gone
+  // from view — and from the choices, so a "Price" filter got picked instead.
+  below.sort((a, b) => a.y - b.y);
+  above.sort((a, b) => b.y - a.y);
+  return { headings, text, elements: out.concat(below.slice(0, 30), above.slice(0, 15)),
+           blocker: (shown || human) ? "human check" : "" };
 }
 """
 
