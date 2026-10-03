@@ -30,6 +30,8 @@ import src.jev as jev
 logger = get_logger(__name__)
 
 DEFAULT_STEPS = 8
+_APPLYING_KINDS = {"link", "radio", "checkbox", "switch", "option", "menuitem",
+                   "menuitemradio", "menuitemcheckbox", "tab"}
 MAX_STEPS = 15
 TIME_BUDGET_SECONDS = 120
 
@@ -113,10 +115,15 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
         moves.append(made)
         args = {"action": move}
         if move in ("click", "type", "select"):
-            args.update({"x": element.get("x"), "y": element.get("y"),
+            args.update({"x": element.get("x"), "y": element.get("y"), "ref": element.get("ref") or 0,
                          "label": (element.get("text") or "")[:40]})
+        # Controls that usually apply something — a link, a sort option, a
+        # filter checkbox or switch — get the longer wait for the page to
+        # start changing; a plain button often only opens a menu.
+        if move == "click" and (element.get("kind") or "") in _APPLYING_KINDS:
+            args["link"] = True
         if move == "select":
-            args.update({"text": decision.get("option") or "", "ref": element.get("ref") or 0})
+            args["text"] = decision.get("option") or ""
         if move == "type":
             text = type_text(goal, element, page)
             if text is None:
@@ -130,6 +137,11 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
             logger.warning("fast_step failed: %s", e)
             ending = "error"
             break
+        if page.get("stale"):
+            # Nothing was done: the control had gone. Decide again on the
+            # page as it is now (this still counts against the step budget).
+            last_sig = None
+            continue
         done_so_far.append(
             {"click": f"clicked {_describe(element)}",
              "type": f"typed \"{args.get('text', '')}\" into {_describe(element)}"

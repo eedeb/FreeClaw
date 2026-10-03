@@ -269,7 +269,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["observe", "click", "type", "select", "scroll", "back"]},
          **_XY, "text": {"type": "string"}, "enter": {"type": "boolean"},
-         "label": {"type": "string"}, "ref": {"type": "integer"}}}},
+         "label": {"type": "string"}, "ref": {"type": "integer"}, "link": {"type": "boolean"}}}},
     {"name": "request_captcha_help",
      "description": "Hand the current page to the user to solve a CAPTCHA or human check. "
                     "End your turn after.\nreason: shown to them.",
@@ -405,7 +405,7 @@ _ELEMENTS_JS = r"""
     return "";
   };
   document.querySelectorAll("[data-fc-ref]").forEach(e => e.removeAttribute("data-fc-ref"));
-  const out = [], below = [], seen = new Set();
+  const out = [], below = [], seen = new Set(), refs = [];
   for (const el of document.querySelectorAll(INTERACTIVE)) {
     if (seen.has(el)) continue;
     seen.add(el);
@@ -418,11 +418,7 @@ _ELEMENTS_JS = r"""
     if (!text && !/field|box|dropdown|combobox/.test(k)) continue;
     const x = Math.round((Math.max(r.left, 0) + Math.min(r.right, W)) / 2);
     const y = Math.round((Math.max(r.top, 0) + Math.min(r.bottom, H)) / 2);
-    const item = { kind: k, text, x, y, ref: out.length + below.length + 1 };
-    // Stamped so a later step can find this very element again — by
-    // position alone a dropdown a shop has drawn its own box over is the
-    // box, not the <select>.
-    el.setAttribute("data-fc-ref", String(item.ref));
+    const item = { kind: k, text, x, y };
     const where = area(el);
     if (where && where.toLowerCase() !== text.toLowerCase()) item.area = where;
     if (el.tagName === "SELECT") {
@@ -433,8 +429,21 @@ _ELEMENTS_JS = r"""
     if (el.checked) item.checked = true;
     if (el.disabled || el.getAttribute("aria-disabled") === "true") item.disabled = true;
     if (r.right <= 0 || r.left >= W) continue;
-    if (r.bottom > 0 && r.top < H) { if (out.length < 70) out.push(item); }
-    else if (r.top >= H && below.length < 10) { item.below = true; below.push(item); }
+    // Generous caps: a shop's header and nav alone can be 70 controls, and
+    // the filter the goal needs comes after them. Jev reads 150 options in
+    // one call as easily as 15.
+    let list = null;
+    if (r.bottom > 0 && r.top < H) { if (out.length < 130) list = out; }
+    else if (r.top >= H && r.top < 3 * H && below.length < 80) { item.below = true; list = below; }
+    if (!list) continue;
+    list.push(item);
+    // Stamped so a later step can find this very element again — by
+    // position alone a dropdown a shop has drawn its own box over is the
+    // box, not the <select>, and a control below the screen has no
+    // position worth clicking until it's scrolled to.
+    item.ref = refs.length + 1;
+    refs.push(el);
+    el.setAttribute("data-fc-ref", String(item.ref));
   }
   const headings = [...document.querySelectorAll("h1,h2,h3")].map(h => clean(h.innerText))
     .filter(Boolean).slice(0, 8);
@@ -1014,10 +1023,58 @@ class Tools:
         return page
 
     async def t_fast_step(self, action="observe", x=None, y=None, text="", enter=False, label="",
-                          ref=0):
+                          ref=0, link=False):
         page = await self.b.ensure()
         url_before = page.url
         what = str(label or "")[:40]
+        stale = False
+        if action in ("click", "type", "select") and ref:
+            # Jev may pick a control below the screen: bring that very element
+            # into view and click where it now is.
+            # Scroll first and measure after, separately: a page with smooth
+            # scrolling is still moving when scrollIntoView returns, and a rect
+            # read then sends the click to where the control was mid-scroll.
+            found = await page.evaluate("""(ref) => {
+                const el = document.querySelector(`[data-fc-ref="${ref}"]`);
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                if (r.top < 0 || r.bottom > innerHeight)
+                    el.scrollIntoView({block: "center", behavior: "instant"});
+                return true;
+            }""", int(ref))
+            spot = None
+            if found:
+                await asyncio.sleep(0.3)
+                spot = await page.evaluate("""(ref) => {
+                    const el = document.querySelector(`[data-fc-ref="${ref}"]`);
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+                    const hit = document.elementFromPoint(x, y);
+                    // The control's own label or row counts as the control: a
+                    // shop's radio is a hidden <input> under a styled label,
+                    // and clicking the label is how a person picks it.
+                    const own = el.closest("label, li, [role=option], [role=radio], [role=menuitemradio]");
+                    const ok = !!hit && (hit === el || el.contains(hit) || hit.contains(el)
+                        || (own && own.contains(hit))
+                        || [...(el.labels || [])].some(l => l.contains(hit)));
+                    return [x, y, ok];
+                }""", int(ref))
+            if not spot:
+                # The page changed under the pick (a sort reloaded it): don't
+                # click where that control used to be — report the page as it
+                # is now and let the loop decide again.
+                action = "observe"
+                stale = True
+            else:
+                x, y, reachable = spot
+                if not reachable and action == "click":
+                    # Something sits over it (a sticky bar, a leftover popover):
+                    # click the element itself rather than whatever is on top.
+                    self._status(f"Clicking “{what}”" if what else "Clicking")
+                    await page.evaluate("(ref) => document.querySelector(`[data-fc-ref=\"${ref}\"]`).click()",
+                                        int(ref))
+                    action = "clicked"
         if action in ("click", "type"):
             x, y = self._xy(x, y)
             self._status((f"Clicking “{what}”" if action == "click" else f"Typing into “{what}”")
@@ -1062,7 +1119,12 @@ class Tools:
                 await page.go_back(wait_until="domcontentloaded", timeout=15000)
             except Exception:                                # noqa: BLE001 — landed regardless
                 pass
-        budget = 4.0 if (action == "type" and enter) else 1.5 if action in ("click", "select") else 0.0
+        # How long a new page may take to *start* loading. A link almost always
+        # leads somewhere, and on a slow box a shop's next page can start well
+        # after a second; a button often just opens a menu, so it gets less.
+        clicked = action in ("click", "clicked")
+        budget = (4.0 if (action == "type" and enter) else 5.0 if (clicked and link)
+                  else 5.0 if action == "select" else 1.5 if clicked else 0.0)
         page = await self._await_change(page, url_before, budget)
         try:
             state = await page.evaluate(_ELEMENTS_JS)
@@ -1078,6 +1140,8 @@ class Tools:
         if self.b.new_tab:
             self.b.new_tab = False
             state["new_tab"] = True
+        if stale:
+            state["stale"] = True
         return [{"type": "text", "text": json.dumps(state)}]
 
     # ── handing over ──

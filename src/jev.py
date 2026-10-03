@@ -490,7 +490,11 @@ def browser_step(goal, page, done_so_far):
     elements = page.get("elements") or []
     options = {}
     for n, e in enumerate(elements, 1):
-        if e.get("below") or e.get("disabled") or RISKY_CONTROL.search(e.get("text") or ""):
+        # Below-the-screen controls are offered too — the browser scrolls to
+        # the one picked. Offering only what's on screen made a "4 stars &
+        # up" filter further down the column invisible, and Jev settled for
+        # "sort by reviews", the nearest thing it could see.
+        if e.get("disabled") or RISKY_CONTROL.search(e.get("text") or ""):
             continue
         if e.get("options"):
             # A dropdown is a choice of its options, each its own move.
@@ -500,7 +504,7 @@ def browser_step(goal, page, done_so_far):
                                             + (f' (in: {e["area"]})' if e.get("area") else ""))
             continue
         options[f"e{n}"] = _control_line(n, e)[len(f"[e{n}] "):]
-    options["scroll"] = "What the GOAL needs isn't among these on-screen controls: scroll down."
+    options["scroll"] = "What the GOAL needs isn't among any of these controls: scroll down."
     options["back"] = "This page is a wrong turn for the GOAL: go back."
     options["done"] = "The GOAL is already achieved on this page."
     options["stop"] = ("Can't go on without the user (sign-in, CAPTCHA, payment, a choice only "
