@@ -4,18 +4,24 @@ Optional. With a key in Settings → Jev (JEV_API_KEY in .env), each message the
 user types is read by Jev before the main model sees it, and Jev decides what
 that one turn is sent:
 
-  * which tool groups it gets — the built-in sets one by one, and every MCP
-    server on its own, rather than one of five fixed modes;
-  * which earlier messages it gets, picked individually rather than as the
-    last N — message 2 and message 4 and nothing in between is a valid answer —
-    and for each picked reply, whether the tool results behind it come too;
+  * which tools — each one on its own, built-in and MCP alike, so a turn that
+    only needs to read a file gets read_file and not the other eight file
+    tools, and a browser turn gets navigate and click but not drag;
+  * which earlier messages, picked individually — message 2 and message 4 and
+    nothing in between is a valid answer — and for each picked reply, whether
+    the tool results behind it come too;
   * which saved memory sections (context.md) are opened in full;
-  * the intent tag, which still sets the turn's temperature.
+  * how exact the answer has to be, which sets the temperature;
+  * a one-word label for the turn, shown in the chat.
+
+None of it is tied to the Classy tag table: the label is only a label, and the
+tools, history and temperature are each decided on their own.
 
 Jev doesn't write text. It is handed a "state" and a set of typed questions,
 and answers every question in one pass with a probability attached, in a few
 hundred milliseconds. The state is counted once and each question adds ~20
-tokens, so asking about forty messages costs about what asking about one does.
+tokens, so asking about a hundred tools and messages costs about what asking
+about one does.
 
 Without a key, or when Jev is slow or down, nothing here runs and the turn goes
 through the local Classy classifier exactly as it always has: `route()` returns
@@ -25,7 +31,7 @@ reason one fails.
 Leaning wide is deliberate everywhere below. A message or a tool the turn
 didn't need costs a few hundred tokens; one it needed and didn't get costs a
 wrong answer. So the thresholds sit well under 0.5, and the main model can
-still ask for a withheld tool group mid-turn (load_tools, in agent.py).
+still load a withheld tool group mid-turn (load_tools, in agent.py).
 """
 import os
 import re
@@ -52,13 +58,19 @@ TIMEOUT_SECONDS = 3.0
 
 # How far back Jev may reach, in messages that carry text (user messages and
 # assistant replies; pure tool traffic rides with the reply it led to).
-MAX_CANDIDATES = 40
+MAX_CANDIDATES = 80
 # Characters of each earlier message shown to Jev. Enough to tell what it was
 # about; the model gets the real thing if it's picked.
-STATE_CLIP = 360
+STATE_CLIP = 300
 # Memory sections offered to Jev, and how much of each it sees.
-MAX_SECTIONS = 30
+MAX_SECTIONS = 40
 SECTION_PREVIEW = 220
+# How much of a tool's description Jev sees.
+TOOL_DESC_CLIP = 150
+# A server with more tools than this is asked about as a whole, not tool by
+# tool: past it the list is a catalogue (Composio's can run to hundreds), and
+# a question per entry buys nothing but a longer state.
+MAX_TOOLS_PER_SERVER = 30
 
 # Probability at or above which something is included. Low on purpose — see
 # the module docstring.
@@ -67,8 +79,7 @@ MESSAGE_THRESHOLD = 0.3
 RAW_THRESHOLD = 0.5
 SECTION_THRESHOLD = 0.3
 
-# What each intent tag means, for Jev's one choice question. The tags are the
-# ones _TAG_SETTINGS knows; here they only pick the temperature.
+# The one-word label shown on the reply. Nothing else reads it.
 TAG_CRITERIA = {
     "Followup": "Reacting to or continuing the previous reply or task: corrections, "
                 "'yes', 'next', 'the second one', 'I logged in', 'keep going'.",
@@ -83,6 +94,15 @@ TAG_CRITERIA = {
     "Control": "Steering the conversation: stop, drop that, switch topic, start over.",
     "Smalltalk": "Greetings, chit-chat, or talk about the assistant itself; no task.",
 }
+
+# How exact the answer has to be, and the temperature each means.
+STYLE_CRITERIA = {
+    "exact": "Facts, numbers, code, commands, instructions, steps, schedules, or a "
+             "recommendation between options — one right answer.",
+    "balanced": "Everyday help and conversation: summaries, explanations, advice.",
+    "creative": "Stories, poems, jokes, names, brainstorming, banter — variety is wanted.",
+}
+STYLE_TEMPERATURE = {"exact": 0.2, "balanced": 0.5, "creative": 1.0}
 
 
 def api_key():
@@ -137,7 +157,7 @@ def check_key(key):
 
 # ── what the router is shown ─────────────────────────────────
 
-def _one_line(text, limit):
+def one_line(text, limit):
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
@@ -166,20 +186,44 @@ def candidates(messages, end):
     return out[-MAX_CANDIDATES:]
 
 
-def _state(user_input, cands, groups, sections):
+def _qid(text):
+    """Question ids must be plain identifiers; tool and server names may not be."""
+    return re.sub(r"[^A-Za-z0-9_]", "_", text)[:60]
+
+
+def _units(tools):
+    """What Jev is asked about for tools: one unit per tool, except that a
+    server with more than MAX_TOOLS_PER_SERVER is one unit for all of them.
+    [(qid, label for the state, [tool names])], in the order given."""
+    per_group = {}
+    for name, group, _desc in tools:
+        per_group.setdefault(group, []).append(name)
+    units, seen = [], set()
+    for name, group, desc in tools:
+        if len(per_group[group]) > MAX_TOOLS_PER_SERVER:
+            if group not in seen:
+                seen.add(group)
+                units.append(("g_" + _qid(group), f"{group} (all {len(per_group[group])} tools)",
+                              per_group[group]))
+        else:
+            units.append(("t_" + _qid(name), f"{name}: {one_line(desc, TOOL_DESC_CLIP)}", [name]))
+    return units
+
+
+def _state(user_input, cands, units, sections):
     parts = []
     if sections:
         parts.append("SAVED MEMORY SECTIONS:")
-        parts += [f"[s{n}] {name}: {_one_line(body, SECTION_PREVIEW)}"
+        parts += [f"[s{n}] {name}: {one_line(body, SECTION_PREVIEW)}"
                   for n, (name, body) in enumerate(sections)]
         parts.append("")
-    parts.append("TOOL GROUPS:")
-    parts += [f"[{gid}] {desc}" for gid, desc in groups]
+    parts.append("TOOLS:")
+    parts += [f"[{qid}] {label}" for qid, label, _names in units]
     parts.append("")
     if cands:
         parts.append("EARLIER MESSAGES, oldest first:")
         for i, role, text, used in cands:
-            line = f"[m{i}] {role}: {_one_line(text, STATE_CLIP)}"
+            line = f"[m{i}] {role}: {one_line(text, STATE_CLIP)}"
             if used:
                 line += f"  (used tools: {', '.join(dict.fromkeys(used))})"
             parts.append(line)
@@ -189,19 +233,18 @@ def _state(user_input, cands, groups, sections):
     return "\n".join(parts)
 
 
-def _qid(text):
-    """Question ids must be plain identifiers; MCP server names may not be."""
-    return re.sub(r"[^A-Za-z0-9_]", "_", text)[:60]
-
-
-def _questions(cands, groups, sections):
-    qs = {"tag": {"type": "choice",
-                  "instructions": "What kind of request is the CURRENT REQUEST?",
-                  "criteria": dict(TAG_CRITERIA)}}
-    for gid, desc in groups:
-        qs["tool_" + _qid(gid)] = {
-            "type": "noul",
-            "instructions": f"Could fully handling the CURRENT REQUEST need tool group [{gid}]?"}
+def _questions(cands, units, sections):
+    qs = {
+        "tag": {"type": "choice",
+                "instructions": "What kind of request is the CURRENT REQUEST?",
+                "criteria": dict(TAG_CRITERIA)},
+        "style": {"type": "choice",
+                  "instructions": "How exact does the answer to the CURRENT REQUEST have to be?",
+                  "criteria": dict(STYLE_CRITERIA)},
+    }
+    for qid, _label, _names in units:
+        qs[qid] = {"type": "noul",
+                   "instructions": f"Could fully handling the CURRENT REQUEST need tool [{qid}]?"}
     for i, role, _text, used in cands:
         qs[f"msg_{i}"] = {
             "type": "noul",
@@ -228,48 +271,58 @@ def _p(answers, qid):
 
 
 class Route:
-    """What one turn is sent. `messages` is [(index, "text"|"raw")] oldest
-    first; `tools` the picked group ids; `sections` memory section names."""
+    """What one turn is sent. `tools` is the picked tool names; `messages` is
+    [(index, "text"|"raw")] oldest first; `sections` memory section names."""
 
-    def __init__(self, tag, tools, messages, sections, ms):
-        self.tag, self.tools, self.messages, self.sections = tag, tools, messages, sections
-        self.ms = ms
+    def __init__(self, tag, style, tools, messages, sections, ms, questions):
+        self.tag, self.style = tag, style
+        self.tools, self.messages, self.sections = tools, messages, sections
+        self.ms, self.questions = ms, questions
+
+    @property
+    def temperature(self):
+        return STYLE_TEMPERATURE.get(self.style, 0.4)
 
     def summary(self):
         picked = [str(i) + ("+raw" if k == "raw" else "") for i, k in self.messages]
-        return (f"tag={self.tag} tools={sorted(self.tools)} messages={picked} "
-                f"sections={self.sections} ({self.ms}ms)")
+        return (f"tag={self.tag} style={self.style} tools={sorted(self.tools)} "
+                f"messages={picked} sections={self.sections} "
+                f"({len(self.questions)} questions, {self.ms}ms)")
 
 
-def route(user_input, messages, end, groups, sections):
+def route(user_input, messages, end, tools, sections):
     """Ask Jev what this turn needs.
 
     `messages[:end]` is the conversation before the current request, system
-    message first. `groups` is [(group_id, description)]; `sections` is
-    [(name, body)] of the memory sections that aren't always sent. Returns a
-    Route, or None when there's no key or Jev didn't answer in time — the
-    caller's cue to route the old way."""
+    message first. `tools` is [(name, group, description)] for every tool Jev
+    may choose; `sections` is [(name, body)] of the memory sections that
+    aren't always sent. Returns a Route, or None when there's no key or Jev
+    didn't answer in time — the caller's cue to route the old way."""
     key = api_key()
     if not key:
         return None
     cands = candidates(messages, end)
     sections = sections[:MAX_SECTIONS]
+    units = _units(tools)
+    questions = _questions(cands, units, sections)
     started = time.monotonic()
-    answers = ask(_state(user_input, cands, groups, sections),
-                  _questions(cands, groups, sections), key=key)
+    answers = ask(_state(user_input, cands, units, sections), questions, key=key)
     ms = int((time.monotonic() - started) * 1000)
     if not answers:
         return None
     tag = (answers.get("tag") or {}).get("choice")
+    style = (answers.get("style") or {}).get("choice")
     if tag not in TAG_CRITERIA:
         return None
+    if style not in STYLE_CRITERIA:
+        style = "balanced"
 
-    tools = set()
-    for gid, _desc in groups:
-        p = _p(answers, "tool_" + _qid(gid))
+    picked_tools = set()
+    for qid, _label, names in units:
+        p = _p(answers, qid)
         # An unanswered question counts as "yes": leaning wide.
         if p is None or p >= TOOL_THRESHOLD:
-            tools.add(gid)
+            picked_tools.update(names)
 
     picked = []
     for i, role, _text, used in cands:
@@ -280,4 +333,4 @@ def route(user_input, messages, end, groups, sections):
 
     chosen_sections = [name for n, (name, _b) in enumerate(sections)
                        if (_p(answers, f"sec_{n}") or 0) >= SECTION_THRESHOLD]
-    return Route(tag, tools, picked, chosen_sections, ms)
+    return Route(tag, style, picked_tools, picked, chosen_sections, ms, questions)

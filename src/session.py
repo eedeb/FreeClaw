@@ -24,8 +24,9 @@ and a nested run just binds a different Session for the duration.
     turn_usage               token tally for the turn in flight
     turn_prefix              pinned history window + tool set for the turn
     turn_notes               per-turn lines for the prompt's live tail
-    turn_withheld            } a Jev-routed turn's withheld tool groups and
-    turn_route_notes         } its own live-tail lines (agent._jev_notes)
+    turn_withheld            } a Jev-routed turn's withheld tool groups, its
+    turn_route_notes         } own live-tail lines (agent._jev_notes), and
+    turn_route               } what it was sent, for the chat
     turn_tool_names          which tools the turn in flight actually ran
     consecutive_tool_calls   } the runaway-tool throttle's run: calls to the
     last_tool_name           } same tool, and of those the ones that repeated
@@ -141,6 +142,8 @@ class Session:
         # for load_tools) and the rest of its live-tail lines.
         self.turn_withheld = {}
         self.turn_route_notes = ""
+        # What a Jev-routed turn was sent, for the chat (agent._jev_route_details).
+        self.turn_route = None
         self.consecutive_tool_calls = 0
         self.last_tool_name = None
         # The arguments half of the throttle's run. An MCP server often puts
@@ -215,6 +218,7 @@ class Session:
         self.turn_notes = ""
         self.turn_withheld = {}
         self.turn_route_notes = ""
+        self.turn_route = None
 
     def note_new_section(self, name):
         """Remember a context.md section created mid-conversation so the next

@@ -660,7 +660,7 @@ def _cache_breakpoint_messages(messages):
 # "ts" is when a user message was sent or a reply finished, so search_history
 # and the digest of older messages can say *when* something was said.
 _INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items",
-                          "intent", "sourced", "images", "ts")
+                          "intent", "sourced", "images", "ts", "route")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -3835,58 +3835,69 @@ def _append_tool_response(call_id, name, content):
 # ── Jev routing ──────────────────────────────────────────────
 #
 # With a Jev key set (Settings → Jev, src/jev.py), a typed message is routed by
-# Jev instead of the Classy tag table above: it picks the tool groups, the
-# earlier messages and the memory sections this one turn is sent. Everything
-# here builds what Jev is shown and applies what it answers; when it doesn't
-# answer, agent_stream routes the old way and none of this runs.
+# Jev instead of the Classy tag table above: it picks each tool, each earlier
+# message and each memory section this one turn is sent, and the temperature.
+# Everything here builds what Jev is shown and applies what it answers; when it
+# doesn't answer, agent_stream routes the old way and none of this runs.
 
-# The built-in tool groups Jev chooses between, beside one group per MCP
-# server. Memory and the clock aren't offered: every turn keeps them, for the
-# reasons build_time_tools() and the 'file' mode above give.
+# The built-in tool groups. Jev picks tools one by one; a group is only what a
+# withheld tool is loaded back by (load_tools) and how the chat lists it.
 _JEV_BUILTIN_GROUPS = (
-    ("files", "The user's files, notes and pages: read, write, edit, delete; add or cancel "
-              "scheduled reminders (pings); describe an image.", "build_file_tools",
-     "your files and reminders"),
-    ("search", "Web search, for anything current or not already in the conversation.",
-     "build_search_tools", "web search"),
-    ("device", "Open a link or app on the user's device, run a shell command, or hand a task "
-               "to a sub-agent.", "build_utility_tools", "opening links, the shell and sub-agents"),
+    ("files", "build_file_tools", "your files and reminders"),
+    ("memory", "_jev_memory_tools", "searching memory and past conversations"),
+    ("search", "build_search_tools", "web search"),
+    ("device", "build_utility_tools", "opening links, the shell and sub-agents"),
 )
 
-# Most of a group's tools Jev is told the names of.
-_JEV_TOOL_NAMES_SHOWN = 12
+# Sent on every routed turn, never put to Jev. add_context because the prompt
+# tells the model to save what it learns on every turn, whatever the turn is
+# about; get_time for the reason build_time_tools() gives.
+_JEV_ALWAYS = ("add_context", "get_time")
+
+# Keep the previous exchange whatever Jev says. Off: Jev is asked about it
+# like any other message, and reliably keeps it when the request leans on it.
+_JEV_KEEP_LAST_EXCHANGE = False
+
+# Characters of each message the chat's route panel previews.
+_JEV_PREVIEW = 120
+
+
+def _jev_memory_tools():
+    return [t for t in build_context_tools()
+            if t["function"]["name"] not in _JEV_ALWAYS]
+
+
+def _tool_name(t):
+    return (t.get("function") or {}).get("name") or ""
 
 
 def _jev_tool_groups(user):
-    """[(group_id, description for Jev, short name for the model, tools)] for
-    `user`: the built-in groups, then one per MCP server they have on."""
-    groups = [(gid, desc, short, globals()[builder]())
-              for gid, desc, builder, short in _JEV_BUILTIN_GROUPS]
+    """[(group_id, short name for the model, tools)] for `user`: the built-in
+    groups, then one per MCP server they have on."""
+    groups = [(gid, short, globals()[builder]())
+              for gid, builder, short in _JEV_BUILTIN_GROUPS]
     registry = registry_for(user)
     browser = next((e["server"] for e in registry.values()
                     if e["server"].get("needs_browser")), None)
     by_server = {}
     for t in mcp_tools_for(user):
-        entry = registry.get(t["function"]["name"])
+        entry = registry.get(_tool_name(t))
         # request_sign_in isn't an MCP tool, but it only means anything next
         # to the browser (see _build_catalogue), so it travels with it.
         server = entry["server"] if entry else browser
         if server is None:
             continue
-        name = server.get("name") or "mcp"
-        if name not in by_server:
-            tool_names = sorted({e["tool"] for e in registry.values()
-                                 if e["server"].get("name") == name})
-            about = " ".join(str(server.get("description") or "").split())[:200]
-            by_server[name] = [
-                f"The '{name}' MCP server. {about} Tools: "
-                + ", ".join(tool_names[:_JEV_TOOL_NAMES_SHOWN])
-                + (" …" if len(tool_names) > _JEV_TOOL_NAMES_SHOWN else ""),
-                []]
-        by_server[name][1].append(t)
-    groups += [(f"mcp:{name}", desc, f"the {name} MCP server", ts)
-               for name, (desc, ts) in by_server.items()]
+        by_server.setdefault(server.get("name") or "mcp", []).append(t)
+    groups += [(f"mcp:{name}", f"the {name} MCP server", ts)
+               for name, ts in by_server.items()]
     return groups
+
+
+def _jev_tool_choices(groups):
+    """[(name, group, description)] — every tool Jev is asked about."""
+    return [(_tool_name(t), gid, (t.get("function") or {}).get("description") or "")
+            for gid, _short, ts in groups for t in ts
+            if _tool_name(t) not in _JEV_ALWAYS]
 
 
 def _jev_sections():
@@ -3905,8 +3916,7 @@ def _jev_picked(messages, end, route):
     A "raw" pick is the reply plus the tool calls and results that led to it,
     sent verbatim from just after the user message that asked — which comes
     along as text, since tool output with no question in front of it reads as
-    an answer to nothing. The last exchange always comes, as text at least: a
-    follow-up is about it far more often than not, and it is cheap."""
+    an answer to nothing."""
     full, text = set(), set()
     for i, kind in route.messages:
         if i >= end:
@@ -3920,31 +3930,33 @@ def _jev_picked(messages, end, route):
                 text.add(j - 1)
         else:
             text.add(i)
-    last_user = next((i for i in range(end - 1, 0, -1)
-                      if messages[i].get("role") == "user"), None)
-    if last_user is not None:
-        text.add(last_user)
-        text.update(i for i in range(last_user + 1, end)
-                    if messages[i].get("role") == "assistant"
-                    and isinstance(messages[i].get("content"), str)
-                    and messages[i]["content"].strip())
+    if _JEV_KEEP_LAST_EXCHANGE:
+        last_user = next((i for i in range(end - 1, 0, -1)
+                          if messages[i].get("role") == "user"), None)
+        if last_user is not None:
+            text.add(last_user)
+            text.update(i for i in range(last_user + 1, end)
+                        if messages[i].get("role") == "assistant"
+                        and isinstance(messages[i].get("content"), str)
+                        and messages[i]["content"].strip())
     return [(i, "full" if i in full else "text") for i in sorted(full | text)]
 
 
 def _jev_sections_block(names, sections):
     """The memory sections Jev opened for this turn, for the live tail, within
-    CONTEXT_INLINE_BUDGET."""
+    CONTEXT_INLINE_BUDGET. Returns (block, names actually opened)."""
     bodies = dict(sections)
-    parts, budget = [], CONTEXT_INLINE_BUDGET
+    parts, opened, budget = [], [], CONTEXT_INLINE_BUDGET
     for name in names:
         body = bodies.get(name, "")
         if not body or len(body) > budget:
             continue
         parts.append(f"## {name}\n{body}")
+        opened.append(name)
         budget -= len(body)
     if not parts:
-        return ""
-    return "\nMemory sections for this message:\n" + "\n".join(parts)
+        return "", opened
+    return "\nMemory sections for this message:\n" + "\n".join(parts), opened
 
 
 LOAD_TOOLS_NAME = "load_tools"
@@ -3976,24 +3988,91 @@ def _jev_notes(sess):
     note = ""
     if withheld:
         note = ("\nNot loaded for this message: "
-                + "; ".join(f"{short} ({gid})" for gid, (short, _t) in withheld.items())
+                + "; ".join(f"{short} ({gid}: {', '.join(_tool_name(t) for t in ts)})"
+                            for gid, (short, ts) in withheld.items())
                 + ". If you need one, call load_tools — don't answer from stale weights.")
     return note + sess.turn_route_notes
 
 
-def _jev_turn_tools(groups, picked_ids, sess):
-    """The routed turn's tool list, recording the withheld groups on the
-    Session for load_tools."""
-    turn_tools = build_context_tools() + build_time_tools()
+def _jev_turn_tools(groups, picked_names, sess):
+    """The routed turn's tool list, recording what each group had withheld on
+    the Session for load_tools."""
+    turn_tools = [t for t in build_context_tools() + build_time_tools()
+                  if _tool_name(t) in _JEV_ALWAYS]
     sess.turn_withheld = {}
-    for gid, _desc, short, ts in groups:
-        if gid in picked_ids:
-            turn_tools += ts
-        elif ts:
-            sess.turn_withheld[gid] = (short, ts)
+    for gid, short, ts in groups:
+        kept = [t for t in ts if _tool_name(t) in picked_names]
+        rest = [t for t in ts if _tool_name(t) not in picked_names
+                and _tool_name(t) not in _JEV_ALWAYS]
+        turn_tools += kept
+        if rest:
+            sess.turn_withheld[gid] = (short, rest)
     if sess.turn_withheld:
         turn_tools.append(_load_tools_tool(sess.turn_withheld))
     return turn_tools
+
+
+def _route_tool_list(turn_tools, groups):
+    """What the chat's route panel lists as sent: tool names grouped as the
+    model would think of them."""
+    sent = {_tool_name(t) for t in turn_tools or ()}
+    out = [{"group": "always", "names": [n for n in _JEV_ALWAYS if n in sent]}]
+    for gid, _short, ts in groups:
+        names = [_tool_name(t) for t in ts
+                 if _tool_name(t) in sent and _tool_name(t) not in _JEV_ALWAYS]
+        if names:
+            out.append({"group": gid, "names": names})
+    return out
+
+
+def _jev_route_details(route, groups, messages, full_start, picked, eco_messages,
+                       turn_tools, opened, digest_items, sess):
+    """Everything this turn was sent, for the chat's hover panel on the tag:
+    kept on the reply (`route`, an internal key) so it survives a reload."""
+    history = []
+    for i, kind in picked:
+        m = messages[i]
+        role = m.get("role")
+        if role == "tool" or (role == "assistant" and not (m.get("content") or "").strip()):
+            continue  # part of a "full" block, shown on the reply it led to
+        entry = {"i": i, "role": role, "kind": kind,
+                 "preview": jev.one_line(m.get("content"), _JEV_PREVIEW)}
+        if kind == "full":
+            used = []
+            j = i - 1
+            while j > 0 and messages[j].get("role") != "user":
+                used += [((c or {}).get("function") or {}).get("name") or ""
+                         for c in messages[j].get("tool_calls") or ()]
+                j -= 1
+            entry["tools"] = list(dict.fromkeys(reversed([u for u in used if u])))
+        history.append(entry)
+    _pre, all_sections = _split_context(_read_context())
+    present = {_norm_header(n) for n, _b in all_sections}
+    sizes = {
+        "system": len(eco_messages[0].get("content") or ""),
+        "history": sum(len(json.dumps(m, default=str)) for m in eco_messages[1:]),
+        "tools": len(json.dumps(turn_tools or [])),
+    }
+    return {
+        "router": "jev",
+        "ms": route.ms,
+        "questions": len(route.questions),
+        "label": route.tag,
+        "style": route.style,
+        "temperature": route.temperature,
+        "tools": _route_tool_list(turn_tools, groups),
+        "withheld": [{"group": gid, "names": [_tool_name(t) for t in ts]}
+                     for gid, (_short, ts) in sess.turn_withheld.items()],
+        "loaded": [],
+        "history": history,
+        "earlier": sum(1 for m in messages[1:full_start]
+                       if m.get("role") in ("user", "assistant")
+                       and isinstance(m.get("content"), str) and m["content"].strip()),
+        "digest": digest_items,
+        "memory": {"always": [h for h in _CTX_ALWAYS if _norm_header(h) in present],
+                   "opened": opened},
+        "chars": sizes,
+    }
 
 
 def _load_tools(args_dict):
@@ -4009,7 +4088,7 @@ def _load_tools(args_dict):
         available = ", ".join(sess.turn_withheld) or "none — everything is already loaded"
         return f"Nothing loaded. Groups you can load: {available}."
     tools_now = [t for t in (sess.turn_prefix.get("tools") or [])
-                 if (t.get("function") or {}).get("name") != LOAD_TOOLS_NAME]
+                 if _tool_name(t) != LOAD_TOOLS_NAME]
     for g in got:
         tools_now += sess.turn_withheld.pop(g)[1]
     if sess.turn_withheld:
@@ -4017,6 +4096,10 @@ def _load_tools(args_dict):
     if sess.turn_prefix:
         sess.turn_prefix["tools"] = _apply_depth_limit(tools_now, sess)
     sess.turn_notes = _jev_notes(sess)
+    if sess.turn_route:
+        sess.turn_route["loaded"] += got
+        sess.turn_route["withheld"] = [w for w in sess.turn_route["withheld"]
+                                       if w["group"] not in got]
     return "Loaded: " + ", ".join(got) + ". Their tools are available from your next step."
 
 
@@ -4030,7 +4113,7 @@ def _jev_route(user_input, sess):
         routed_memory = _CTX_ROUTED in (sess.messages[0].get("content") or "")
         sections = _jev_sections() if routed_memory else []
         route = jev.route(user_input, sess.messages, len(sess.messages),
-                          [(gid, desc) for gid, desc, _s, _t in groups], sections)
+                          _jev_tool_choices(groups), sections)
     except Exception:
         logger.exception("Jev routing failed; falling back to the classifier")
         return None
@@ -4096,9 +4179,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # Classy tag table routes the turn exactly as it did before.
             routed = _jev_route(user_input, sess)
         if routed:
+            # Nothing here comes from the tag table: the tag is only the
+            # reply's label, and Jev chose the temperature on its own.
             tag = routed[0].tag
-            # The tag only sets the temperature now; Jev picked the rest.
-            temp = _TAG_SETTINGS.get(tag, _DEFAULT_TAG_SETTINGS)[2]
+            temp = routed[0].temperature
             print('Jev route: ' + routed[0].summary())
         elif not ping:
             intent, certainty = Classy.classify(user_input, CLASSIFIER_PATH)
@@ -4132,10 +4216,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             full_start = len(agent_messages) - 1
             picked = _jev_picked(agent_messages, full_start, route)
             included = {i for i, _kind in picked}
-            sess.turn_route_notes = (
-                _digest([m for n, m in enumerate(agent_messages[:full_start])
-                         if n and n not in included])
-                + _jev_sections_block(route.sections, sections))
+            skipped = [m for n, m in enumerate(agent_messages[:full_start])
+                       if n and n not in included]
+            sections_block, opened = _jev_sections_block(route.sections, sections)
+            sess.turn_route_notes = _digest(skipped) + sections_block
             check_tools = _jev_turn_tools(groups, route.tools, sess)
             sess.turn_notes = _jev_notes(sess)
             _refresh_volatile()
@@ -4143,6 +4227,13 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                                                 full_start, picked)
             check_tools = _apply_depth_limit(check_tools, sess)
             _pin_turn_prefix(full_start, check_tools, full_start, picked=picked)
+            digest_items = [jev.one_line(m["content"], _JEV_PREVIEW) for m in skipped
+                            if m.get("role") == "user" and isinstance(m.get("content"), str)
+                            ][-DIGEST_MAX_ITEMS:]
+            sess.turn_route = _jev_route_details(
+                route, groups, agent_messages, full_start, picked, eco_messages,
+                check_tools, opened, digest_items, sess)
+            yield {"type": "route", "route": sess.turn_route}
         else:
             # Normalised to an index either way (1 is "everything after the system
             # message"), so there's a single number to pin for the continuations.
@@ -4657,6 +4748,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         "role": "assistant",
         "provider": provider,
         "intent": sess.turn_tag,
+        # On a Jev-routed turn, everything it was sent (tools, history,
+        # memory) for the chat's hover panel. Internal, like `intent`.
+        **({"route": sess.turn_route} if sess.turn_route else {}),
         # Whether this answer was backed by a search or came out of the model.
         # Internal, like `intent` — stripped before any request goes out
         # (_INTERNAL_MESSAGE_KEYS) — and kept so a reply that cites sources can
