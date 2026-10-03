@@ -20,6 +20,7 @@ import src.approvals as approvals
 import src.browser_handoff as browser_handoff
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
+import src.fast_browser as fast_browser
 import src.jev as jev
 import src.mcp_catalog as mcp_catalog
 import src.mcp_client as mcp_client
@@ -2392,6 +2393,104 @@ def build_utility_tools():
 SIGN_IN_TOOL_NAME = "request_sign_in"
 
 
+FAST_BROWSER_TOOL_NAME = "browser_do"
+
+
+def build_fast_browser_tools():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": FAST_BROWSER_TOOL_NAME,
+                "description": (
+                    "Fast browser mode: hand over a short goal on the current site — search for X, "
+                    "apply these filters, sort by price, open the reviews, go to page 2 — and it "
+                    "clicks and types through it on its own, much faster than step by step, then "
+                    "shows you where it ended up. Use it for the routine clicking; read and judge "
+                    "the results yourself. It never buys, pays, sends or deletes. Open the site "
+                    "with navigate first."),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string"},
+                        "max_steps": {"type": "integer",
+                                      "description": f"Default {fast_browser.DEFAULT_STEPS}, "
+                                                     f"at most {fast_browser.MAX_STEPS}."},
+                    },
+                    "required": ["goal"],
+                },
+            },
+        }
+    ]
+
+
+def _builtin_browser(registry):
+    """FreeClaw's own browser server among `registry`'s, or None."""
+    return next((e["server"] for e in registry.values()
+                 if e["server"].get("builtin") and e["server"].get("needs_browser")), None)
+
+
+def _fast_type_text(goal, element, page):
+    """What to type into `element` for `goal` — one short request to the
+    turn's provider chain, no tools — or None if the field isn't for typing."""
+    messages = [
+        {"role": "system", "content": (
+            "You fill in one field during a web task. Reply with only the exact text to type "
+            "into the field, nothing else — or NONE if this field shouldn't be typed into for "
+            "this goal.")},
+        {"role": "user", "content": (
+            f"Goal: {goal}\nPage: {page.get('title') or ''} | {page.get('url') or ''}\n"
+            f"Field: {element.get('kind')} \"{element.get('text') or ''}\" "
+            f"(current value: \"{element.get('value') or ''}\")")},
+    ]
+    try:
+        stream, _provider = _create_completion(model="openai/gpt-oss-120b", messages=messages,
+                                               temperature=0, tools=None, top_p=1, stream=True)
+        text = ""
+        for chunk in stream:
+            if getattr(chunk, "choices", None):
+                delta = chunk.choices[0].delta
+                if delta is not None and getattr(delta, "content", None):
+                    text += delta.content
+    except Exception:
+        logger.exception("browser_do couldn't decide what to type")
+        return None
+    text = text.strip().strip('"').strip()
+    return None if not text or text.upper() == "NONE" else text[:200]
+
+
+def _browser_do(args_dict):
+    """browser_do: run the fast loop (src/fast_browser.py) on this user's
+    browser, then answer with what it did and one screenshot of where it
+    ended up."""
+    goal = str(args_dict.get("goal") or "").strip()
+    if not goal:
+        return "Error: goal is required."
+    if not jev.enabled():
+        return "The fast browser needs a Jev key (Settings → Jev). Use the browser tools directly."
+    server = _builtin_browser(registry_for(_tools_user()))
+    if server is None:
+        return "Error: FreeClaw's browser isn't on."
+    server = mcp_client.for_user(server, approvals.current_user())
+
+    def step(args):
+        result = str(mcp_client.call_tool(server, "fast_step", args))
+        try:
+            return json.loads(result)
+        except ValueError:
+            raise RuntimeError(result[:300])
+
+    summary, log = fast_browser.run(goal, step, _fast_type_text, cancellation.is_stopped,
+                                    args_dict.get("max_steps"))
+    logger.info("browser_do steps: %s", json.dumps(log)[:2000])
+    try:
+        shot = mcp_client.call_tool(server, "screenshot", {})
+    except Exception:
+        logger.exception("browser_do couldn't take its closing screenshot")
+        return summary
+    return mcp_client.ToolText(summary, getattr(shot, "images", ()))
+
+
 def build_sign_in_tools():
     return [
         {
@@ -2667,6 +2766,10 @@ def _build_catalogue(user):
     # keep the browser, and is absent whenever the browser is.
     if any(e["server"].get("needs_browser") for e in registry.values()):
         mcp_tools = mcp_tools + build_sign_in_tools()
+    # The fast loop rides with FreeClaw's own browser, whose fast_step it
+    # drives, and only with a Jev key, which picks every move.
+    if jev.enabled() and _builtin_browser(registry):
+        mcp_tools = mcp_tools + build_fast_browser_tools()
     return {
         "tools": (build_file_tools() + build_context_tools() + build_search_tools()
                   + build_utility_tools() + build_time_tools() + mcp_tools),
@@ -3440,6 +3543,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
 
     if command_name == SUBAGENT_TOOL_NAME:
         return _run_subagent(args_dict.get('task'))
+
+    if command_name == FAST_BROWSER_TOOL_NAME:
+        return _browser_do(args_dict)
 
     if command_name == SIGN_IN_TOOL_NAME:
         # Nothing to do server-side: the chat turns this call into the button.

@@ -107,6 +107,8 @@ BUILTIN_SERVERS = [
         # src/browser_setup.py, which the enable path drives.
         "needs_browser": True,
         "builtin": True,
+        # Internal to FreeClaw's fast loop (agent.browser_do), never offered.
+        "exclude_tools": ["fast_step"],
     },
 ]
 
