@@ -4263,7 +4263,7 @@ def _jev_route_details(route, groups, messages, full_start, picked, eco_messages
         "tools": len(json.dumps(turn_tools or [])),
     }
     return {
-        "router": "jev",
+        "router": "local" if route.local else "jev",
         "ms": route.ms,
         "questions": len(route.questions),
         "label": route.tag,
@@ -4382,6 +4382,9 @@ def _follow_through(reply):
     the user, or a reply that is FreeClaw's own error text."""
     sess = _sess()
     text = (reply or "").strip()
+    # A greeting answered (jev._local_route) has nothing to follow through on.
+    if sess.turn_route and sess.turn_route.get("router") == "local":
+        return None
     if (not jev.enabled() or cancellation.is_stopped() or not sess.turn_prefix
             or sess.turn_follow_ups >= FOLLOW_THROUGH_MAX or not text
             or text.endswith("?") or text.startswith("(No response")):

@@ -1772,8 +1772,9 @@
   function buildRoutePanel(route) {
     const panel = rpEl('div', 'route-panel');
     panel.setAttribute('role', 'tooltip');
-    panel.appendChild(rpEl('div', 'rp-head',
-      `Routed by Jev · ${route.ms}ms · ${route.questions} questions · ${route.style}, temp ${route.temperature}`));
+    panel.appendChild(rpEl('div', 'rp-head', route.router === 'local'
+      ? `Routed without Jev (a greeting or thanks) · ${route.style}, temp ${route.temperature}`
+      : `Routed by Jev · ${route.ms}ms · ${route.questions} questions · ${route.style}, temp ${route.temperature}`));
     const servers = Object.entries(route.servers || {});
     if (servers.length) {
       panel.appendChild(rpEl('div', 'rp-none', 'Way chosen: ' + servers
