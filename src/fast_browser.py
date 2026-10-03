@@ -22,6 +22,7 @@ going when Jev isn't confident: an unsure step hands back rather than guesses.
 """
 import json
 import time
+from urllib.parse import urlsplit
 
 from src.logging_setup import get_logger
 import src.jev as jev
@@ -66,6 +67,11 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
     done_so_far, log = [], []
     ending = "steps"
     last_sig = None
+    # Each move as (page path, move, control, option), in order: going back
+    # to a move made two steps ago — sort by price, sort by reviews, sort by
+    # price — is the loop undoing itself, and it hands back rather than
+    # flip-flopping until the step budget runs out.
+    moves = []
     try:
         page = step({"action": "observe"})
     except Exception as e:                                   # noqa: BLE001
@@ -100,6 +106,11 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
             ending = "repeat"
             break
         last_sig = sig
+        made = (urlsplit(page.get("url") or "").path, move, element.get("text"), decision.get("option"))
+        if move in ("click", "select", "type") and len(moves) >= 2 and made == moves[-2] != moves[-1]:
+            ending = "repeat"
+            break
+        moves.append(made)
         args = {"action": move}
         if move in ("click", "type", "select"):
             args.update({"x": element.get("x"), "y": element.get("y"),

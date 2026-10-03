@@ -2403,12 +2403,12 @@ def build_fast_browser_tools():
             "function": {
                 "name": FAST_BROWSER_TOOL_NAME,
                 "description": (
-                    "Fast browser mode: hand over a short goal on the current site — search for X, "
-                    "apply these filters, sort by price, open the reviews, go to page 2 — and it "
-                    "clicks and types through it on its own, much faster than step by step, then "
-                    "shows you where it ended up. Use it for the routine clicking; read and judge "
-                    "the results yourself. It never buys, pays, sends or deletes. Open the site "
-                    "with navigate first."),
+                    "Fast browser mode: clicks and types through the routine part of a site on its "
+                    "own, much faster than step by step, then shows you where it ended up. goal is "
+                    "where to get to, as on-page steps — \"search for 65 inch tcl tv and sort by "
+                    "price low to high\", \"open the Mystery category, page 2\" — never what to "
+                    "conclude: it can't read or compare, so do that yourself from what it shows "
+                    "you. It never buys, pays, sends or deletes. Open the site with navigate first."),
                 "parameters": {
                     "type": "object",
                     "properties": {
