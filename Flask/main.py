@@ -180,11 +180,33 @@ def current_user():
 
 def _reset_conversation(name):
     """Start `name`'s conversation over. Shared by the /reset route and the
-    /reset slash-command so the two can't drift."""
+    /reset slash-command so the two can't drift.
+
+    Closes `name`'s browsers too — the agent's and any sign-in browser open for
+    them — so a fresh conversation doesn't carry on in whatever page the last
+    one left open, and doesn't hold a Chromium nobody is using. Their saved
+    logins are on disk and load again the next time the agent browses."""
     with _session_lock(name):
         activate_session(name)
         agent.reset()
         save_conversation(name, agent.get_messages(), title="New chat")
+    _close_browsers(name)
+
+
+def _close_browsers(name):
+    """Stop `name`'s agent browser and close their sign-in browser, without
+    saving it — a reset isn't a decision about logins. Failures are logged:
+    the conversation was reset either way."""
+    try:
+        mcp_client.release_user_browser(name)
+    except Exception:
+        logger.exception("Couldn't close %r's browser on reset", name)
+    try:
+        signin = browser_takeover.get(name)
+        if signin is not None:
+            signin.cancel()
+    except Exception:
+        logger.exception("Couldn't close %r's sign-in browser on reset", name)
 
 
 def _has_title(name):
