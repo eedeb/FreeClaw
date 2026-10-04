@@ -53,7 +53,16 @@ LOCALE = "en-US"
 # the flag and the matching Blink feature makes it read false again. Shared by
 # both browsers: the site should see the same one sign in and come back.
 IGNORE_DEFAULT_ARGS = ["--enable-automation"]
-LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled"]
+LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled",
+               # One renderer process where Chromium would otherwise keep
+               # several — a spare warmed up for the next navigation, and the
+               # last site's lingering while the next loads. Measured over
+               # walmart, amazon, espn, cnn and target: 670MB -> 565MB on
+               # average, 920MB -> 770MB at the peak. A soft limit: forced
+               # site isolation still gets a cross-site frame its own process
+               # (and headless Chromium doesn't isolate sites by default, so
+               # nothing that was separate is merged).
+               "--renderer-process-limit=1"]
 
 
 # Run in every page of both browsers (context.add_init_script): pause looping
@@ -169,8 +178,15 @@ SHOT_QUALITY = 70
 # The live view. A watcher on a phone connection is the constraint, so these
 # are cheaper than the model's screenshots and capped well under the
 # compositor's 60fps.
-LIVE_QUALITY = 55
+LIVE_QUALITY = 45
 LIVE_MIN_FRAME_GAP = 1 / 12
+# Frames are sent at most this wide; the viewer scales them to fit, and
+# clicks map through VIEWPORT, not the frame. 1024px at quality 45 is ~40%
+# smaller a frame than full-size at 55 (amazon 38KB -> 24KB, espn 56KB -> 34KB)
+# and still reads fine for watching and for typing a login. The model's own
+# screenshots (SHOT_QUALITY) stay full-size: what they cost it is set by their
+# dimensions, and small text is what it most needs to read.
+LIVE_MAX_WIDTH = 1024
 # How long the watched cursor takes to reach a target before the click lands,
 # so the person sees where it's going rather than a click appearing from
 # nowhere. Matched by the viewer's own animation.
@@ -178,6 +194,17 @@ CURSOR_GLIDE = 0.4
 # FreeClaw renews the lease every few seconds while a viewer is open; this is
 # the most it can ask for, so a FreeClaw that went away stops the frames soon.
 MAX_WATCH_LEASE = 30.0
+
+# Tabs kept open. Sites open links in new tabs (walmart, amazon) and each is a
+# page held in memory — 150-300MB on a shopping site — that the agent, which
+# only ever works in the newest, never goes back to. Past this, the oldest are
+# closed. Three, not one: a sign-in popup needs the page that opened it.
+MAX_TABS = 3
+# Once the browser has sat unused this long — the model thinking, a turn over
+# — Chromium is told memory is critically short, which makes it drop its
+# caches and collect garbage in every page. Measured ~15MB on average and
+# ~50MB at the peak; done between steps, because in a step it costs ~2s.
+PURGE_AFTER_IDLE = 10.0
 
 # The person taking the wheel (notifications/freeclaw/control): FreeClaw
 # renews this lease while their Browser app holds control, so a closed tab
@@ -590,6 +617,41 @@ class Browser:
         popups land there, and it's nearly always where the agent needs to be."""
         self.page = page
         self.new_tab = True
+        asyncio.ensure_future(self._trim_tabs(page))
+
+    async def _trim_tabs(self, keep):
+        """Close the oldest tabs past MAX_TABS — never `keep`, the one just
+        opened."""
+        try:
+            pages = [p for p in self.context.pages if not p.is_closed()]
+        except Exception:                                    # noqa: BLE001 — context closing
+            return
+        for page in pages[:max(0, len(pages) - MAX_TABS)]:
+            if page is keep:
+                continue
+            try:
+                await page.close()
+            except Exception:                                # noqa: BLE001 — already gone
+                pass
+
+    async def purge(self):
+        """Have every page give back what it can: caches dropped and garbage
+        collected, as Chromium does when the machine runs short of memory."""
+        if not self.alive():
+            return
+        try:
+            pages = [p for p in self.context.pages if not p.is_closed()]
+        except Exception:                                    # noqa: BLE001
+            return
+        _log(f"idle: purging {len(pages)} page(s)")
+        for page in pages:
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                await cdp.send("Memory.simulatePressureNotification", {"level": "critical"})
+                await cdp.send("HeapProfiler.collectGarbage")
+                await cdp.detach()
+            except Exception:                                # noqa: BLE001 — page mid-navigation
+                pass
 
     def current(self):
         """The page being driven, falling back to the newest open one when it
@@ -725,11 +787,27 @@ class Browser:
             await self._stop_cast()
 
     async def _send_still(self, page):
+        """The starting frame, the size the screencast sends: through its
+        CDP session when there is one, since page.screenshot can't scale."""
+        cdp = self._cdp
         try:
-            data = await page.screenshot(type="jpeg", quality=LIVE_QUALITY, timeout=5000)
+            if cdp is not None:
+                # The clip is in document coordinates: offset by the scroll,
+                # or a scrolled page sends its top instead of what's showing.
+                view = (await cdp.send("Page.getLayoutMetrics")).get("cssVisualViewport") or {}
+                shot = await cdp.send("Page.captureScreenshot", {
+                    "format": "jpeg", "quality": LIVE_QUALITY,
+                    "clip": {"x": view.get("pageX", 0), "y": view.get("pageY", 0),
+                             "width": VIEWPORT["width"],
+                             "height": VIEWPORT["height"],
+                             "scale": LIVE_MAX_WIDTH / VIEWPORT["width"]}})
+                data = shot.get("data") or ""
+            else:
+                data = base64.b64encode(await page.screenshot(
+                    type="jpeg", quality=LIVE_QUALITY, timeout=5000)).decode("ascii")
         except Exception:                                    # noqa: BLE001 — mid-navigation
             return
-        self._emit("frame", {"data": base64.b64encode(data).decode("ascii")})
+        self._emit("frame", {"data": data})
 
     async def _cast(self, page):
         await self._stop_cast()
@@ -741,7 +819,8 @@ class Browser:
             cdp.on("Page.screencastFrame", lambda params, c=cdp: self._on_frame(c, params))
             await cdp.send("Page.startScreencast", {
                 "format": "jpeg", "quality": LIVE_QUALITY,
-                "maxWidth": VIEWPORT["width"], "maxHeight": VIEWPORT["height"],
+                "maxWidth": LIVE_MAX_WIDTH,
+                "maxHeight": round(VIEWPORT["height"] * LIVE_MAX_WIDTH / VIEWPORT["width"]),
             })
             self._cdp = cdp
         except Exception as e:                               # noqa: BLE001 — a picture is optional
@@ -1239,6 +1318,7 @@ class Server:
         self._inputs = asyncio.Queue()
         self._input_task = None
         self._control_task = None
+        self._used = 0                       # bumped by every tool call
 
     # ── writing ──
 
@@ -1317,6 +1397,16 @@ class Server:
                     "isError": True}
         finally:
             self._tool_lock.release()
+            self._used += 1
+            asyncio.ensure_future(self._purge_when_idle(self._used))
+
+    async def _purge_when_idle(self, used):
+        """Purge once nothing has used the browser for PURGE_AFTER_IDLE."""
+        await asyncio.sleep(PURGE_AFTER_IDLE)
+        if used != self._used or self._tool_lock.locked() or self.browser.controlled():
+            return                               # used since, or in use: a later one will
+        async with self._tool_lock:
+            await self.browser.purge()
 
     async def _agent_turn(self):
         """Take the browser for one agent tool call: the tool lock, once the
