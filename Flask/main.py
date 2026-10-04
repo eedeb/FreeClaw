@@ -1977,7 +1977,10 @@ def _enabled_for_anyone(name):
     return False
 
 
-@app.route('/api/mcp/<name>', methods=['PATCH'])
+# `path:` on every route that takes a server or provider name: a name is free
+# text, and one with a slash in it ("https://…") never matched a plain <name>,
+# so it could be added but never switched off or removed.
+@app.route('/api/mcp/<path:name>', methods=['PATCH'])
 def api_toggle_mcp(name):
     """Switch a server on or off **for one user**, without touching its saved
     URL/token — a server that's off is left out of that user's tool list (see
@@ -2037,7 +2040,7 @@ def api_toggle_mcp(name):
     return jsonify(resp)
 
 
-@app.route('/api/mcp/<name>', methods=['DELETE'])
+@app.route('/api/mcp/<path:name>', methods=['DELETE'])
 def api_delete_mcp(name):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -2282,7 +2285,7 @@ def api_add_provider():
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in providers]})
 
 
-@app.route('/api/providers/<name>', methods=['PATCH'])
+@app.route('/api/providers/<path:name>', methods=['PATCH'])
 def api_toggle_provider(name):
     """Flip a provider's 'enabled' or 'api' without dropping its saved
     url/key/model. Either field alone is a valid body."""
@@ -2340,7 +2343,7 @@ def api_reorder_providers():
     return jsonify({'ok': True, 'providers': [_provider_public(p) for p in reordered]})
 
 
-@app.route('/api/providers/<name>', methods=['DELETE'])
+@app.route('/api/providers/<path:name>', methods=['DELETE'])
 def api_delete_provider(name):
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
