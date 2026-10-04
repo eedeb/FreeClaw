@@ -142,8 +142,11 @@ def for_user(server, user):
     credential, and one shared child would mean every FreeClaw user browsing as
     whoever signed in last.
 
-    A user with no saved logins gets no storage_state rather than a path to a
-    file that isn't there, but still a child of their own — see below."""
+    The path is passed whether or not the file exists yet (the child loads
+    nothing from a missing one). It used to be left out until there were
+    logins, but then the first save changed the child's `_sig` — and the
+    person who had just signed in, in the agent's own browser, had it torn
+    down under them and a fresh one started on the next tool call."""
     if not server.get("needs_browser"):
         return server
     # Imported here rather than at module scope: browser_profiles imports the
@@ -158,9 +161,8 @@ def for_user(server, user):
     # what the Browser app's live view of the agent is filed under
     # (src/browser_live.py), and one browser shared by everyone signed out
     # would show each of them the others' browsing.
-    env = {**(server.get("env") or {}), "FC_BROWSER_USER": user.strip()}
-    if os.path.exists(path):
-        env["FC_BROWSER_STORAGE_STATE"] = path
+    env = {**(server.get("env") or {}), "FC_BROWSER_USER": user.strip(),
+           "FC_BROWSER_STORAGE_STATE": path}
     return {**server, "env": env}
 
 PROTOCOL_VERSION = "2025-06-18"

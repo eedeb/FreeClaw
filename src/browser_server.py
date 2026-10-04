@@ -179,6 +179,19 @@ CURSOR_GLIDE = 0.4
 # the most it can ask for, so a FreeClaw that went away stops the frames soon.
 MAX_WATCH_LEASE = 30.0
 
+# The person taking the wheel (notifications/freeclaw/control): FreeClaw
+# renews this lease while their Browser app holds control, so a closed tab
+# hands the browser back by itself.
+MAX_CONTROL_LEASE = 30.0
+# How long an agent tool call waits for the person to hand the browser back
+# before it gives up and says so. Under mcp_client's CALL_READ_TIMEOUT (60s),
+# with room for the screenshot after: a call that outlasts that is treated
+# as a hung child and the browser — the person's sign-in with it — restarted.
+CONTROL_WAIT = 40.0
+# What a person driving the browser can send (Flask/main.py checks the same).
+INPUT_KINDS = frozenset(("click", "down", "move", "up", "text", "key", "scroll",
+                         "nav", "back", "forward", "reload"))
+
 # read_text hands back this much at a time, then says where to carry on.
 TEXT_CHUNK = 8000
 
@@ -489,6 +502,10 @@ class Browser:
         # The live view.
         self.watch_until = 0.0
         self._watch_task = None
+        self._last_url = ""
+
+        # The person driving it instead of the agent; see Server._control.
+        self.control_until = 0.0
         self._cdp = None
         self._cast_page = None
 
@@ -496,6 +513,9 @@ class Browser:
 
     def watched(self):
         return time.monotonic() < self.watch_until
+
+    def controlled(self):
+        return time.monotonic() < self.control_until
 
     def alive(self):
         try:
@@ -694,6 +714,12 @@ class Browser:
                         first = False
                         await self._send_still(page)
                         self._emit("live", await self.where())
+                    elif page is not None and page.url != self._last_url:
+                        # Somewhere new with no tool call to say so: a link
+                        # the person clicked, or a redirect after signing in.
+                        self._emit("live", await self.where())
+                    if page is not None:
+                        self._last_url = page.url
                 await asyncio.sleep(0.5)
         finally:
             await self._stop_cast()
@@ -1176,6 +1202,22 @@ class Tools:
                                                      "state_file": path})}]
 
 
+def _button(name):
+    return name if name in ("left", "middle", "right") else "left"
+
+
+# Told to the agent when the person took the browser over mid-task.
+STILL_CONTROLLED = (
+    "The person has taken control of this browser and is still using it — signing in, "
+    "solving a check, or showing you something. Don't use the browser until they hand it "
+    "back: tell them what you were about to do and that you'll carry on once they press "
+    "Hand back, then end your turn.")
+HANDED_BACK = (
+    "The person took control of the browser while you waited and has handed it back. They "
+    "may have signed in, gone to another page or changed something, so the step you asked "
+    "for was NOT done — this is the page as they left it. Decide your next step from here.")
+
+
 def _known(name, args):
     """`args` limited to what the tool takes, so a model inventing a parameter
     gets the tool's own behaviour rather than a TypeError."""
@@ -1192,6 +1234,11 @@ class Server:
         self.browser = Browser(self.event)
         self.tools = Tools(self.browser, self.event)
         self._tool_lock = asyncio.Lock()
+        # What the person does while they have control, applied in the order
+        # they did it by one task (`_input_loop`).
+        self._inputs = asyncio.Queue()
+        self._input_task = None
+        self._control_task = None
 
     # ── writing ──
 
@@ -1239,25 +1286,177 @@ class Server:
 
     async def call(self, name, args):
         # One browser, one action at a time: two clicks interleaving would
-        # each screenshot the other's result.
-        async with self._tool_lock:
+        # each screenshot the other's result. And while the person has taken
+        # control, none at all — see _agent_turn.
+        try:
+            waited = await self._agent_turn()
+        except ToolError as e:
+            return {"content": [{"type": "text", "text": str(e.args[0])}], "isError": True}
+        try:
+            if waited:
+                if name == "fast_step":
+                    # Its caller reads a JSON state; an error stops the fast
+                    # loop, and the model decides again from a screenshot.
+                    raise ToolError(HANDED_BACK)
+                return {"content": await self.tools._reply(HANDED_BACK)}
+            return {"content": await self.tools.run(name, args)}
+        except ToolError as e:
+            self._stopped()
+            detail = e.args[0] if e.args else "Error"
+            if isinstance(detail, list):
+                return {"content": detail, "isError": True}
+            return {"content": [{"type": "text", "text": str(detail)}], "isError": True}
+        except Exception as e:                           # noqa: BLE001 — reported, not fatal
+            self._stopped()
+            _log(f"{name} failed: {type(e).__name__}: {e}")
+            lines = str(e).strip().splitlines()
+            text = lines[0] if lines else type(e).__name__
+            if not self.browser.alive():
+                text += " (the browser closed; the next call starts it again)"
+            return {"content": [{"type": "text", "text": f"{name} failed: {text}"}],
+                    "isError": True}
+        finally:
+            self._tool_lock.release()
+
+    async def _agent_turn(self):
+        """Take the browser for one agent tool call: the tool lock, once the
+        person isn't driving. True if they were, so the call has to see what
+        they left before acting — coordinates read off a screenshot from
+        before they took over would land on whatever is there now. Raises
+        ToolError if they're still at it after CONTROL_WAIT."""
+        waited = False
+        deadline = time.monotonic() + CONTROL_WAIT
+        while True:
+            while self.browser.controlled():
+                waited = True
+                if time.monotonic() > deadline:
+                    raise ToolError(STILL_CONTROLLED)
+                await asyncio.sleep(0.25)
+            await self._tool_lock.acquire()
+            # Taken over while this waited for the lock: back to waiting.
+            if not self.browser.controlled():
+                return waited
+            self._tool_lock.release()
+
+    # ── the person taking control ──
+    #
+    # Muse-style: the person drives the browser the agent is using — its page,
+    # its tabs, its cookies — rather than a second browser beside it. FreeClaw
+    # holds a lease on it (`control`) while their Browser app has control and
+    # forwards what they do (`input`); agent tool calls wait meanwhile. When
+    # control ends, by hand or by the lease lapsing, the logins are dumped to a
+    # private temp file and FreeClaw files them in the user's profile, so a
+    # site signed into here stays signed in the next time Chromium starts.
+
+    def _control(self, params):
+        try:
+            seconds = float((params or {}).get("seconds") or 0)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        seconds = min(max(seconds, 0.0), MAX_CONTROL_LEASE)
+        if not seconds:
+            self.browser.control_until = 0.0         # _hold notices and hands back
+            return
+        self.browser.control_until = time.monotonic() + seconds
+        # They can't drive what they can't see.
+        self.browser.watch(min(seconds, MAX_WATCH_LEASE))
+        if self._control_task is None or self._control_task.done():
+            self._control_task = asyncio.ensure_future(self._hold())
+
+    async def _hold(self):
+        """The person having control, start to hand-back — again if they took
+        it back while the logins were being saved."""
+        while self.browser.controlled():
+            self.event("control", {"held": True})
+            self.event("live", {"action": "", "busy": False})
+            if self._input_task is None or self._input_task.done():
+                self._input_task = asyncio.ensure_future(self._input_loop())
+            while self.browser.controlled():
+                await asyncio.sleep(0.25)
+            # Whatever they did last — the click that submits the login —
+            # lands before the logins are taken.
             try:
-                return {"content": await self.tools.run(name, args)}
-            except ToolError as e:
-                self._stopped()
-                detail = e.args[0] if e.args else "Error"
-                if isinstance(detail, list):
-                    return {"content": detail, "isError": True}
-                return {"content": [{"type": "text", "text": str(detail)}], "isError": True}
-            except Exception as e:                           # noqa: BLE001 — reported, not fatal
-                self._stopped()
-                _log(f"{name} failed: {type(e).__name__}: {e}")
+                await asyncio.wait_for(self._inputs.join(), 30)
+            except asyncio.TimeoutError:
+                pass
+            self.event("control", await self._handed_back())
+
+    async def _handed_back(self):
+        released = {"held": False}
+        if not self.browser.alive():
+            return released
+        try:
+            import src.browser_handoff as browser_handoff
+            state = await self.browser.context.storage_state()
+            released["state_file"] = browser_handoff.write_state_file(state)
+        except Exception as e:                               # noqa: BLE001 — told, not fatal
+            _log(f"couldn't take the logins after control: {e}")
+            released["error"] = "Couldn't save the logins from this session."
+        released.update(await self.browser.where())
+        return released
+
+    def _input(self, command):
+        if not isinstance(command, dict) or command.get("kind") not in INPUT_KINDS:
+            return
+        if not self.browser.controlled():
+            return                                   # late, from a viewer that let go
+        self._inputs.put_nowait(command)
+
+    async def _input_loop(self):
+        while True:
+            command = await self._inputs.get()
+            try:
+                if self.browser.controlled():
+                    # The lock, so a tool call already under way finishes
+                    # before the person's first click lands on its page.
+                    async with self._tool_lock:
+                        await self._apply(command)
+            except Exception as e:                           # noqa: BLE001 — see _apply
                 lines = str(e).strip().splitlines()
-                text = lines[0] if lines else type(e).__name__
-                if not self.browser.alive():
-                    text += " (the browser closed; the next call starts it again)"
-                return {"content": [{"type": "text", "text": f"{name} failed: {text}"}],
-                        "isError": True}
+                _log(f"input {command.get('kind')!r} failed: {lines[0] if lines else e}")
+                if command.get("kind") in ("nav", "back", "forward", "reload"):
+                    self.event("control", {"held": True,
+                                           "error": lines[0] if lines else "The page wouldn't load."})
+            finally:
+                self._inputs.task_done()
+
+    async def _apply(self, command):
+        """One thing the person did. A failure is the page's business — a
+        click landing mid-navigation — never the end of their control."""
+        page = await self.browser.ensure()
+        kind = command["kind"]
+        x, y = command.get("x"), command.get("y")
+        if kind == "click":
+            await page.mouse.click(float(x or 0), float(y or 0),
+                                   button=_button(command.get("button")),
+                                   click_count=int(command.get("clicks") or 1))
+        elif kind in ("down", "move", "up"):
+            # A press held across commands, so "press and hold" checks and
+            # slider CAPTCHAs see a real hold and a real drag.
+            await page.mouse.move(float(x or 0), float(y or 0))
+            self.browser.mouse = (float(x or 0), float(y or 0))
+            clicks = int(command.get("clicks") or 1)
+            if kind == "down":
+                await page.mouse.down(button=_button(command.get("button")), click_count=clicks)
+            elif kind == "up":
+                await page.mouse.up(button=_button(command.get("button")), click_count=clicks)
+        elif kind == "text":
+            # The browser's own composed input: accents and non-Latin scripts
+            # arrive intact rather than as synthetic keydowns.
+            await page.keyboard.insert_text(str(command.get("text") or ""))
+        elif kind == "key":
+            await page.keyboard.press(str(command.get("key") or ""))
+        elif kind == "scroll":
+            await page.mouse.wheel(0, float(command.get("dy") or 0))
+        elif kind == "nav":
+            await page.goto(_web_url(command.get("url")), wait_until="domcontentloaded",
+                            timeout=30000)
+        elif kind == "back":
+            await page.go_back(wait_until="domcontentloaded", timeout=30000)
+        elif kind == "forward":
+            await page.go_forward(wait_until="domcontentloaded", timeout=30000)
+        elif kind == "reload":
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
 
     def _stopped(self):
         """A tool failed: whatever the viewer was told the agent is doing,
@@ -1268,6 +1467,10 @@ class Server:
         method = message.get("method") or ""
         if method == LIVE_PREFIX + "watch":
             self.browser.watch((message.get("params") or {}).get("seconds"))
+        elif method == LIVE_PREFIX + "control":
+            self._control(message.get("params"))
+        elif method == LIVE_PREFIX + "input":
+            self._input(message.get("params"))
         elif method == "notifications/initialized":
             # Tells FreeClaw this user's browser exists, so a viewer that was
             # already open starts its watch from the agent's first action.

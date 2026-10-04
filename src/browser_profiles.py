@@ -89,6 +89,37 @@ def ensure_dir(user):
     return path
 
 
+def write_state(user, state):
+    """Make `state` (a storage_state dict) `user`'s saved logins. True if it
+    was written.
+
+    Only into a profile directory that already exists — the caller made it
+    when the session began (ensure_dir). One that has gone is the user having
+    been deleted meanwhile, and writing now would hand these logins to
+    whoever is created under that name next. Written beside and renamed over,
+    so a browser starting at that moment never loads half a file."""
+    path = state_path(user)
+    if not path or not os.path.isdir(os.path.dirname(path)):
+        logger.warning("No profile for %r any more; not saving its browser logins", user)
+        return False
+    temp = path + ".tmp"
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+    except OSError:
+        logger.exception("Couldn't save browser logins for %r", user)
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        return False
+    logger.info("Saved browser logins for %r (%s)", user, ", ".join(domains(user)) or "no cookies")
+    return True
+
+
 def has_state(user):
     """Whether this user has any saved logins at all."""
     path = state_path(user)
