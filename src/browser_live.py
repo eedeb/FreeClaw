@@ -12,9 +12,13 @@ the viewer goes. A viewer can be open before the agent has started browsing;
 the child says hello when it starts, and is put under watch then, so the
 person sees the first page load rather than joining part way.
 
-Nothing here touches playwright or the child's protocol beyond one
-notification, so it's cheap to import from Flask and holds no browser state of
-its own: when the child goes, so does its feed.
+The person can also take the wheel (`take` / `release`): their Browser app
+holds a control lease the same way, what they do is forwarded (`send_input`),
+and the agent's tool calls wait until they hand it back. When they do, the
+child dumps its logins and they're filed in the user's profile here.
+
+Nothing here touches playwright, so it's cheap to import from Flask and holds
+no browser state of its own: when the child goes, so does its feed.
 """
 
 import collections
@@ -29,6 +33,12 @@ RENEW_EVERY = 5.0
 
 # A viewer counts as watching for this long after it last asked.
 VIEWER_TIMEOUT = 12.0
+
+# Control works the same way: the Browser app renews it while the person has
+# the wheel, and a closed tab hands the browser back within this long.
+CONTROL_LEASE = 20.0
+# How long `release` waits for the child to save the logins and say so.
+RELEASE_WAIT = 35.0
 
 # The live items a slow viewer can still catch up on. Frames are only ever
 # shown newest-first, so these are mostly cursor moves.
@@ -48,6 +58,11 @@ class _Feed:
         self.viewers = 0.0            # when a viewer last asked (monotonic)
         self.lease_sent = 0.0
         self.ready = threading.Condition(_lock)
+        # The person driving it: what the child last said, and when control
+        # was last asked for (the child's answer is a moment behind).
+        self.control = {"held": False}
+        self.asked = 0.0
+        self.handbacks = 0
 
 
 def _feed(user):
@@ -89,6 +104,22 @@ def publish(user, proc, kind, params):
             feed.frame = None
             feed.meta = {}
             feed.lease_sent = 0.0
+            feed.control = {"held": False}
+        if kind == "control" and not params.get("held"):
+            # Handed back. Filed outside the lock: it's file I/O, and the
+            # Browser app waiting in release() wants the result, not a stall.
+            _lock.release()
+            try:
+                result = _file_logins(user, params)
+            finally:
+                _lock.acquire()
+            feed.control = result
+            feed.asked = 0.0
+            feed.handbacks += 1
+            _add(feed, "control", dict(result))
+        elif kind == "control":
+            feed.control = {"held": True, "error": str(params.get("error") or "")}
+            _add(feed, "control", dict(feed.control))
         if kind == "frame":
             data = params.get("data")
             if isinstance(data, str) and data:
@@ -115,6 +146,10 @@ def gone(user, proc):
         feed.proc = None
         feed.frame = None
         feed.meta = {}
+        if feed.control.get("held") or feed.asked:
+            feed.handbacks += 1               # nobody is left to hand it back
+        feed.control = {"held": False}
+        feed.asked = 0.0
         _add(feed, "gone", {})
 
 
@@ -137,7 +172,7 @@ def status(user):
         feed = _feeds.get(user)
         if feed is None or feed.proc is None:
             return {"live": False}
-        return {"live": True, **feed.meta}
+        return {"live": True, **feed.meta, "control": _holding(feed)}
 
 
 def snapshot(user):
@@ -159,3 +194,82 @@ def wait(user, after, timeout):
     newest_frame = max((s for s, kind, _ in items if kind == "frame"), default=None)
     return seq, [(kind, payload) for s, kind, payload in items
                  if kind != "frame" or s == newest_frame]
+
+
+# ── the person taking control ────────────────────────────────
+
+def _holding(feed):
+    return feed.proc is not None and bool(
+        feed.control.get("held") or time.monotonic() - feed.asked < CONTROL_LEASE)
+
+
+def _file_logins(user, params):
+    """What a hand-back left: the child's dump of its logins, made `user`'s
+    saved logins. {held, saved, url, error}."""
+    import src.browser_handoff as browser_handoff
+    import src.browser_profiles as browser_profiles
+
+    result = {"held": False, "saved": False, "url": str(params.get("url") or ""),
+              "error": str(params.get("error") or "")}
+    if not params.get("state_file"):
+        return result
+    state, problem = browser_handoff.read_state_file(params.get("state_file"))
+    if problem:
+        result["error"] = "Couldn't read the logins from this session."
+    elif browser_profiles.write_state(user, state):
+        result["saved"] = True
+    else:
+        result["error"] = "Couldn't save the logins from this session."
+    return result
+
+
+def take(user):
+    """The person takes (or keeps) control of `user`'s agent browser. Call
+    every few seconds for as long as they have it. False if there's no
+    browser to take."""
+    with _lock:
+        feed = _feeds.get(user)
+        if feed is None or feed.proc is None:
+            return False
+        now = time.monotonic()
+        feed.asked = now
+        feed.viewers = now
+        feed.proc.notify("notifications/freeclaw/control", {"seconds": CONTROL_LEASE})
+        _send_lease(feed)
+        return True
+
+
+def holding(user):
+    """Whether the person has control of `user`'s agent browser."""
+    with _lock:
+        feed = _feeds.get(user)
+        return feed is not None and _holding(feed)
+
+
+def send_input(user, commands):
+    """Forward what the person did, in order. False if they don't have
+    control (any more)."""
+    with _lock:
+        feed = _feeds.get(user)
+        if feed is None or not _holding(feed):
+            return False
+        for command in commands:
+            if not feed.proc.notify("notifications/freeclaw/input", command):
+                return False
+        return True
+
+
+def release(user, timeout=RELEASE_WAIT):
+    """Hand `user`'s agent browser back, and wait for its logins to be saved.
+    The hand-back's {held, saved, url, error}, or None if it wasn't held or
+    didn't answer in time."""
+    with _lock:
+        feed = _feeds.get(user)
+        if feed is None or not _holding(feed):
+            return None
+        before = feed.handbacks
+        feed.asked = 0.0
+        feed.proc.notify("notifications/freeclaw/control", {"seconds": 0})
+        if not feed.ready.wait_for(lambda: feed.handbacks != before, timeout):
+            return None
+        return dict(feed.control)

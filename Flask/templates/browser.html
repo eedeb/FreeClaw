@@ -107,6 +107,17 @@
     .save-btn svg { width: 12px; height: 12px; }
     .save-btn:hover:not(:disabled) { background: #d4f766; }
     .save-btn:disabled { opacity: 0; pointer-events: none; }
+    /* Take control of the agent's browser / hand it back. Shown only while
+       watching it; outlined until it's yours, filled while it is. */
+    .take-btn {
+      flex-shrink: 0; height: 26px; padding: 0 12px; border-radius: 999px; margin-left: 4px;
+      background: transparent; color: var(--accent); border: 1px solid var(--accent-dim);
+      font-family: var(--mono); font-size: 11px; font-weight: 500; white-space: nowrap; cursor: pointer;
+    }
+    .take-btn:hover:not(:disabled) { background: rgba(200,240,74,0.12); }
+    .take-btn.on { background: var(--accent); color: #10100c; border-color: var(--accent); }
+    .take-btn:disabled { opacity: 0.4; cursor: default; }
+    body.driving .viewport { box-shadow: inset 0 0 0 2px var(--accent); }
     #chat-link { font-size: 11px; padding: 5px 10px; border-radius: 999px; margin-left: 2px; }
     #chat-link.ready { border-color: var(--accent); color: var(--accent); }
 
@@ -281,6 +292,8 @@
       </button>
     </div>
 
+    <button class="take-btn" id="take" type="button" hidden
+            title="Use the agent's browser yourself — it waits until you hand it back">Take control</button>
     <a class="nav-btn" id="chat-link" href="/chat?user={{ user }}" hidden>Chat</a>
     <button class="tbtn" id="watch" title="Watch the agent's browser" hidden>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -375,12 +388,16 @@
   const WATCH = params.get('watch') === 'agent';
 
   // Two browsers can be shown here: the user's own (the sign-in browser this
-  // page starts and drives) and the agent's, which is only ever watched.
+  // page starts and drives) and the agent's, which is watched — or driven,
+  // once the user takes control of it.
   // `mode` is whichever is on screen; each stream only draws while it is.
   let mode = 'own';
   let agentLive = false;        // the agent has a browser open right now
   let agentMeta = {};           // its url, title, and what it's doing
   let leftAgent = false;        // the user switched away; don't switch them back
+  // The user has taken the agent's browser over (/api/browser/agent/control):
+  // what they do goes to it, and the agent's browser calls wait.
+  let controlling = false;
   // Tells the chat tab a login was saved, so its card can say so without the
   // user having to come back and report it. Absent on very old browsers; the
   // card's own "continue" button still works without it.
@@ -489,9 +506,24 @@
   // turns the ones about the page on screen off.
   function syncControls() {
     const own = running && mode === 'own';
-    ['back', 'forward', 'reload', 'save'].forEach((id) => { el(id).disabled = !own; });
+    const drive = canDrive();
+    ['back', 'forward', 'reload'].forEach((id) => { el(id).disabled = !drive; });
+    // Handing back is what saves the agent's browser's logins.
+    el('save').disabled = !own;
     ['close', 'discard'].forEach((id) => { el(id).disabled = !running; });
-    screen.style.cursor = own ? 'default' : '';
+    screen.style.cursor = drive ? 'default' : '';
+    const take = el('take');
+    take.hidden = mode !== 'agent' || !(agentLive || controlling);
+    take.classList.toggle('on', controlling);
+    take.textContent = controlling ? 'Hand back' : 'Take control';
+    take.title = controlling ? 'Give the browser back to the agent — your logins are saved for it'
+                             : "Use the agent's browser yourself — it waits until you hand it back";
+    document.body.classList.toggle('driving', controlling && mode === 'agent');
+  }
+
+  // Whether what the user does on the picture goes anywhere.
+  function canDrive() {
+    return mode === 'agent' ? controlling : running;
   }
 
   function setRunning(on) {
@@ -677,8 +709,8 @@
   let sending = false;
 
   function send(command) {
-    // The agent's browser is watched, never driven from here.
-    if (!running || mode !== 'own') return;
+    // The agent's browser only once the user has taken control of it.
+    if (!canDrive()) return;
     // Pointer moves queued behind a slow request collapse into the latest:
     // the path is lost only while the line is backed up, and a batch can
     // never outgrow the server's limit and take the button's release with it.
@@ -695,7 +727,10 @@
     // not at all, and the error says to try again.
     const batch = outbox.splice(0, outbox.length);
     try {
-      await api('input', { method: 'POST', body: JSON.stringify({ batch: batch }) });
+      // The outbox is emptied whenever the browser on screen changes, so the
+      // whole batch is for this one.
+      await api(mode === 'agent' ? 'agent/input' : 'input',
+                { method: 'POST', body: JSON.stringify({ batch: batch }) });
     } catch (e) { say(e.message, 'err'); }
     sending = false;
     flush();
@@ -825,7 +860,7 @@
   ]);
 
   screen.addEventListener('keydown', (e) => {
-    if (!running) return;
+    if (!canDrive()) return;
     // Let the real clipboard shortcuts through; everything else that reaches
     // here is meant for the remote page.
     if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'x', 'a'].includes(e.key.toLowerCase())) return;
@@ -850,7 +885,14 @@
   async function go() {
     const url = el('addr').value.trim();
     if (!url) return;
-    // An address typed while watching the agent is for the user's own browser.
+    // While the user has the agent's browser, the address is for it; while
+    // only watching, it's for the user's own.
+    if (mode === 'agent' && controlling) {
+      send({ kind: 'nav', url: url });
+      addrDirty = false;
+      navState('Loading…');
+      return;
+    }
     if (mode === 'agent') { leftAgent = true; setMode('own'); }
     if (running) {
       send({ kind: 'nav', url: url });
@@ -1056,6 +1098,8 @@
     const was = agentLive;
     agentLive = on;
     el('watch').hidden = !(on || mode === 'agent' || WATCH);
+    if (!on && controlling) lostControl("The agent's browser closed.");
+    syncControls();
     if (mode !== 'agent' || was === on) return;
     if (!on) {
       gotFrame = false;
@@ -1069,6 +1113,10 @@
 
   function setMode(next) {
     if (next === mode) return;
+    // Leaving the agent's browser gives it back: control nobody can see is
+    // just the agent stuck waiting.
+    if (mode === 'agent' && controlling) handBack();
+    outbox.length = 0;
     mode = next;
     document.body.classList.toggle('watching', mode === 'agent');
     el('watch').classList.toggle('on', mode === 'agent');
@@ -1127,6 +1175,10 @@
     setTitle(agentMeta.title || '');
     el('addr').title = agentMeta.title || '';
     const action = agentMeta.busy ? (agentMeta.action || '') : '';
+    if (controlling) {
+      agentStatus('You have control — the agent waits until you hand it back');
+      return;
+    }
     navState(/^(Opening|Going back)/.test(action) ? 'Loading…' : '');
     agentStatus(action ? 'Agent: ' + action + '…' : '');
   }
@@ -1136,11 +1188,107 @@
       if (ev.live === false) agentMeta = {};
       for (const k of ['url', 'title', 'action', 'busy']) if (k in ev) agentMeta[k] = ev[k];
       if ('live' in ev) setAgentLive(!!ev.live);
+      if (controlling && 'url' in ev) navState('');
       renderAgent();
-    } else if (ev.t === 'cursor' && mode === 'agent') {
+    } else if (ev.t === 'cursor' && mode === 'agent' && !controlling) {
       moveCursor(ev);
+    } else if (ev.t === 'control') {
+      if (ev.error) { navState(''); say(ev.error, 'err'); }
+      // Handed back without this page asking: the lease ran out (a sleeping
+      // laptop) or another tab handed it back.
+      if (ev.held === false && controlling && !handingBack) {
+        lostControl('The agent has its browser back.' + (ev.saved ? ' Your logins were saved.' : ''));
+      }
     }
   }
+
+  // ── taking control of the agent's browser ──
+  // Taken for a lease the server lets lapse unless this page renews it, so a
+  // closed tab or a dropped connection hands the browser back by itself.
+  const CONTROL_RENEW_MS = 5000;
+  let controlTimer = null, handingBack = false;
+
+  async function takeControl() {
+    if (controlling) return true;
+    try {
+      await api('agent/control', { method: 'POST', body: JSON.stringify({ take: true }) });
+    } catch (e) { say(e.message, 'err'); return false; }
+    controlling = true;
+    outbox.length = 0;
+    cursorEl.classList.remove('on');
+    clearInterval(controlTimer);
+    controlTimer = setInterval(renewControl, CONTROL_RENEW_MS);
+    syncControls();
+    renderAgent();
+    screen.focus({ preventScroll: true });
+    return true;
+  }
+
+  async function renewControl() {
+    if (!controlling) return;
+    try {
+      await api('agent/control', { method: 'POST', body: JSON.stringify({ take: true }) });
+    } catch (e) {
+      if (controlling) lostControl(e.message);
+    }
+  }
+
+  function lostControl(text) {
+    controlling = false;
+    clearInterval(controlTimer);
+    controlTimer = null;
+    outbox.length = 0;
+    navState('');
+    syncControls();
+    renderAgent();
+    if (text) say(text);
+  }
+
+  async function handBack() {
+    if (!controlling || handingBack) return;
+    handingBack = true;
+    if (held) release(lastAt);
+    // What's still queued goes first: the click that submits a login.
+    for (let i = 0; i < 100 && (sending || outbox.length); i++) {
+      flush();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    controlling = false;
+    clearInterval(controlTimer);
+    controlTimer = null;
+    syncControls();
+    renderAgent();
+    say('Saving your logins and handing back…');
+    try {
+      // The server waits for the agent's browser to save, up to ~35s.
+      const info = await api('agent/control', { method: 'POST', body: JSON.stringify({ take: false }) }, 40000);
+      renderDomains(info.saved_domains || []);
+      if (info.error) say(info.error, 'err');
+      else {
+        if (info.saved) announceSaved(info.saved_domains || []);
+        say(FROM_CHAT ? 'Handed back. Head back to the chat — the agent carries on from here.'
+                      : 'Handed back — the agent carries on from here.', 'ok');
+      }
+    } catch (e) { say(e.message, 'err'); }
+    handingBack = false;
+  }
+
+  el('take').addEventListener('click', () => {
+    if (controlling) handBack();
+    else takeControl();
+  });
+
+  // A tab closed while in control hands back at once instead of leaving the
+  // agent waiting out the lease. keepalive so the request survives the page.
+  window.addEventListener('pagehide', () => {
+    if (!controlling) return;
+    try {
+      fetch('/api/browser/agent/control?user=' + encodeURIComponent(USER), {
+        method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ take: false }),
+      });
+    } catch (e) { /* the lease lapses anyway */ }
+  });
 
   // Page coordinates to this element's, through the same letterboxing the
   // canvas is drawn with (see toPage, which goes the other way).
@@ -1253,15 +1401,33 @@
     history.replaceState(null, '', location.pathname + '?' + params.toString());
     let host = ASK_URL;
     try { host = new URL(ASK_URL.includes('://') ? ASK_URL : 'https://' + ASK_URL).hostname; } catch (e) { /* show it raw */ }
+    let info = {};
+    try {
+      info = await api('status');
+      if (info.running && !running) setRunning(true);
+    } catch (e) { /* go() reports anything that matters */ }
+    // The agent's browser is open: sign in right there, in the same browser
+    // it carries on in, rather than in a second one beside it.
+    if (info.agent && info.agent.live && !running && await driveAgent()) {
+      showNote('The agent needs you to sign in to ' + host + '. You have its browser — sign in, '
+        + 'then press Hand back. ' + USER + '\'s agent carries on from there.');
+      send({ kind: 'nav', url: ASK_URL });
+      navState('Loading…');
+      return;
+    }
     showNote('The agent needs you to sign in to ' + host + '. Sign in, then press Save login — '
       + USER + '\'s agent picks it up from there.');
     el('addr').value = ASK_URL;
     addrDirty = true;
-    try {
-      const info = await api('status');
-      if (info.running && !running) setRunning(true);
-    } catch (e) { /* go() reports anything that matters */ }
     go();
+  }
+
+  // Shows the agent's browser and takes control of it. False if it couldn't.
+  async function driveAgent() {
+    leftAgent = false;
+    setAgentLive(true);
+    setMode('agent');
+    return takeControl();
   }
   // The agent's page, cookies and all. The server steers a browser that's
   // already open rather than replacing it, the same as openRequested.
@@ -1279,6 +1445,16 @@
       if (info.viewport) viewport = info.viewport;
       let host = info.url;
       try { host = new URL(info.url).hostname; } catch (e) { /* show it raw */ }
+      // The agent's browser is still on the page with the check: take it over.
+      if (info.agent) {
+        if (!running) showOverlay("Connecting to the agent's browser…", true);
+        if (await driveAgent()) {
+          showNote('The agent needs you to solve a check on ' + host
+            + (info.reason ? ' (' + info.reason + ')' : '') + '. You have its browser — solve it, '
+            + 'then press Hand back. ' + USER + '\'s agent carries on from there.');
+        }
+        return;
+      }
       showNote('The agent needs you to solve a check on ' + host
         + (info.reason ? ' (' + info.reason + ')' : '') + '. Solve it, then press Save login — '
         + USER + '\'s agent carries on from the page you leave this on.'

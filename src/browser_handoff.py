@@ -112,18 +112,12 @@ def write_state_file(state):
 
 # ── the Flask process ────────────────────────────────────────
 
-def accept(user, result, reason=""):
-    """Step 2: file the child's dump under `user`. Returns (url, None), or
-    (None, message for the model)."""
-    try:
-        info = json.loads(str(result))
-    except ValueError:
-        return None, str(result)                  # the child's own explanation
-    if not isinstance(info, dict):
-        return None, "Error: the browser returned an unexpected handoff."
-    state_file = info.get("state_file") or ""
-    # Only ever a file the child made with mkstemp: this path is about to be
-    # read and deleted, so it mustn't be steerable anywhere else.
+def read_state_file(state_file):
+    """(state, None) from a dump the child made with write_state_file, which
+    is removed; (None, message) otherwise. Only ever such a file: this path
+    comes up the pipe and is about to be read and deleted, so it mustn't be
+    steerable anywhere else."""
+    state_file = str(state_file or "")
     if (os.path.dirname(os.path.realpath(state_file)) != os.path.realpath(tempfile.gettempdir())
             or not os.path.basename(state_file).startswith(_TEMP_PREFIX)):
         return None, "Error: the browser returned an unexpected handoff."
@@ -137,6 +131,23 @@ def accept(user, result, reason=""):
             os.remove(state_file)
         except OSError:
             pass
+    if not isinstance(state, dict):
+        return None, "Error: the browser returned an unexpected handoff."
+    return state, None
+
+
+def accept(user, result, reason=""):
+    """Step 2: file the child's dump under `user`. Returns (url, None), or
+    (None, message for the model)."""
+    try:
+        info = json.loads(str(result))
+    except ValueError:
+        return None, str(result)                  # the child's own explanation
+    if not isinstance(info, dict):
+        return None, "Error: the browser returned an unexpected handoff."
+    state, problem = read_state_file(info.get("state_file"))
+    if problem:
+        return None, problem
     url = _web_url(info.get("url"))
     directory = _profile_dir(user, create=True)
     if not url or not directory:

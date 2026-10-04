@@ -1009,6 +1009,12 @@ def api_browser_handoff():
     if handed is None:
         return jsonify({'error': 'Nothing to open — the agent hasn\'t handed over a page, '
                                  'or it was opened already.'}), 404
+    if browser_live.status(name).get('live'):
+        # The agent's browser is still open on that page: the page takes
+        # control of it (/api/browser/agent/control) rather than opening a
+        # second browser with a copy of its cookies.
+        return jsonify({'ok': True, 'agent': True, 'url': handed['url'],
+                        'reason': handed.get('reason') or ''})
     try:
         browser_takeover.handoff(name, handed['url'], handed.get('cookies') or [])
     except Exception as e:
@@ -1107,8 +1113,10 @@ def api_browser_agent_stream():
     many bytes. Kind 1 is a JPEG frame, 2 a JSON event — where the cursor is
     going, which page it's on, the browser closing — and 0 a keepalive.
 
-    View only: nothing comes back the other way. Being open is what turns the
-    frames on (browser_live.watch), so they stop when the last viewer closes.
+    Nothing comes back the other way on this response — taking control and
+    driving go through /api/browser/agent/control and /agent/input. Being open
+    is what turns the frames on (browser_live.watch), so they stop when the
+    last viewer closes.
     Answers even when the agent has no browser open, and starts showing it
     the moment it does."""
     if not logged_in():
@@ -1148,6 +1156,8 @@ def api_browser_agent_stream():
                     yield event({'t': 'cursor', **payload})
                 elif kind == 'live':
                     yield event({'t': 'live', **payload, 'live': True})
+                elif kind == 'control':
+                    yield event({'t': 'control', **payload})
                 elif kind == 'gone':
                     yield event({'t': 'live', 'live': False})
 
@@ -1208,6 +1218,64 @@ def api_browser_input():
         commands.append(command)
     for command in commands:
         sess.send(command)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/browser/agent/control', methods=['POST'])
+def api_browser_agent_control():
+    """Take the agent's own browser over, or hand it back.
+
+    `{"take": true}` takes control (or keeps it: the page repeats this every
+    few seconds while the person has it, and control lapses back to the agent
+    if it stops — a closed tab can't strand the agent). The agent's browser
+    tool calls wait meanwhile. `{"take": false}` hands it back, and answers
+    once the logins from the session are saved to the user's profile."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    if data.get('take'):
+        # Made now, so the hand-back has somewhere to save to — and so one
+        # that finds it gone knows the user was deleted meanwhile.
+        if not browser_profiles.ensure_dir(name):
+            return jsonify({'error': "That user name can't have a browser profile."}), 400
+        if not browser_live.take(name):
+            return jsonify({'error': "The agent's browser isn't open."}), 409
+        return jsonify({'ok': True, 'control': True})
+    handed = browser_live.release(name)
+    if handed is None:
+        return jsonify({'ok': True, 'control': False,
+                        'saved_domains': browser_profiles.domains(name)})
+    # No clear_cache() here, unlike /finish: the agent's browser already holds
+    # these logins, and restarting it would lose the page the person left.
+    return jsonify({'ok': True, 'control': False, 'saved': bool(handed.get('saved')),
+                    'error': handed.get('error') or '',
+                    'saved_domains': browser_profiles.domains(name)})
+
+
+@app.route('/api/browser/agent/input', methods=['POST'])
+def api_browser_agent_input():
+    """What the person does in the agent's browser while they have control:
+    one command or `{"batch": [...]}`, as /api/browser/input."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name, error = _takeover_user()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    items = data.get('batch') if isinstance(data.get('batch'), list) else [data]
+    if len(items) > _INPUT_BATCH_LIMIT:
+        return jsonify({'error': 'Too many inputs in one batch.'}), 400
+    commands = []
+    for item in items:
+        command, problem = _checked_input(item)
+        if problem:
+            return jsonify({'error': problem}), 400
+        commands.append(command)
+    if not browser_live.send_input(name, commands):
+        return jsonify({'error': "You don't have control of the agent's browser."}), 409
     return jsonify({'ok': True})
 
 
