@@ -174,6 +174,17 @@ LIVE_PREFIX = "notifications/freeclaw/"
 # request until the history prunes it (agent.py: _MAX_HISTORY_IMAGES), and a
 # text-heavy 1280x800 page is ~100KB this way against ~600KB as PNG.
 SHOT_QUALITY = 70
+# The size the model sees the page at: the 1280x800 viewport scaled to this
+# width. A screenshot is most of what each browsing step costs, and image
+# tokens go by size — with OpenAI-style 512px tiles 1280x800 is 6 tiles
+# (after the 768px short-side scaling) and 1024x640 is 4. Every x,y the model
+# sends is in these pixels and scaled to the page's on the way in
+# (Tools._model_xy), and every x,y it's told is scaled the other way. The
+# page itself stays 1280 wide, so sites lay out as before. Set to the
+# viewport's width for full-size shots.
+SHOT_WIDTH = max(320, min(int(os.environ.get("FC_BROWSER_SHOT_WIDTH") or 1024), VIEWPORT["width"]))
+SHOT_SCALE = SHOT_WIDTH / VIEWPORT["width"]
+SHOT = {"width": SHOT_WIDTH, "height": round(VIEWPORT["height"] * SHOT_SCALE)}
 
 # The live view. A watcher on a phone connection is the constraint, so these
 # are cheaper than the model's screenshots and capped well under the
@@ -183,9 +194,7 @@ LIVE_MIN_FRAME_GAP = 1 / 12
 # Frames are sent at most this wide; the viewer scales them to fit, and
 # clicks map through VIEWPORT, not the frame. 1024px at quality 45 is ~40%
 # smaller a frame than full-size at 55 (amazon 38KB -> 24KB, espn 56KB -> 34KB)
-# and still reads fine for watching and for typing a login. The model's own
-# screenshots (SHOT_QUALITY) stay full-size: what they cost it is set by their
-# dimensions, and small text is what it most needs to read.
+# and still reads fine for watching and for typing a login.
 LIVE_MAX_WIDTH = 1024
 # How long the watched cursor takes to reach a target before the click lands,
 # so the person sees where it's going rather than a click appearing from
@@ -255,7 +264,8 @@ TOOLS = [
          "Open a URL in your web browser: the user's real Chromium, with the logins they saved "
          "in the Browser app. Use it whenever they say \"browser\" or a task needs a website, "
          "not another service's cloud browser. Every browser tool shows you the page as a "
-         "1280x800 screenshot; x,y are pixels in it. \"Access Denied\" means the site blocks "
+         f"{SHOT['width']}x{SHOT['height']} screenshot; x,y are pixels in it. \"Access Denied\" "
+         "means the site blocks "
          "automation: say so, don't retry."),
      "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}},
                      "required": ["url"]}},
@@ -699,6 +709,8 @@ class Browser:
             if page is None:
                 return None
             try:
+                if SHOT_SCALE < 1:
+                    return await self._scaled_shot(page)
                 data = await page.screenshot(type="jpeg", quality=SHOT_QUALITY,
                                              caret="initial", timeout=10000)
                 return base64.b64encode(data).decode("ascii")
@@ -708,6 +720,25 @@ class Browser:
                     return None
                 await self.settle(quick=True)
         return None
+
+    async def _scaled_shot(self, page):
+        """The viewport at SHOT size. page.screenshot can't scale, so Chrome's
+        own capture, clipped to what's showing — the clip is in document
+        coordinates, so it starts at the scroll position."""
+        cdp = await page.context.new_cdp_session(page)
+        try:
+            view = (await cdp.send("Page.getLayoutMetrics")).get("cssVisualViewport") or {}
+            shot = await asyncio.wait_for(cdp.send("Page.captureScreenshot", {
+                "format": "jpeg", "quality": SHOT_QUALITY,
+                "clip": {"x": view.get("pageX", 0), "y": view.get("pageY", 0),
+                         "width": VIEWPORT["width"], "height": VIEWPORT["height"],
+                         "scale": SHOT_SCALE}}), 10)
+            return shot.get("data") or None
+        finally:
+            try:
+                await cdp.detach()
+            except Exception:                                # noqa: BLE001 — page went away
+                pass
 
     async def where(self):
         page = self.current()
@@ -923,6 +954,15 @@ class Tools:
                 content.append({"type": "image", "data": data, "mimeType": "image/jpeg"})
         return content
 
+    def _model_xy(self, x, y, label="x,y"):
+        """An x,y the model read off a screenshot, in page pixels: checked
+        against the screenshot's size and scaled up from it (SHOT_SCALE)."""
+        x, y = _number(x, label.split(",")[0]), _number(y, label.split(",")[-1])
+        if not (0 <= x < SHOT["width"] and 0 <= y < SHOT["height"]):
+            raise ToolError(f"{label} must be inside the {SHOT['width']}x{SHOT['height']} "
+                            "screenshot. Scroll to bring something else into view.")
+        return self._xy(x / SHOT_SCALE, y / SHOT_SCALE, label)
+
     def _xy(self, x, y, label="x,y"):
         x, y = _number(x, label.split(",")[0]), _number(y, label.split(",")[-1])
         if not (0 <= x < VIEWPORT["width"] and 0 <= y < VIEWPORT["height"]):
@@ -970,7 +1010,7 @@ class Tools:
     # ── pointing ──
 
     async def t_click(self, x=None, y=None, double=False, button="left"):
-        x, y = self._xy(x, y)
+        x, y = self._model_xy(x, y)
         button = button if button in ("left", "right", "middle") else "left"
         page = await self.b.ensure()
         self._status("Double-clicking" if double else "Clicking")
@@ -980,15 +1020,15 @@ class Tools:
         return await self._reply()
 
     async def t_hover(self, x=None, y=None):
-        x, y = self._xy(x, y)
+        x, y = self._model_xy(x, y)
         await self.b.ensure()
         self._status("Pointing")
         await self.b.glide(x, y)
         return await self._reply()
 
     async def t_drag(self, x=None, y=None, to_x=None, to_y=None):
-        x, y = self._xy(x, y)
-        to_x, to_y = self._xy(to_x, to_y, "to_x,to_y")
+        x, y = self._model_xy(x, y)
+        to_x, to_y = self._model_xy(to_x, to_y, "to_x,to_y")
         page = await self.b.ensure()
         self._status("Dragging")
         await self.b.glide(x, y)
@@ -1009,7 +1049,8 @@ class Tools:
         direction = direction if direction in ("down", "up", "left", "right") else "down"
         if x is None or y is None:
             x, y = VIEWPORT["width"] / 2, VIEWPORT["height"] / 2
-        x, y = self._xy(x, y)
+        else:
+            x, y = self._model_xy(x, y)
         page = await self.b.ensure()
         self._status("Scrolling " + direction)
         # The wheel scrolls whatever is under the mouse, which is how a
@@ -1096,7 +1137,9 @@ class Tools:
         for h in hits or []:
             label = f"{h.get('kind')} \"{h.get('text')}\""
             if h.get("onScreen"):
-                lines.append(f"{label} at ({h.get('x')}, {h.get('y')})")
+                # Measured on the page; told in screenshot pixels.
+                lines.append(f"{label} at ({round((h.get('x') or 0) * SHOT_SCALE)}, "
+                             f"{round((h.get('y') or 0) * SHOT_SCALE)})")
             else:
                 lines.append(f"{label}: off-screen, scroll "
                              f"{'up' if h.get('where') == 'above' else 'down'}")
