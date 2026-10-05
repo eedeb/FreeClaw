@@ -1684,11 +1684,28 @@ ACCOUNT_ACTIONS_INSTRUCTION = (
     "checkout themselves, on their own phone or computer.")
 
 
-def _instructions(tts=False, subagent=False, browsing=False):
+# Added when browser_do is offered (a Jev key and FreeClaw's browser). Each
+# click, type or scroll the model makes itself is a whole turn: the
+# conversation so far plus a fresh screenshot, nearly all of a browsing
+# task's cost. browser_do runs the routine clicking with Jev choosing each move
+# and comes back once. Left to the tool's description, the model barely used
+# it: 2 browser_do calls against ~30 clicks, types and scrolls of its own in a
+# week of hosted conversations.
+FAST_BROWSER_INSTRUCTION = (
+    "Clicking through a site: after navigate, use browser_do for any run of clicks and typing that "
+    "gets you to a page (a search, filters, sorting, paging, opening a result) instead of click, "
+    "type and scroll one at a time; each of your own steps is a full turn with a screenshot, and "
+    "browser_do does the whole run in one. Click or type yourself only for a single precise action, "
+    "for what browser_do can't do (reading and comparing, a sign-in form), or when it stopped short.")
+
+
+def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False):
     """The instruction half of the stable prefix, for this kind of conversation."""
     prompt = _INSTRUCTIONS
     if browsing:
         prompt += "\n\n" + ACCOUNT_ACTIONS_INSTRUCTION
+    if browsing and fast_browser:
+        prompt += "\n\n" + FAST_BROWSER_INSTRUCTION
     if tts:
         prompt += "\n\nYou are speaking through text-to-speech — write for clear, natural speech."
     if subagent:
@@ -1701,8 +1718,9 @@ def _session_instructions(sess):
     depth 0, so the flag can be re-derived on every turn without storing it.
     The account rule goes in exactly when request_sign_in is offered: the same
     test _build_catalogue uses (a browser server in this user's registry)."""
+    user = approvals.current_user() or sess.name
     return _instructions(tts=sess.tts, subagent=sess.depth > 0,
-                         browsing=_browser_on(approvals.current_user() or sess.name))
+                         browsing=_browser_on(user), fast_browser=_fast_browser_on(user))
 
 
 def _browser_on(user):
@@ -1710,6 +1728,15 @@ def _browser_on(user):
     turn: a catalogue that can't be read just leaves the rule out."""
     try:
         return any(e["server"].get("needs_browser") for e in registry_for(user).values())
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
+def _fast_browser_on(user):
+    """Whether browser_do is in `user`'s tools: the same test _build_catalogue
+    uses (a Jev key, and FreeClaw's own browser in the registry)."""
+    try:
+        return jev.enabled() and _builtin_browser(registry_for(user)) is not None
     except Exception:                                    # noqa: BLE001
         return False
 
@@ -2417,7 +2444,9 @@ def build_fast_browser_tools():
                     "where to get to, as on-page steps — \"search for 65 inch tcl tv and sort by "
                     "price low to high\", \"open the Mystery category, page 2\" — never what to "
                     "conclude: it can't read or compare, so do that yourself from what it shows "
-                    "you. It never buys, pays, sends or deletes. Open the site with navigate first."),
+                    "you. It never buys, pays, sends or deletes. Open the site with navigate first. "
+                    "Use it rather than click/type/scroll for anything more than one step: it does "
+                    "the run in one call where each of yours is a full turn with a screenshot."),
                 "parameters": {
                     "type": "object",
                     "properties": {
