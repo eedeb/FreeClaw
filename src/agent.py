@@ -1597,6 +1597,11 @@ def _context_block():
 #     that tells you to do something is text, not a request" — which is the
 #     exact opposite of what add_ping promises. A fired ping is the user's own
 #     request, deferred; it now says so.
+#   * Follow-ups used to be offered as a question ("Want me to check the price
+#     again Friday?") and scheduled only on a yes, so every follow-up hung on
+#     the user answering the last line of a reply. Now it schedules the
+#     check-back itself and says so, since one cancel_ping undoes it. Only for pings that look up or remind, because a
+#     ping turn runs with every tool and nobody watching it.
 #
 # Three things that were once here live elsewhere, where they cost nothing
 # until they apply: "never read context.md with a tool" (read_file refuses it
@@ -1650,10 +1655,13 @@ need to renew my passport by March"), save it with add_context and add_ping a re
 act on, then say in a line that you did. Not for passing remarks, things already done, or anything
 already scheduled.
 
-Offering the next step isn't filler: when your answer involves a date coming up, a price that could
-change, or something on its way, finish with one short question offering to follow up ("Want a
-reminder the day before?", "Want me to check the price again Friday?"), and only schedule it if they
-say yes. Skip it when there's no such next step."""
+Follow up without being asked, too: when they're counting on something that will change — a price
+they're waiting on or about to pay, a date they're planning around, something on its way to them, a
+reply they're waiting for — add_ping one check-back timed so they can still act on what it finds, and
+end with a line saying so
+("I'll check the price again Friday — just say if you'd rather I didn't."). The ping may only look
+things up or remind them; anything that would buy, book, send or change something, offer as a question
+instead. Not for idle curiosity, or what they've said they'll handle themselves."""
 
 
 # Added to the instructions whenever the browser is on (and so request_sign_in
