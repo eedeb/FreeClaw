@@ -24,8 +24,15 @@ playwright.
 
 Nothing here may write to stdout except protocol messages: that's the
 JSON-RPC channel. Diagnostics go to stderr, which FreeClaw drains separately.
-Playwright is only imported once a browser is actually needed, because Flask
-imports this module for the constants below (src/browser_takeover.py).
+Playwright is only imported once a browser is actually needed.
+
+**Seen by sites as a real browser.** It is also the browser a person signs in
+with — the Browser app hands it to them (take control) — and Google and
+Microsoft sign-in refuse a headless one ("This browser or app may not be
+secure"). So on Linux it runs headful on a virtual display of its own (Xvfb,
+`_virtual_display`), and on macOS and Windows headful with its window off the
+screen. Only where neither is possible does it fall back to headless, and says
+so in its log.
 """
 
 import asyncio
@@ -33,16 +40,18 @@ import base64
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
 
 # The viewport the agent browses at, and the size of every screenshot it is
 # shown — so an x,y the model reads off a screenshot is exactly the point it
-# clicks. Shared with src/browser_takeover.py so the human's sign-in happens
-# at the same size: a few sites serve a different DOM to a different viewport,
-# and a login captured against the mobile layout can land the agent somewhere
-# it can't navigate.
+# clicks. It is also the size the person sees and signs in at when they take
+# the browser over: a few sites serve a different DOM to a different viewport,
+# and a login made against the mobile layout can land the agent somewhere it
+# can't navigate.
 VIEWPORT = {"width": 1280, "height": 800}
 
 LOCALE = "en-US"
@@ -50,8 +59,7 @@ LOCALE = "en-US"
 # Playwright launches Chromium with --enable-automation, which is what sets
 # navigator.webdriver = true — the first thing a sign-in page checks, and
 # the reason Google answers "This browser or app may not be secure". Dropping
-# the flag and the matching Blink feature makes it read false again. Shared by
-# both browsers: the site should see the same one sign in and come back.
+# the flag and the matching Blink feature makes it read false again.
 IGNORE_DEFAULT_ARGS = ["--enable-automation"]
 LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled",
                # One renderer process where Chromium would otherwise keep
@@ -65,7 +73,7 @@ LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled",
                "--renderer-process-limit=1"]
 
 
-# Run in every page of both browsers (context.add_init_script): pause looping
+# Run in every page (context.add_init_script): pause looping
 # animations while their element is off-screen, and play them again when it
 # scrolls into view.
 #
@@ -108,7 +116,7 @@ OFFSCREEN_ANIMATION_PAUSE_JS = r"""
 
 
 def launch_kwargs(headless, channel=None):
-    """The `chromium.launch()` arguments both browsers share."""
+    """The `chromium.launch()` arguments."""
     kwargs = {"headless": headless, "ignore_default_args": list(IGNORE_DEFAULT_ARGS),
               "args": list(LAUNCH_ARGS)}
     if channel:
@@ -116,15 +124,118 @@ def launch_kwargs(headless, channel=None):
     return kwargs
 
 
+# The virtual display this process's Chromium draws on, on Linux: Xvfb picks a
+# free display number itself (-displayfd), so every user's browser process can
+# have its own. Started with the browser and stopped with it.
+_xvfb = None
+# Off the edge of a real screen, for the platforms that have one: headful, so
+# sites see a real browser, without a window appearing on the user's desktop.
+_OFFSCREEN_ARGS = ["--window-position=-32000,-32000"]
+
+
+def _die_with_parent():
+    """In the Xvfb child, before exec: ask the kernel to end it when this
+    process ends. FreeClaw stops a browser by ending its process, which skips
+    any cleanup here — without this, every stopped browser left an Xvfb."""
+    try:
+        import ctypes
+        import signal
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
+    except Exception:                                        # noqa: BLE001 — best effort
+        pass
+
+
+def _start_xvfb():
+    """A display string (":N") for a new Xvfb, or None if there's no Xvfb or
+    it didn't come up."""
+    global _xvfb
+    if _xvfb is not None and _xvfb[0].poll() is None:
+        return _xvfb[1]
+    if not shutil.which("Xvfb"):
+        return None
+    import select
+
+    read_end, write_end = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            ["Xvfb", "-displayfd", str(write_end), "-screen", "0",
+             f"{VIEWPORT['width']}x{VIEWPORT['height']}x24", "-nolisten", "tcp"],
+            pass_fds=(write_end,), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=_die_with_parent)
+    except OSError as e:
+        os.close(read_end)
+        os.close(write_end)
+        _log(f"couldn't start Xvfb ({e})")
+        return None
+    os.close(write_end)
+    number = b""
+    try:
+        # It writes the display number once it's listening, so a browser
+        # launched after this never meets a display that isn't there yet.
+        deadline = time.monotonic() + 10
+        while not number.endswith(b"\n") and time.monotonic() < deadline:
+            ready, _, _ = select.select([read_end], [], [], 0.2)
+            if ready:
+                chunk = os.read(read_end, 16)
+                if not chunk:
+                    break
+                number += chunk
+    finally:
+        os.close(read_end)
+    number = number.strip().decode("ascii", "replace")
+    if not number.isdigit() or proc.poll() is not None:
+        _stop_xvfb(proc)
+        _log("Xvfb didn't start")
+        return None
+    _xvfb = (proc, ":" + number)
+    return _xvfb[1]
+
+
+def _stop_xvfb(proc=None):
+    global _xvfb
+    if proc is None:
+        proc = _xvfb[0] if _xvfb else None
+        _xvfb = None
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def headful_launch():
+    """`chromium.launch()` arguments for this machine: headful wherever it can
+    be. On Linux, on a virtual display of its own; on macOS and Windows (and a
+    Linux desktop with no Xvfb), on the real screen with the window off its
+    edge. Headless only when there's nowhere to draw — then Google and
+    Microsoft sign-in will refuse it, and the log says how to fix that."""
+    if sys.platform in ("darwin", "win32"):
+        kwargs = launch_kwargs(headless=False)
+        kwargs["args"] += _OFFSCREEN_ARGS
+        return kwargs
+    display = _start_xvfb()
+    if display:
+        kwargs = launch_kwargs(headless=False)
+        kwargs["env"] = {**os.environ, "DISPLAY": display}
+        return kwargs
+    if (os.environ.get("DISPLAY") or "").strip():
+        kwargs = launch_kwargs(headless=False)
+        kwargs["args"] += _OFFSCREEN_ARGS
+        return kwargs
+    _log("no Xvfb: chromium runs headless, and Google and Microsoft sign-in will refuse it. "
+         "Install it with: sudo apt-get install -y xvfb")
+    return launch_kwargs(headless=True)
+
+
 def chrome_user_agent(browser):
     """A plain-Chrome UA string matching `browser`'s actual version.
 
     Playwright's headless Chromium advertises itself as `HeadlessChrome`, which
-    is exactly the token sign-in pages look at when they decide to refuse. The
-    human signs in through a *headful* browser (src/browser_takeover.py) and
-    the agent replays those cookies through a headless one, so if the two
-    disagree about who they are, the site sees a session that changed browser
-    mid-flight and re-challenges.
+    is exactly the token sign-in pages look at when they decide to refuse —
+    and where this browser has to fall back to headless, a login made in it
+    should still look like the same browser coming back.
 
     Derived from `browser.version` rather than hardcoded so it ages with
     whatever Chromium playwright installed."""
@@ -145,11 +256,8 @@ def chrome_user_agent(browser):
 
 
 def context_kwargs(browser, storage_state=None):
-    """The `new_context()` arguments both browsers share.
-
-    One definition used by the agent's context here and the human's context in
-    browser_takeover, because the whole handoff rests on the two looking like
-    the same browser to the site."""
+    """The `new_context()` arguments: the locale, the viewport, a plain-Chrome
+    user agent, and the saved logins if there are any."""
     kwargs = {"locale": LOCALE, "viewport": dict(VIEWPORT)}
     user_agent = chrome_user_agent(browser)
     if user_agent:
@@ -579,7 +687,12 @@ class Browser:
         await self.close()
         state = _state_path()
         self.pw = await async_playwright().start()
-        self.browser = await self.pw.chromium.launch(**launch_kwargs(headless=True))
+        try:
+            self.browser = await self.pw.chromium.launch(**headful_launch())
+        except Exception as e:                               # noqa: BLE001 — headless will do
+            _log(f"couldn't launch a headful chromium ({e}); running headless")
+            _stop_xvfb()
+            self.browser = await self.pw.chromium.launch(**launch_kwargs(headless=True))
         try:
             self.context = await self.browser.new_context(**context_kwargs(self.browser, state))
         except Exception as e:                               # noqa: BLE001 — degrade, don't die
@@ -597,16 +710,6 @@ class Browser:
         self.new_tab = False
         self.mouse = (VIEWPORT["width"] / 2, VIEWPORT["height"] / 2)
         _log(f"chromium ready ({'with saved logins' if state else 'signed out'})")
-
-        # A user who just solved a check the agent handed them (see
-        # src/browser_handoff.py) left off on some page; carry on from there.
-        import src.browser_handoff as browser_handoff
-        url = browser_handoff.take_resume(os.environ.get("FC_BROWSER_STORAGE_STATE"))
-        if url:
-            try:
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            except Exception as e:                           # noqa: BLE001
-                _log(f"couldn't reopen {url}: {e}")
         if self.watched():
             self._start_watching()
 
@@ -621,6 +724,7 @@ class Browser:
             except Exception:                                # noqa: BLE001 — teardown
                 pass
         self.pw = self.browser = self.context = self.page = None
+        _stop_xvfb()
 
     def _on_page(self, page):
         """Follow a tab the page opened: target=_blank links and sign-in
@@ -1304,8 +1408,9 @@ class Tools:
 
     async def t_request_captcha_help(self, reason=""):
         """Dumps the context's cookies to a private temp file and says where;
-        FreeClaw moves it into the user's profile and draws a button
-        (src/browser_handoff.py). Cookies never ride in the result itself."""
+        FreeClaw keeps them as the user's saved logins and draws a button that
+        hands them this browser, on this page (src/browser_handoff.py). Cookies
+        never ride in the result itself."""
         if not self.b.alive():
             raise ToolError("Nothing to hand over: open the page with the check first.")
         page = await self.b.ensure()

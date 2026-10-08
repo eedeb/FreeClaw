@@ -2422,10 +2422,11 @@ def build_utility_tools():
 
 # The agent's browser starts signed out, and a login form is the one thing it
 # must never fill in itself. This hands that step to the user: the chat renders
-# the call as a button onto /browser at this address, and whatever they save
-# there reaches the agent's browser on its next call (Flask/main.py drops the
-# cached MCP child on save). Offered only alongside a working browser server —
-# see _build_catalogue.
+# the call as a button onto /browser at this address, which opens the agent's
+# own browser there and gives them control of it. They sign in, hand it back,
+# and the agent carries on in the same browser, signed in (the logins are
+# saved for its next one too). Offered only alongside a working browser
+# server — see _build_catalogue.
 SIGN_IN_TOOL_NAME = "request_sign_in"
 
 
@@ -2536,9 +2537,9 @@ def build_sign_in_tools():
             "function": {
                 "name": SIGN_IN_TOOL_NAME,
                 "description": (
-                    "Shows the user a button to sign in to a site in their FreeClaw browser, "
-                    "for a page you need that's behind a login. Never fill in a login yourself. "
-                    "End your turn after calling it."
+                    "Shows the user a button that opens your browser at this address for them "
+                    "to sign in themselves, for a page you need that's behind a login. Never fill "
+                    "in a login yourself. End your turn after calling it."
                 ),
                 "parameters": {
                     "type": "object",
@@ -3138,16 +3139,17 @@ PING_PAST_TOLERANCE = timedelta(minutes=2)
 
 
 def _hand_over_page(result, reason):
-    """request_captcha_help's result, with the agent's page filed for the user's
-    browser to open (src/browser_handoff.py). The chat turns the call into a
-    button; the model gets told to stop, and never sees where the cookies went."""
+    """request_captcha_help's result, with the agent's page noted for the
+    user's Browser app (src/browser_handoff.py). The chat turns the call into a
+    button that hands them this browser; the model gets told to stop, and never
+    sees where the cookies went."""
     url, error = browser_handoff.accept(approvals.current_user(), result, reason)
     if error:
         return error
     host = urlparse(url).hostname or url
-    return (f"The user now has a button to open {host} in their FreeClaw browser and solve the "
-            f"check. End your turn: tell them to press it, solve it, save, and say when they're "
-            f"done. Then call screenshot: your browser reopens on the page they left.")
+    return (f"The user now has a button that hands them your browser on {host} to solve the "
+            f"check. End your turn: tell them to press it, solve it, press Hand back, and say "
+            f"when they're done. Then call screenshot: your browser is on the page they left.")
 
 
 def _run_tool(command_name, args_dict, bash_approved=False):
@@ -3592,8 +3594,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         url, host = _sign_in_url(args_dict.get('url'))
         if not url:
             return "Error: url must be an http:// or https:// web address."
-        return (f"The user now has a button to sign in at {host}. End your turn: tell them to "
-                f"press it and say when they're done. Your browser is signed in once they save.")
+        return (f"The user now has a button to sign in at {host} in your browser. End your turn: "
+                f"tell them to press it, sign in, press Hand back, and say when they're done. "
+                f"Your browser is signed in from then on.")
 
     registry = registry_for(_tools_user())
     if command_name in registry:

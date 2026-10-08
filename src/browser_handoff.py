@@ -2,27 +2,27 @@
 
 A CAPTCHA is a wall the agent must not climb itself, and unlike a login it
 usually sits in the middle of something: a session the site has set up, a form
-part-way through, a challenge that only this browser is being shown. Opening
-the address fresh in the sign-in browser would lose all of that, so the user
-gets the agent's page *with the agent's cookies*.
+part-way through, a challenge that only this browser is being shown. So the
+user is given *the agent's own browser*, on that page — the Browser app takes
+control of it (src/browser_live.py) — rather than a fresh one.
 
 The round trip:
 
   1. The agent calls `request_captcha_help` (src/browser_server.py). The
      child dumps its context's storage_state to a private temp file
      (`write_state_file`) and returns where it is: {url, title, state_file}.
-  2. agent.py intercepts that result (`accept`): the dump moves into the
-     user's profile directory as handoff.json, the model is told to end its
-     turn, and the chat draws a button.
-  3. The button opens /browser?handoff=1. Flask (`take`) loads and deletes
-     handoff.json, and the sign-in browser (src/browser_takeover.py) adds the
-     agent's cookies and opens its page — in the browser already open, if
-     there is one, so nothing unsaved there is lost.
-  4. The user solves the check and saves. That writes auth.json as always,
-     plus resume.json: the address they finished on (`write_resume`).
-  5. Saving drops the agent's browser child (Flask/main.py). The next one
-     loads auth.json and, as it starts, opens resume.json's address
-     (`take_resume`), so the agent carries on from the page the user left.
+  2. agent.py intercepts that result (`accept`): the dump becomes the user's
+     saved logins (src/browser_profiles.py) — a superset of what was saved,
+     since the agent's browser started from them — and handoff.json records
+     the page and why. The model is told to end its turn, and the chat draws a
+     button.
+  3. The button opens /browser?handoff=1. Flask (`take`) consumes handoff.json
+     and the page takes control of the agent's browser, still on the page with
+     the check. If that browser closed meanwhile, the page reopens it at the
+     handed-over address — and because step 2 saved its session, the site
+     still sees the same visitor.
+  4. The user solves the check and hands back. The agent's browser is where
+     they left it, so the agent carries on from there.
 
 Why a temp file in step 1 rather than the state in the tool result: a result
 is text that gets logged, streamed to the page and stored in the conversation
@@ -42,7 +42,6 @@ import time
 TOOL_NAME = "request_captcha_help"
 
 HANDOFF_FILENAME = "handoff.json"
-RESUME_FILENAME = "resume.json"
 
 _TEMP_PREFIX = "fc-handoff-"
 
@@ -56,7 +55,7 @@ def _web_url(url):
 
 
 def _write_private(path, data):
-    """JSON to `path`, readable by this account only — it holds cookies."""
+    """JSON to `path`, readable by this account only."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f)
@@ -91,18 +90,9 @@ def _profile_dir(user, create=False):
 
 # ── the MCP child ────────────────────────────────────────────
 
-def take_resume(state_path):
-    """The address a finished handoff left off at, or None. `state_path` is
-    the child's FC_BROWSER_STORAGE_STATE."""
-    if not state_path:
-        return None
-    data = _take_file(os.path.join(os.path.dirname(state_path), RESUME_FILENAME))
-    return _web_url((data or {}).get("url"))
-
-
 def write_state_file(state):
     """Step 1's dump: `state` to a private temp file, and its path. mkstemp
-    gives 0600 and a name nobody can guess; accept() removes it whatever
+    gives 0600 and a name nobody can guess; the reader removes it whatever
     happens."""
     fd, path = tempfile.mkstemp(prefix=_TEMP_PREFIX, suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -137,8 +127,10 @@ def read_state_file(state_file):
 
 
 def accept(user, result, reason=""):
-    """Step 2: file the child's dump under `user`. Returns (url, None), or
-    (None, message for the model)."""
+    """Step 2: keep the agent's session as `user`'s saved logins, and note the
+    page. Returns (url, None), or (None, message for the model)."""
+    import src.browser_profiles as profiles
+
     try:
         info = json.loads(str(result))
     except ValueError:
@@ -152,26 +144,18 @@ def accept(user, result, reason=""):
     directory = _profile_dir(user, create=True)
     if not url or not directory:
         return None, "Error: there's no page or no FreeClaw user to hand it to."
+    profiles.write_state(user, state)
     _write_private(os.path.join(directory, HANDOFF_FILENAME), {
-        "url": url, "title": info.get("title") or "", "reason": reason,
-        "cookies": state.get("cookies") or [], "at": time.time(),
+        "url": url, "title": info.get("title") or "", "reason": reason, "at": time.time(),
     })
     return url, None
 
 
 def take(user):
-    """Step 3: the handoff waiting for `user`, consumed — {url, title, reason,
-    cookies} — or None."""
+    """Step 3: the handoff waiting for `user`, consumed — {url, title, reason}
+    — or None."""
     directory = _profile_dir(user)
     data = _take_file(os.path.join(directory, HANDOFF_FILENAME)) if directory else None
     if not data or not _web_url(data.get("url")):
         return None
-    return data
-
-
-def write_resume(user, url):
-    """Step 4: where the user left the handed-over page."""
-    url = _web_url(url)
-    directory = _profile_dir(user)
-    if url and directory and os.path.isdir(directory):
-        _write_private(os.path.join(directory, RESUME_FILENAME), {"url": url, "at": time.time()})
+    return {"url": data["url"], "title": data.get("title") or "", "reason": data.get("reason") or ""}

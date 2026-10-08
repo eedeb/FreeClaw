@@ -2291,8 +2291,8 @@
       head: 'sign-in needed', target: host, href: '/browser?' + q.toString(),
       open: 'Sign in ↗', done: "I'm signed in — continue",
       reply: `I've signed in to ${host} — carry on.`,
-      note: 'Opens a browser on the FreeClaw machine. Whatever you sign into there, '
-        + 'the agent can use until you clear it on that page.',
+      note: "Opens the agent's browser so you can sign in yourself; press Hand back when "
+        + "you're done. The agent can use what you sign into until you clear it in the Browser app.",
     }, pending);
   }
 
@@ -2308,9 +2308,9 @@
     return addBrowserCard({
       head: 'captcha needed', target: reason || "on the agent's current page",
       href: '/browser?' + q.toString(), open: 'Solve it ↗', done: 'Solved — continue',
-      reply: "I've solved the check and saved — carry on.",
+      reply: "I've solved the check — carry on.",
       note: "Opens the agent's page so you can take over its browser. Solve the check, "
-        + 'press Hand back (or Save login), and the agent carries on from wherever you leave it.',
+        + 'press Hand back, and the agent carries on from wherever you leave it.',
     }, pending);
   }
 

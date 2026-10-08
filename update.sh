@@ -42,18 +42,18 @@ section_gap() {
     echo ""
 }
 
-# Xvfb — the virtual display FreeClaw's sign-in browser runs on
-# (src/browser_takeover.py). Here as well as in install.sh because an install
+# Xvfb — the virtual display FreeClaw's browser runs on (src/browser_server.py).
+# Here as well as in install.sh because an install
 # made before this existed has no other way to get it: FreeClaw runs as an
-# ordinary user and can't apt-get anything itself, so without this the sign-in
-# browser stays headless forever, and headless is exactly what Google and
-# Microsoft sign-in refuse.
+# ordinary user and can't apt-get anything itself, so without this the browser
+# stays headless forever, and headless is exactly what Google and Microsoft
+# sign-in refuse.
 #
 # A no-op on every run after the first, and never fatal — an update must not
 # fail over an optional feature.
 ensure_xvfb() {
     command -v Xvfb &>/dev/null && return 0
-    info "Installing Xvfb (virtual display for the sign-in browser)..."
+    info "Installing Xvfb (virtual display for the browser)..."
     # Every call is `|| true`: `set -e` is on, and a package manager problem
     # must not abort the update. The check afterwards is what decides.
     if command -v apt-get &>/dev/null; then
@@ -73,13 +73,13 @@ ensure_xvfb() {
     elif command -v apk &>/dev/null; then
         sudo apk add --quiet xvfb || true
     else
-        warn "No supported package manager — skipping Xvfb (sign-in browser stays headless)."
+        warn "No supported package manager — skipping Xvfb (the browser stays headless)."
         return 0
     fi
     if command -v Xvfb &>/dev/null; then
-        success "Xvfb installed — the sign-in browser can now run headful"
+        success "Xvfb installed — the browser can now run headful"
     else
-        warn "Couldn't install Xvfb; the sign-in browser will run headless."
+        warn "Couldn't install Xvfb; the browser will run headless."
     fi
     return 0
 }

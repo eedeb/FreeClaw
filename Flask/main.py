@@ -6,10 +6,6 @@ import src.browser_handoff as browser_handoff
 import src.browser_live as browser_live
 import src.browser_profiles as browser_profiles
 import src.browser_setup as browser_setup
-# Neither of these imports playwright at module scope — it arrives only when a
-# sign-in browser is actually opened, which keeps the web process the same size
-# it was for everyone who never uses one (the reasoning in browser_setup.py).
-import src.browser_takeover as browser_takeover
 import src.cancellation as cancellation
 import src.jev as jev
 import src.mcp_client as mcp_client
@@ -23,7 +19,6 @@ from src.users import (
     activate_session, read_user_context, write_user_context, write_file_atomic,
 )
 from src.logging_setup import get_logger
-import atexit
 import base64
 import uuid
 import json
@@ -165,12 +160,6 @@ except Exception as e:
     logger.exception("Couldn't load tools at startup")
 
 
-# A sign-in browser holds an X display and a Chromium; Settings -> Restart
-# exits the process, so without this one would be left running with nothing
-# able to reach it.
-atexit.register(browser_takeover.shutdown_all)
-
-
 def current_user():
     name = session.get("current_user")
     if name and user_exists(name):
@@ -182,10 +171,10 @@ def _reset_conversation(name):
     """Start `name`'s conversation over. Shared by the /reset route and the
     /reset slash-command so the two can't drift.
 
-    Closes `name`'s browsers too — the agent's and any sign-in browser open for
-    them — so a fresh conversation doesn't carry on in whatever page the last
-    one left open, and doesn't hold a Chromium nobody is using. Their saved
-    logins are on disk and load again the next time the agent browses."""
+    Closes `name`'s browser too, so a fresh conversation doesn't carry on in
+    whatever page the last one left open, and doesn't hold a Chromium nobody is
+    using. Their saved logins are on disk and load again the next time the
+    agent browses."""
     with _session_lock(name):
         activate_session(name)
         agent.reset()
@@ -194,19 +183,12 @@ def _reset_conversation(name):
 
 
 def _close_browsers(name):
-    """Stop `name`'s agent browser and close their sign-in browser, without
-    saving it — a reset isn't a decision about logins. Failures are logged:
-    the conversation was reset either way."""
+    """Stop `name`'s browser. Failures are logged: the conversation was reset
+    either way."""
     try:
         mcp_client.release_user_browser(name)
     except Exception:
         logger.exception("Couldn't close %r's browser on reset", name)
-    try:
-        signin = browser_takeover.get(name)
-        if signin is not None:
-            signin.cancel()
-    except Exception:
-        logger.exception("Couldn't close %r's sign-in browser on reset", name)
 
 
 def _has_title(name):
@@ -321,15 +303,7 @@ def _forget_browser(name):
     Their saved logins live in browser-profiles/, outside the user directory,
     so rmtree above doesn't reach them — and a user created later under the
     same name would have been signed straight into whatever this one was.
-    Then the two places those logins are still live: an open sign-in browser,
-    closed unsaved so it can't write them back, and the agent's browser
-    child, which holds them in memory."""
-    try:
-        sess = browser_takeover.get(name)
-        if sess is not None and sess.alive():
-            sess.cancel()
-    except Exception:
-        logger.exception("Couldn't close the sign-in browser of deleted user %r", name)
+    And the agent's browser child, which holds them in memory."""
     try:
         mcp_client.release_user_browser(name)
     except Exception:
@@ -894,14 +868,20 @@ def api_delete_bash_approval():
 
 # ── BROWSER ──────────────────────────────────────────────────
 #
-# A browser the user drives, running on the machine FreeClaw runs on. It exists
-# because the agent's own browser starts signed out of everything, so any site
-# behind a login is a wall — but it's a general browser, not a login wizard:
-# whatever the user does here, the agent inherits the cookies for.
+# The agent's own browser, shown live in the Browser app (src/browser_live.py),
+# for the person to watch and to take over. It exists in the person's hands
+# because the agent's browser starts signed out of everything, so any site
+# behind a login is a wall — and a login form, or a CAPTCHA, is the one thing
+# the agent must never fill in itself. So they take control, sign in or solve
+# it, and hand it back: the agent carries on in the same browser, and the
+# logins are written per FreeClaw user (src/browser_profiles.py) for its next
+# one. It renders as a stream of frames and forwards clicks and keystrokes
+# back, behind the same login as everything else.
 #
-# It renders as a stream of screenshots (src/browser_takeover.py) and forwards
-# clicks and keystrokes back. On save, the cookies are written per FreeClaw
-# user (src/browser_profiles.py) and the agent's next browser call loads them.
+# One browser, not two: there used to be a separate sign-in browser beside the
+# agent's, which then had to copy its cookies across and hope the site took it
+# for the same visitor. The agent's browser runs headful (src/browser_server.py)
+# so the sign-in pages that refuse a headless one accept it.
 #
 # The user is named in the request (?user=… / "user" in the body) rather than
 # taken from the session's current chat: this is a window onto one user's
@@ -991,137 +971,76 @@ def browser_page():
     )
 
 
-@app.route('/api/browser/start', methods=['POST'])
-def api_browser_start():
+@app.route('/api/browser/agent/open', methods=['POST'])
+def api_browser_agent_open():
+    """Open the agent's browser at an address, starting it if it isn't running:
+    the Browser app's address bar with no browser open, and the chat's sign-in
+    and CAPTCHA buttons. Through mcp_client like any of the agent's own browser
+    calls, so whatever an install puts around those applies here too."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
     if error:
         return error
-    url = str((request.get_json(silent=True) or {}).get('url', '')).strip()
-    if not url:
-        return jsonify({'error': 'Body must include a url.'}), 400
-    url = _browser_address(url)
-    if not url.lower().startswith(_BROWSER_SCHEMES):
-        return jsonify({'error': 'Only http:// and https:// addresses can be opened here.'}), 400
+    command, problem = _checked_input({'kind': 'nav',
+                                       'url': (request.get_json(silent=True) or {}).get('url')})
+    if problem:
+        return jsonify({'error': problem}), 400
     if not browser_setup.chromium_present():
         return jsonify({'error': 'Chromium isn\'t installed yet. Switch the browser server on '
                                  'in Settings first — that\'s what downloads it.'}), 409
+    server = next((s for s in mcp_client.BUILTIN_SERVERS if s.get('needs_browser')), None)
+    if server is None:
+        return jsonify({'error': 'This install has no browser.'}), 503
     try:
-        browser_takeover.start(name, url)
+        result = str(mcp_client.call_tool(mcp_client.for_user(server, name), 'navigate',
+                                          {'url': command['url']}))
     except Exception as e:
-        logger.exception('Couldn\'t start the browser')
-        return jsonify({'error': f'Couldn\'t start the browser: {e}'}), 500
-    return jsonify({'ok': True, **browser_takeover.status(name)})
+        logger.exception('Couldn\'t open the agent\'s browser')
+        return jsonify({'error': f'Couldn\'t open the browser: {e}'}), 500
+    if not browser_live.status(name).get('live'):
+        # Refused before a browser started: its answer, which was written for
+        # the model, is still the reason.
+        return jsonify({'error': result.split('. ')[0] or 'The browser couldn\'t be opened.'}), 503
+    return jsonify({'ok': True})
 
 
 @app.route('/api/browser/handoff', methods=['POST'])
 def api_browser_handoff():
-    """Open the page the agent handed over for a CAPTCHA, with its cookies
-    (src/browser_handoff.py). One-shot: the handoff is consumed here."""
+    """The page the agent handed over for a CAPTCHA (src/browser_handoff.py):
+    {url, reason}, one-shot. The Browser app then takes control of the agent's
+    browser — still on that page, or reopened at it (/agent/open) if it closed
+    meanwhile."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
     if error:
         return error
-    if not browser_setup.chromium_present():
-        return jsonify({'error': 'Chromium isn\'t installed yet. Switch the browser server on '
-                                 'in Settings first — that\'s what downloads it.'}), 409
     handed = browser_handoff.take(name)
     if handed is None:
         return jsonify({'error': 'Nothing to open — the agent hasn\'t handed over a page, '
                                  'or it was opened already.'}), 404
-    if browser_live.status(name).get('live'):
-        # The agent's browser is still open on that page: the page takes
-        # control of it (/api/browser/agent/control) rather than opening a
-        # second browser with a copy of its cookies.
-        return jsonify({'ok': True, 'agent': True, 'url': handed['url'],
-                        'reason': handed.get('reason') or ''})
-    try:
-        browser_takeover.handoff(name, handed['url'], handed.get('cookies') or [])
-    except Exception as e:
-        logger.exception('Couldn\'t open the handed-over page')
-        return jsonify({'error': f'Couldn\'t start the browser: {e}'}), 500
-    return jsonify({'ok': True, **browser_takeover.status(name),
-                    'url': handed['url'], 'reason': handed.get('reason') or ''})
+    return jsonify({'ok': True, 'url': handed['url'], 'reason': handed['reason'],
+                    'live': bool(browser_live.status(name).get('live'))})
 
 
 @app.route('/api/browser/status', methods=['GET'])
 def api_browser_status():
+    """Whether the agent has a browser open and where, and the sites it's
+    signed into."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
     if error:
         return error
-    # The agent's own browser rides along, so the page knows whether there is
-    # one to watch (see /api/browser/agent/stream).
-    return jsonify({**browser_takeover.status(name), 'agent': browser_live.status(name)})
+    return jsonify({'agent': browser_live.status(name),
+                    'saved_domains': browser_profiles.domains(name)})
 
 
-@app.route('/api/browser/frame', methods=['GET'])
-def api_browser_frame():
-    """The latest screenshot. The page requests the next one as soon as this
-    finishes loading, so the frame rate self-clocks to whatever the connection
-    and the browser can actually manage instead of a fixed interval that's
-    wrong on both a LAN and a slow VPS link."""
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    name, error = _takeover_user()
-    if error:
-        return error
-    sess = browser_takeover.get(name)
-    if sess is None or not sess.alive():
-        return jsonify({'error': 'No browser is open.'}), 404
-    sess.touch()
-    frame = sess.frame()
-    if frame is None:
-        # Still loading the first page — not an error, just nothing to draw.
-        return jsonify({'error': 'No frame yet.'}), 204
-    response = app.response_class(frame, mimetype='image/jpeg')
-    response.headers['Cache-Control'] = 'no-store'
-    return response
-
-
-# The stream sends a zero-length frame this often when the page is still, so
-# the page can tell a quiet browser from a dead connection — and so a viewer
-# that has gone away is noticed at the next write rather than never.
+# The stream sends a keepalive this often when nothing happens, so the page can
+# tell a quiet browser from a dead connection — and so a viewer that has gone
+# away is noticed at the next write rather than never.
 _STREAM_KEEPALIVE = 5.0
-
-
-@app.route('/api/browser/stream', methods=['GET'])
-def api_browser_stream():
-    """Every frame as it's painted, on one long response: a 4-byte big-endian
-    length, then that many bytes of JPEG, repeated. Length 0 is a keepalive.
-
-    Pushed rather than polled so a still page costs nothing — the worker only
-    has a new frame when Chromium repainted (src/browser_takeover.py) — and
-    so there's one request per viewing instead of one per frame. Holds one
-    server thread while open, as the chat's own event stream does. Ends when
-    the browser does; the page reconnects if it's still meant to be open."""
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    name, error = _takeover_user()
-    if error:
-        return error
-    sess = browser_takeover.get(name)
-    if sess is None or not sess.alive():
-        return jsonify({'error': 'No browser is open.'}), 404
-
-    def generate():
-        seq = 0
-        while sess.alive():
-            # Someone watching counts as using it, as the frame poll did, so
-            # the idle timeout doesn't close a browser mid-read.
-            sess.touch()
-            new_seq, frame = sess.wait_frame(seq, _STREAM_KEEPALIVE)
-            if frame is not None and new_seq != seq:
-                seq = new_seq
-                yield struct.pack('>I', len(frame)) + frame
-            else:
-                yield b'\0\0\0\0'
-
-    return Response(generate(), mimetype='application/octet-stream',
-                    headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
 
 
 # Record kinds on the agent stream.
@@ -1209,43 +1128,9 @@ def _checked_input(data):
     return {**data, 'kind': kind}, None
 
 
-@app.route('/api/browser/input', methods=['POST'])
-def api_browser_input():
-    """One command, or `{"batch": [...]}` of them applied in order.
-
-    The page batches because it can't otherwise keep order: one request per
-    keystroke means several in flight at once on a threaded server, and those
-    land in whatever order their threads get scheduled — a fast-typed password
-    arriving scrambled. A batch is queued by a single request thread, so it
-    reaches the worker exactly as typed."""
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    name, error = _takeover_user()
-    if error:
-        return error
-    sess = browser_takeover.get(name)
-    if sess is None or not sess.alive():
-        return jsonify({'error': 'No browser is open.'}), 404
-    data = request.get_json(silent=True) or {}
-    items = data.get('batch') if isinstance(data.get('batch'), list) else [data]
-    if len(items) > _INPUT_BATCH_LIMIT:
-        return jsonify({'error': 'Too many inputs in one batch.'}), 400
-    # All checked before any is queued, so a bad one can't leave half a burst
-    # of typing applied.
-    commands = []
-    for item in items:
-        command, problem = _checked_input(item)
-        if problem:
-            return jsonify({'error': problem}), 400
-        commands.append(command)
-    for command in commands:
-        sess.send(command)
-    return jsonify({'ok': True})
-
-
 @app.route('/api/browser/agent/control', methods=['POST'])
 def api_browser_agent_control():
-    """Take the agent's own browser over, or hand it back.
+    """Take the agent's browser over, or hand it back.
 
     `{"take": true}` takes control (or keeps it: the page repeats this every
     few seconds while the person has it, and control lapses back to the agent
@@ -1270,8 +1155,8 @@ def api_browser_agent_control():
     if handed is None:
         return jsonify({'ok': True, 'control': False,
                         'saved_domains': browser_profiles.domains(name)})
-    # No clear_cache() here, unlike /finish: the agent's browser already holds
-    # these logins, and restarting it would lose the page the person left.
+    # No clear_cache() here: the agent's browser already holds these logins,
+    # and restarting it would lose the page the person left it on.
     return jsonify({'ok': True, 'control': False, 'saved': bool(handed.get('saved')),
                     'error': handed.get('error') or '',
                     'saved_domains': browser_profiles.domains(name)})
@@ -1280,7 +1165,13 @@ def api_browser_agent_control():
 @app.route('/api/browser/agent/input', methods=['POST'])
 def api_browser_agent_input():
     """What the person does in the agent's browser while they have control:
-    one command or `{"batch": [...]}`, as /api/browser/input."""
+    one command, or `{"batch": [...]}` of them applied in order.
+
+    The page batches because it can't otherwise keep order: one request per
+    keystroke means several in flight at once on a threaded server, and those
+    land in whatever order their threads get scheduled — a fast-typed password
+    arriving scrambled. A batch is checked whole and forwarded by a single
+    request thread, so it reaches the browser exactly as typed."""
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     name, error = _takeover_user()
@@ -1298,59 +1189,6 @@ def api_browser_agent_input():
         commands.append(command)
     if not browser_live.send_input(name, commands):
         return jsonify({'error': "You don't have control of the agent's browser."}), 409
-    return jsonify({'ok': True})
-
-
-@app.route('/api/browser/save', methods=['POST'])
-def api_browser_save():
-    """Write the logins out without closing the browser — sign into one site,
-    save, carry on to the next."""
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    name, error = _takeover_user()
-    if error:
-        return error
-    sess = browser_takeover.get(name)
-    if sess is None or not sess.alive():
-        return jsonify({'error': 'No browser is open.'}), 404
-    if not sess.save():
-        return jsonify({'error': sess.error or "Couldn't save the logins."}), 500
-    mcp_client.clear_cache()
-    agent.refresh_tools()
-    return jsonify({'ok': True, 'saved_domains': browser_profiles.domains(name)})
-
-
-@app.route('/api/browser/finish', methods=['POST'])
-def api_browser_finish():
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    name, error = _takeover_user()
-    if error:
-        return error
-    sess = browser_takeover.get(name)
-    if sess is None or not sess.alive():
-        return jsonify({'error': 'No browser is open.'}), 404
-    saved = sess.finish()
-    if not saved:
-        return jsonify({'error': sess.error or 'Couldn\'t save the logins.'}), 500
-    # The agent's browser child was spawned with the old profile (or none), and
-    # `_sig` keys it on that. Drop the cached children so the next tool call
-    # spawns one that loads what was just saved.
-    mcp_client.clear_cache()
-    agent.refresh_tools()
-    return jsonify({'ok': True, 'saved_domains': browser_profiles.domains(name)})
-
-
-@app.route('/api/browser/cancel', methods=['POST'])
-def api_browser_cancel():
-    if not logged_in():
-        return jsonify({'error': 'Unauthorized'}), 401
-    name, error = _takeover_user()
-    if error:
-        return error
-    sess = browser_takeover.get(name)
-    if sess is not None:
-        sess.cancel()
     return jsonify({'ok': True})
 
 

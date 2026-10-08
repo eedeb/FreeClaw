@@ -98,17 +98,8 @@
       color: var(--text); font-family: var(--mono); font-size: 12.5px;
     }
     #addr::placeholder { color: var(--muted); }
-    .save-btn {
-      flex-shrink: 0; height: 24px; padding: 0 11px; border-radius: 999px;
-      background: var(--accent); color: #10100c; border: none; cursor: pointer;
-      font-family: var(--mono); font-size: 11px; font-weight: 500; white-space: nowrap;
-      display: flex; align-items: center; gap: 5px; transition: background 0.15s, opacity 0.15s;
-    }
-    .save-btn svg { width: 12px; height: 12px; }
-    .save-btn:hover:not(:disabled) { background: #d4f766; }
-    .save-btn:disabled { opacity: 0; pointer-events: none; }
-    /* Take control of the agent's browser / hand it back. Shown only while
-       watching it; outlined until it's yours, filled while it is. */
+    /* Take control of the agent's browser / hand it back. Shown while it's
+       open; outlined until it's yours, filled while it is. */
     .take-btn {
       flex-shrink: 0; height: 26px; padding: 0 12px; border-radius: 999px; margin-left: 4px;
       background: transparent; color: var(--accent); border: 1px solid var(--accent-dim);
@@ -138,7 +129,7 @@
       font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: #d9e3b8;
     }
     .infobar[hidden] { display: none; }
-    .infobar .i { color: var(--accent); flex-shrink: 0; }
+    .infobar .i { color: var(--accent); flex: none; }
     .infobar span { flex: 1; min-width: 0; }
     .infobar button { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; line-height: 1; }
     .infobar button:hover { color: var(--text); }
@@ -233,8 +224,7 @@
     .menu-links[hidden] { display: none; }
 
     @media (max-width: 520px) {
-      #fwd { display: none; }
-      .save-btn .lbl { display: none; }
+      #forward { display: none; }
     }
   </style>
 </head>
@@ -255,8 +245,8 @@
     <div class="banner warn">No FreeClaw user called <strong>{{ unknown }}</strong>.</div>
   {% endif %}
   <div class="banner">
-    This browser runs on the machine FreeClaw runs on, and whatever you sign into here,
-    that user's agent inherits. Pick whose browser to open.
+    This is your agent's own browser, on the machine FreeClaw runs on. Watch it work, or
+    take it over to sign in to a site — the agent stays signed in. Pick whose browser to open.
   </div>
   <div class="picker">
     {% for name in users %}
@@ -286,18 +276,11 @@
       </span>
       <input type="text" id="addr" placeholder="Search or type a URL"
              autocomplete="off" spellcheck="false"/>
-      <button class="save-btn" id="save" type="button" title="Save this browser's logins for {{ user }}'s agent" disabled>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.2-8.2M16 7l3 3M14 9l2 2"/></svg>
-        <span class="lbl">Save login</span>
-      </button>
     </div>
 
     <button class="take-btn" id="take" type="button" hidden
             title="Use the agent's browser yourself — it waits until you hand it back">Take control</button>
     <a class="nav-btn" id="chat-link" href="/chat?user={{ user }}" hidden>Chat</a>
-    <button class="tbtn" id="watch" title="Watch the agent's browser" hidden>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
-    </button>
     <button class="tbtn" id="gear" title="Logins and settings" aria-haspopup="true" aria-expanded="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
@@ -307,20 +290,12 @@
       <div class="menu-sec">
         <div class="menu-title">Saved logins <span class="who">{{ user }}</span></div>
         <div class="menu-note">
-          Anything you sign into here, <strong>{{ user }}'s agent can act as you on</strong> —
-          reading, posting, buying — on every turn, until you forget it.
+          Anything you sign into in this browser, <strong>{{ user }}'s agent can act as you
+          on</strong> — reading, posting, buying — on every turn, until you forget it.
         </div>
         <div class="chips" id="domains"></div>
       </div>
       <div class="menu-sec" style="padding:4px 0">
-        <button class="mi" id="close" disabled>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-          Save &amp; close browser
-        </button>
-        <button class="mi" id="discard" disabled>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-          Close without saving
-        </button>
         <button class="mi danger" id="clear">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
           Forget all saved logins
@@ -345,11 +320,11 @@
   </div>
 
   <div class="viewport">
-    <canvas id="screen" width="1280" height="800" tabindex="0" aria-label="The remote browser"></canvas>
+    <canvas id="screen" width="1280" height="800" tabindex="0" aria-label="The agent's browser"></canvas>
     <div class="overlay" id="overlay">
       <div class="ntp-logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
       <div id="overlay-icon"></div>
-      <div id="overlay-text">Type an address above to open the browser.</div>
+      <div id="overlay-text">Connecting to your agent's browser…</div>
     </div>
     <div class="agent-ripple" id="agent-ripple"></div>
     <div class="agent-cursor" id="agent-cursor"><svg viewBox="0 0 24 24"><path d="M5 3l14 8.2-6.3 1.4 3.6 6.9-2.6 1.3-3.6-6.9L5 18.5z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
@@ -366,14 +341,11 @@
   const screen = el('screen'), overlay = el('overlay'), msg = el('msg');
   const EMBEDDED = window.self !== window.top;
 
-  // The server renders at this size; clicks are scaled from the displayed
-  // image back into it, so the two must agree.
+  // The agent's browser renders at this size; clicks are scaled from the
+  // displayed picture back into it, so the two must agree.
   let viewport = { width: 1280, height: 800 };
-  let running = false;
-  let gotFrame = false;        // has this session drawn anything yet
+  let gotFrame = false;         // has anything been drawn since the browser (re)appeared
   let addrDirty = false;        // the address bar holds something the user typed
-  let lastUrl = '';             // last page the server reported being on
-  let lastNavError = '';        // so one failure is reported once, not every poll
   let navErrorShown = false;    // is `msg` currently a failed load, and ours to clear
 
   // Arrived from the agent's "sign in" button in the chat: ?url= is where the
@@ -381,20 +353,14 @@
   const params = new URLSearchParams(location.search);
   const ASK_URL = (params.get('url') || '').trim();
   const FROM_CHAT = params.get('from') === 'chat';
-  // Arrived from the agent's CAPTCHA button: open the page it handed over,
-  // with its cookies (src/browser_handoff.py), rather than an address.
+  // Arrived from the agent's CAPTCHA button: take over the page it handed
+  // over (src/browser_handoff.py).
   const HANDOFF = params.get('handoff') === '1';
-  // Opened as the chat's Agent window: show the agent's own browser, live.
-  const WATCH = params.get('watch') === 'agent';
 
-  // Two browsers can be shown here: the user's own (the sign-in browser this
-  // page starts and drives) and the agent's, which is watched — or driven,
+  // This page is a window onto the agent's own browser: watched, or driven
   // once the user takes control of it.
-  // `mode` is whichever is on screen; each stream only draws while it is.
-  let mode = 'own';
   let agentLive = false;        // the agent has a browser open right now
   let agentMeta = {};           // its url, title, and what it's doing
-  let leftAgent = false;        // the user switched away; don't switch them back
   // The user has taken the agent's browser over (/api/browser/agent/control):
   // what they do goes to it, and the agent's browser calls wait.
   let controlling = false;
@@ -502,78 +468,28 @@
     return body;
   }
 
-  // The page controls drive the user's own browser, so watching the agent's
-  // turns the ones about the page on screen off.
+  const CLOSED = "Your agent's browser isn't open. Type an address above to open it — "
+    + 'it also opens here by itself whenever the agent browses.';
+
+  // What the toolbar offers follows whether the user has the browser.
   function syncControls() {
-    const own = running && mode === 'own';
-    const drive = canDrive();
-    ['back', 'forward', 'reload'].forEach((id) => { el(id).disabled = !drive; });
-    // Handing back is what saves the agent's browser's logins.
-    el('save').disabled = !own;
-    ['close', 'discard'].forEach((id) => { el(id).disabled = !running; });
-    screen.style.cursor = drive ? 'default' : '';
+    ['back', 'forward', 'reload'].forEach((id) => { el(id).disabled = !controlling; });
+    screen.style.cursor = controlling ? 'default' : '';
     const take = el('take');
-    take.hidden = mode !== 'agent' || !(agentLive || controlling);
+    take.hidden = !(agentLive || controlling);
     take.classList.toggle('on', controlling);
     take.textContent = controlling ? 'Hand back' : 'Take control';
     take.title = controlling ? 'Give the browser back to the agent — your logins are saved for it'
                              : "Use the agent's browser yourself — it waits until you hand it back";
-    document.body.classList.toggle('driving', controlling && mode === 'agent');
-  }
-
-  // Whether what the user does on the picture goes anywhere.
-  function canDrive() {
-    return mode === 'agent' ? controlling : running;
-  }
-
-  function setRunning(on) {
-    const wasRunning = running;
-    running = on;
-    syncControls();
-    if (mode !== 'own') {
-      // Its frames start when the user switches back to it.
-      if (!on) { addrDirty = false; lastUrl = ''; lastNavError = ''; outbox.length = 0; }
-      return;
-    }
-    if (on && !wasRunning) {
-      // The overlay comes down when a frame actually arrives, not here. The
-      // server returns from `start` as soon as the worker thread exists, which
-      // is seconds before Chromium has launched and drawn anything — hiding it
-      // at this point left the user watching a black rectangle with no
-      // spinner, which reads as "nothing happened".
-      gotFrame = false;
-      showOverlay('Loading the page…', true);
-      startFrames();
-    }
-    if (!on) {
-      gotFrame = false;
-      addrDirty = false;
-      lastUrl = '';
-      lastNavError = '';
-      navState('');
-      siteIcon('');
-      setTitle('');
-      stopFrames();
-      if (tint) { tint = ''; viewportEl.style.background = ''; }
-      outbox.length = 0;
-    }
+    document.body.classList.toggle('driving', controlling);
   }
 
   // ── frames ──
-  // One long response carrying every frame the server paints (see
-  // /api/browser/stream): [4-byte length][JPEG], length 0 a keepalive. A
-  // still page sends nothing but keepalives. Frames go onto a canvas, decoded
-  // one at a time and freed as soon as they're drawn, so memory stays at one
-  // frame however long the page is open — and if frames arrive faster than
-  // they decode, the ones in between are skipped rather than queued.
-  //
-  // If streaming can't work — a proxy in front that buffers whole responses,
-  // say — it falls back to fetching one frame at a time.
+  // Drawn onto a canvas, decoded one at a time and freed as soon as they're
+  // drawn, so memory stays at one frame however long the page is open — and
+  // if frames arrive faster than they decode, the ones in between are skipped
+  // rather than queued.
   const ctx = screen.getContext('2d');
-  let streamCtl = null;         // AbortController of the open stream
-  let streamFailures = 0;       // streams in a row that ended without a frame
-  let polling = false;          // gave up on streaming; fetching frames singly
-  let pollTimer = null;
   let drawing = false;          // a frame is decoding
   let nextBlob = null;          // the newest frame waiting on that decode
   const STREAM_STALL_MS = 12000;   // no bytes, not even a keepalive, for this long
@@ -589,15 +505,10 @@
     });
   }
 
-  // `source` is the browser the frame came from: 'own' or 'agent'.
-  const onScreen = (source) => source === mode && (source === 'agent' || running);
-
-  function drawFrame(blob, source) {
-    if (!onScreen(source)) return;
-    if (drawing) { nextBlob = [blob, source]; return; }
+  function drawFrame(blob) {
+    if (drawing) { nextBlob = blob; return; }
     drawing = true;
     decodeFrame(blob).then((image) => {
-      if (!onScreen(source)) return;
       // Resizing a canvas clears it, so only when the size actually changed.
       if (screen.width !== viewport.width) screen.width = viewport.width;
       if (screen.height !== viewport.height) screen.height = viewport.height;
@@ -607,7 +518,7 @@
       if (image.close) image.close();
     }).catch(() => { /* a torn frame; the next one replaces it */ }).finally(() => {
       drawing = false;
-      if (nextBlob) { const [b, s] = nextBlob; nextBlob = null; drawFrame(b, s); }
+      if (nextBlob) { const b = nextBlob; nextBlob = null; drawFrame(b); }
     });
   }
 
@@ -625,82 +536,6 @@
     } catch (e) { /* leave it black */ }
   }
 
-  function startFrames() {
-    stopFrames();
-    if (polling || !window.ReadableStream) { polling = true; pollFrame(); }
-    else openStream();
-  }
-
-  function stopFrames() {
-    if (streamCtl) { streamCtl.abort(); streamCtl = null; }
-    clearTimeout(pollTimer);
-    nextBlob = null;
-  }
-
-  async function openStream() {
-    if (!running) return;
-    const ctl = new AbortController();
-    streamCtl = ctl;
-    let got = false;
-    let gone = false;             // answered, but there's no browser to stream
-    let stall = null;
-    const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), STREAM_STALL_MS); };
-    try {
-      arm();
-      const res = await fetch('/api/browser/stream?user=' + encodeURIComponent(USER),
-                              { signal: ctl.signal, cache: 'no-store' });
-      gone = res.status === 404;
-      if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
-      const reader = res.body.getReader();
-      let buf = new Uint8Array(0);
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        arm();
-        if (buf.length) {
-          const joined = new Uint8Array(buf.length + value.length);
-          joined.set(buf); joined.set(value, buf.length);
-          buf = joined;
-        } else {
-          buf = value;
-        }
-        while (buf.length >= 4) {
-          const len = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(0);
-          if (buf.length < 4 + len) break;
-          if (len) {
-            got = true;
-            // Blob copies the bytes, so `buf` can move on past them.
-            drawFrame(new Blob([buf.subarray(4, 4 + len)], { type: 'image/jpeg' }), 'own');
-          }
-          buf = buf.subarray(4 + len);
-        }
-      }
-    } catch (e) { /* aborted, stalled, or the connection dropped */ }
-    clearTimeout(stall);
-    if (streamCtl !== ctl || !running) return;   // stopped, or replaced by a newer stream
-    streamCtl = null;
-    // It ends normally when the browser closes or is replaced; the status
-    // poll says which. Reconnect either way — and a 404 is that browser having
-    // closed, which the poll is about to notice, not streaming failing. Counted
-    // as a failure, it would leave the next session on the fallback.
-    if (gone) { setTimeout(openStream, 2000); return; }
-    streamFailures = got ? 0 : streamFailures + 1;
-    if (streamFailures >= 2) { polling = true; pollFrame(); return; }
-    setTimeout(openStream, got ? 250 : 1500);
-  }
-
-  async function pollFrame() {
-    if (!running || !polling) return;
-    try {
-      const opts = { cache: 'no-store' };
-      try { opts.signal = AbortSignal.timeout(20000); } catch (e) { /* older browser */ }
-      const res = await fetch('/api/browser/frame?user=' + encodeURIComponent(USER) + '&t=' + Date.now(), opts);
-      if (res.status === 200) drawFrame(await res.blob(), 'own');
-    } catch (e) { /* transient; try again */ }
-    clearTimeout(pollTimer);
-    pollTimer = setTimeout(pollFrame, 150);
-  }
-
   // ── input ──
   // Sent in order, one request at a time: whatever piles up while one is in
   // flight goes as the next batch. One request per keystroke raced on the
@@ -709,8 +544,8 @@
   let sending = false;
 
   function send(command) {
-    // The agent's browser only once the user has taken control of it.
-    if (!canDrive()) return;
+    // Only once the user has taken control of it.
+    if (!controlling) return;
     // Pointer moves queued behind a slow request collapse into the latest:
     // the path is lost only while the line is backed up, and a batch can
     // never outgrow the server's limit and take the button's release with it.
@@ -727,10 +562,7 @@
     // not at all, and the error says to try again.
     const batch = outbox.splice(0, outbox.length);
     try {
-      // The outbox is emptied whenever the browser on screen changes, so the
-      // whole batch is for this one.
-      await api(mode === 'agent' ? 'agent/input' : 'input',
-                { method: 'POST', body: JSON.stringify({ batch: batch }) });
+      await api('agent/input', { method: 'POST', body: JSON.stringify({ batch: batch }) });
     } catch (e) { say(e.message, 'err'); }
     sending = false;
     flush();
@@ -860,7 +692,7 @@
   ]);
 
   screen.addEventListener('keydown', (e) => {
-    if (!canDrive()) return;
+    if (!controlling) return;
     // Let the real clipboard shortcuts through; everything else that reaches
     // here is meant for the remote page.
     if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'x', 'a'].includes(e.key.toLowerCase())) return;
@@ -879,49 +711,46 @@
   });
 
   // ── chrome ──
-  // One address bar for both jobs: with no browser open it starts one, and
-  // with one open it navigates. Two controls for "go to this page" is a
-  // distinction the user has no reason to care about.
+  // Opens the agent's browser at `url`, starting it if it isn't running
+  // (/api/browser/agent/open), and takes control. False if it couldn't.
+  async function openAt(url) {
+    showOverlay("Opening your agent's browser…", true);
+    say('');
+    try {
+      // Starting a browser can mean waiting for room on a busy server.
+      await api('agent/open', { method: 'POST', body: JSON.stringify({ url: url }) }, 200000);
+    } catch (e) {
+      say(e.message, 'err');
+      if (!agentLive) showOverlay(CLOSED, false);
+      return false;
+    }
+    setAgentLive(true);
+    return takeControl();
+  }
+
+  // One address bar: with the browser open it takes control (if need be)
+  // and goes there; with it closed it opens it there.
   async function go() {
     const url = el('addr').value.trim();
     if (!url) return;
-    // While the user has the agent's browser, the address is for it; while
-    // only watching, it's for the user's own.
-    if (mode === 'agent' && controlling) {
+    if (!controlling && agentLive && !(await takeControl())) return;
+    if (controlling) {
       send({ kind: 'nav', url: url });
       addrDirty = false;
+      // Said now rather than when the page arrives: a navigation freezes the
+      // picture on the page being left, and no acknowledgement for that long
+      // is what makes people retype the address.
       navState('Loading…');
       return;
     }
-    if (mode === 'agent') { leftAgent = true; setMode('own'); }
-    if (running) {
-      send({ kind: 'nav', url: url });
-      // Say so now rather than at the next poll. A navigation freezes the
-      // screenshot on the page being left, and up to two seconds of that with
-      // no acknowledgement anywhere is what made people retype the address.
-      navState('Loading…');
-      return;
-    }
-    showOverlay('Starting the browser…', true);
-    say('');
-    try {
-      // Starting can mean tearing down a previous browser first, which waits
-      // on a worker thread that may be mid-page-load.
-      const info = await api('start', { method: 'POST', body: JSON.stringify({ url: url }) }, 40000);
-      if (info.viewport) viewport = info.viewport;
-      if (info.note) showNote(info.note);
-      setRunning(true);
-    } catch (e) {
-      showOverlay('Type an address above to open the browser.', false);
-      say(e.message, 'err');
-    }
+    if (await openAt(url)) addrDirty = false;
   }
 
   el('addr').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); go(); screen.focus(); }
     if (e.key === 'Escape') {
       addrDirty = false;
-      el('addr').value = mode === 'agent' ? (agentMeta.url || '') : lastUrl;
+      el('addr').value = agentMeta.url || '';
       el('addr').blur();
     }
   });
@@ -930,8 +759,8 @@
   el('omni').addEventListener('mousedown', (e) => {
     if (e.target === el('omni') || e.target.closest('#site-icon')) { e.preventDefault(); el('addr').focus(); }
   });
-  // What the user typed outranks what the poll wants to put there, until the
-  // page actually goes somewhere. See poll().
+  // What the user typed outranks what the browser reports, until the page
+  // actually goes somewhere. See renderAgent().
   el('addr').addEventListener('input', () => { addrDirty = true; });
   el('back').addEventListener('click', () => { send({ kind: 'back' }); navState('Loading…'); });
   el('forward').addEventListener('click', () => { send({ kind: 'forward' }); navState('Loading…'); });
@@ -955,41 +784,6 @@
     if (!menu.hidden && !menu.contains(e.target) && !gear.contains(e.target)) setMenu(false);
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) setMenu(false); });
-
-  el('save').addEventListener('click', async () => {
-    say('Saving…');
-    try {
-      // save/finish block on the worker writing storage_state out; the server
-      // gives that its own 30s, so the client must not give up first.
-      const info = await api('save', { method: 'POST' }, 40000);
-      renderDomains(info.saved_domains || []);
-      announceSaved(info.saved_domains || []);
-      say('Saved — the agent can use these now.', 'ok');
-    } catch (e) { say(e.message, 'err'); }
-  });
-
-  el('close').addEventListener('click', async () => {
-    setMenu(false);
-    say('Saving…');
-    try {
-      const info = await api('finish', { method: 'POST' }, 40000);
-      setRunning(false);
-      showOverlay(FROM_CHAT ? 'Saved. Head back to the chat — the agent is signed in now.'
-                            : 'Browser closed. Type an address to open it again.', false);
-      renderDomains(info.saved_domains || []);
-      announceSaved(info.saved_domains || []);
-      say('Saved and closed.', 'ok');
-    } catch (e) { say(e.message, 'err'); }
-  });
-
-  el('discard').addEventListener('click', async () => {
-    setMenu(false);
-    if (!confirm('Close without saving? Anything you signed into in this session is lost.')) return;
-    try { await api('cancel', { method: 'POST' }, 25000); } catch (e) { /* closing anyway */ }
-    setRunning(false);
-    showOverlay('Browser closed. Type an address to open it again.', false);
-    say('Closed without saving.');
-  });
 
   el('clear').addEventListener('click', async () => {
     if (!confirm('Forget every saved login? The agent will be signed out of all of them.')) return;
@@ -1030,127 +824,45 @@
     });
   }
 
-  // Keeps the address bar and the saved list honest, and notices a session
-  // that timed out or died on the server side.
+  // The saved list, and a browser that opened or closed while the stream was
+  // reconnecting.
   async function poll() {
     try {
       const info = await api('status');
-      if (info.viewport) viewport = info.viewport;
       renderDomains(info.saved_domains || []);
-      if (info.running) {
-        if (!running) setRunning(true);
-        // The address the user typed stands until the page actually goes
-        // somewhere. Overwriting it on a timer — which is what happened here
-        // before, because `go()` moves focus to the screen and so the
-        // activeElement guard never fired — put the *old* URL back a second
-        // after they pressed Enter, over a screenshot still showing the old
-        // page. Nothing in that said "loading", so they typed it again.
-        if (info.url && info.url !== lastUrl) { lastUrl = info.url; addrDirty = false; }
-      }
-      // The rest is about the page on screen, which is the agent's while
-      // watching it.
-      if (info.running && mode === 'own') {
-        if (!addrDirty && document.activeElement !== el('addr')) {
-          el('addr').value = info.url || '';
-        }
-        siteIcon(info.url || '');
-        setTitle(info.title || '');
-        el('addr').title = info.title || '';
-        navState(info.navigating ? 'Loading…' : '');
-        // Once per failure, so a stale one doesn't sit on top of a later
-        // "Saved" every two seconds.
-        if (info.nav_error && info.nav_error !== lastNavError) {
-          lastNavError = info.nav_error;
-          say(info.nav_error, 'err');
-          navErrorShown = true;
-        } else if (!info.nav_error) {
-          lastNavError = '';
-          // Take it down once the next load works — but only if it's still
-          // ours; `say` clears the flag whenever anything else claims the line.
-          if (navErrorShown) say('');
-        }
-        if (info.error) say(info.error, 'err');
-      } else if (!info.running && running) {
-        setRunning(false);
-        if (mode === 'own') showOverlay('The browser closed. Type an address to open it again.', false);
-      }
       setAgentLive(!!(info.agent && info.agent.live));
-      // Nothing of their own open: show them what the agent is doing, which
-      // is what opening the Browser app mid-task is for.
-      if (agentLive && mode === 'own' && !running && !leftAgent && !addrDirty
-          && !ASK_URL && !HANDOFF) {
-        setMode('agent');
-      }
     } catch (e) { /* transient */ }
-    setTimeout(poll, 2000);
+    setTimeout(poll, 4000);
   }
 
   // ── the agent's browser ──
   // One long response of records (see /api/browser/agent/stream): a kind
   // byte, a 4-byte length, the bytes. 1 is a JPEG frame, 2 a JSON event,
-  // 0 a keepalive. Open only while watching it; that's what makes the
-  // agent's browser send frames at all.
+  // 0 a keepalive. Being open is what makes the agent's browser send frames
+  // at all, so they stop when this page closes.
   const cursorEl = el('agent-cursor'), rippleEl = el('agent-ripple');
   let agentCtl = null;
   let cursorAt = null;           // page coordinates, so a resize can re-place it
 
+  let liveShown = null;          // the state the overlay last showed
   function setAgentLive(on) {
-    const was = agentLive;
     agentLive = on;
-    el('watch').hidden = !(on || mode === 'agent' || WATCH);
     if (!on && controlling) lostControl("The agent's browser closed.");
     syncControls();
-    if (mode !== 'agent' || was === on) return;
+    if (liveShown === on) return;
+    liveShown = on;
     if (!on) {
       gotFrame = false;
       cursorEl.classList.remove('on');
       agentStatus('');
-      showOverlay("The agent's browser is closed. It shows up here as soon as the agent browses.", false);
-    } else if (!gotFrame) {
-      showOverlay("Connecting to the agent's browser…", true);
-    }
-  }
-
-  function setMode(next) {
-    if (next === mode) return;
-    // Leaving the agent's browser gives it back: control nobody can see is
-    // just the agent stuck waiting.
-    if (mode === 'agent' && controlling) handBack();
-    outbox.length = 0;
-    mode = next;
-    document.body.classList.toggle('watching', mode === 'agent');
-    el('watch').classList.toggle('on', mode === 'agent');
-    el('watch').title = mode === 'agent' ? 'Back to your own browser' : "Watch the agent's browser";
-    el('watch').hidden = !(agentLive || mode === 'agent' || WATCH);
-    gotFrame = false;
-    nextBlob = null;
-    cursorEl.classList.remove('on');
-    addrDirty = false;
-    navState('');
-    syncControls();
-    if (mode === 'agent') {
-      if (document.activeElement === el('addr')) el('addr').blur();
-      stopFrames();
-      showOverlay(agentLive ? "Connecting to the agent's browser…"
-                            : "The agent's browser is closed. It shows up here as soon as the agent browses.",
-                  agentLive);
-      renderAgent();
-      openAgentStream();
-    } else {
-      stopAgentStream();
-      agentStatus('');
-      el('addr').value = lastUrl;
-      siteIcon(lastUrl);
       setTitle('');
-      if (running) { showOverlay('Loading the page…', true); startFrames(); }
-      else showOverlay('Type an address above to open the browser.', false);
+      siteIcon('');
+      if (!addrDirty) el('addr').value = '';
+      showOverlay(CLOSED, false);
+    } else if (!gotFrame) {
+      showOverlay("Connecting to your agent's browser…", true);
     }
   }
-
-  el('watch').addEventListener('click', () => {
-    leftAgent = mode === 'agent';
-    setMode(mode === 'agent' ? 'own' : 'agent');
-  });
 
   // Shown in the status bubble for as long as the agent is at it.
   let agentStatusOn = false;
@@ -1166,7 +878,6 @@
   }
 
   function renderAgent() {
-    if (mode !== 'agent') return;
     const url = agentMeta.url || '';
     // Focus alone doesn't hold it — the page focuses the bar on load — only
     // something typed there does.
@@ -1187,10 +898,11 @@
     if (ev.t === 'live') {
       if (ev.live === false) agentMeta = {};
       for (const k of ['url', 'title', 'action', 'busy']) if (k in ev) agentMeta[k] = ev[k];
+      if ('url' in ev && ev.url) addrDirty = false;
       if ('live' in ev) setAgentLive(!!ev.live);
       if (controlling && 'url' in ev) navState('');
       renderAgent();
-    } else if (ev.t === 'cursor' && mode === 'agent' && !controlling) {
+    } else if (ev.t === 'cursor' && !controlling) {
       moveCursor(ev);
     } else if (ev.t === 'control') {
       if (ev.error) { navState(''); say(ev.error, 'err'); }
@@ -1328,13 +1040,8 @@
   }
   if (window.ResizeObserver) new ResizeObserver(() => placeCursor(0)).observe(viewportEl);
 
-  function stopAgentStream() {
-    if (agentCtl) { agentCtl.abort(); agentCtl = null; }
-  }
-
   async function openAgentStream() {
-    stopAgentStream();
-    if (mode !== 'agent') return;
+    if (agentCtl) agentCtl.abort();
     const ctl = new AbortController();
     agentCtl = ctl;
     let stall = null;
@@ -1360,7 +1067,7 @@
           if (buf.length < 5 + len) break;
           const body = buf.subarray(5, 5 + len);
           if (kind === 1) {
-            drawFrame(new Blob([body], { type: 'image/jpeg' }), 'agent');
+            drawFrame(new Blob([body], { type: 'image/jpeg' }));
           } else if (kind === 2) {
             try { agentEvent(JSON.parse(text.decode(body))); } catch (e) { /* a torn event */ }
           }
@@ -1369,12 +1076,15 @@
       }
     } catch (e) { /* aborted, stalled, or the connection dropped */ }
     clearTimeout(stall);
-    if (agentCtl !== ctl || mode !== 'agent') return;
+    if (agentCtl !== ctl) return;
     agentCtl = null;
-    setTimeout(() => { if (mode === 'agent' && !agentCtl) openAgentStream(); }, 1500);
+    setTimeout(() => { if (!agentCtl) openAgentStream(); }, 1500);
   }
 
-  if (WATCH) setMode('agent');
+  document.body.classList.add('watching');
+  showOverlay("Connecting to your agent's browser…", true);
+  syncControls();
+  openAgentStream();
   poll();
 
   // The chat button opened this in a tab of its own, and the chat is still
@@ -1390,9 +1100,8 @@
     });
   }
 
-  // Opens the address the agent asked about — steering the browser that's
-  // already open if there is one, rather than tearing it down, so a user
-  // mid-way through another sign-in doesn't lose it.
+  // The address the agent asked the user to sign in at: in the agent's own
+  // browser, which carries on signed in once it's handed back.
   async function openRequested() {
     if (!ASK_URL) return;
     // Consumed once: a reload of this page shouldn't yank the browser back to
@@ -1401,78 +1110,44 @@
     history.replaceState(null, '', location.pathname + '?' + params.toString());
     let host = ASK_URL;
     try { host = new URL(ASK_URL.includes('://') ? ASK_URL : 'https://' + ASK_URL).hostname; } catch (e) { /* show it raw */ }
-    let info = {};
-    try {
-      info = await api('status');
-      if (info.running && !running) setRunning(true);
-    } catch (e) { /* go() reports anything that matters */ }
-    // The agent's browser is open: sign in right there, in the same browser
-    // it carries on in, rather than in a second one beside it.
-    if (info.agent && info.agent.live && !running && await driveAgent()) {
-      showNote('The agent needs you to sign in to ' + host + '. You have its browser — sign in, '
-        + 'then press Hand back. ' + USER + '\'s agent carries on from there.');
-      send({ kind: 'nav', url: ASK_URL });
-      navState('Loading…');
-      return;
-    }
-    showNote('The agent needs you to sign in to ' + host + '. Sign in, then press Save login — '
-      + USER + '\'s agent picks it up from there.');
     el('addr').value = ASK_URL;
     addrDirty = true;
-    go();
+    showNote('The agent needs you to sign in to ' + host + '. Sign in here, then press Hand back — '
+      + USER + '\'s agent carries on from there, signed in.');
+    await liveKnown();
+    await go();
   }
 
-  // Shows the agent's browser and takes control of it. False if it couldn't.
-  async function driveAgent() {
-    leftAgent = false;
-    setAgentLive(true);
-    setMode('agent');
-    return takeControl();
-  }
-  // The agent's page, cookies and all. The server steers a browser that's
-  // already open rather than replacing it, the same as openRequested.
+  // The page the agent handed over with a check on it: take the browser over
+  // there, or reopen it at that page if it closed meanwhile.
   async function openHandoff() {
     if (!HANDOFF) return;
     params.delete('handoff');
     history.replaceState(null, '', location.pathname + '?' + params.toString());
+    let info;
+    try {
+      info = await api('handoff', { method: 'POST' });
+    } catch (e) { say(e.message, 'err'); return; }
+    let host = info.url;
+    try { host = new URL(info.url).hostname; } catch (e) { /* show it raw */ }
+    showNote('The agent needs you to solve a check on ' + host
+      + (info.reason ? ' (' + info.reason + ')' : '') + '. Solve it, then press Hand back — '
+      + USER + '\'s agent carries on from the page you leave this on.');
+    if (info.live) { setAgentLive(true); await takeControl(); }
+    else await openAt(info.url);
+  }
+
+  // Whether the agent's browser is open, before deciding how to open a page.
+  async function liveKnown() {
     try {
       const info = await api('status');
-      if (info.running && !running) setRunning(true);
-    } catch (e) { /* the handoff call reports anything that matters */ }
-    if (!running) showOverlay('Opening the agent\'s page…', true);
-    try {
-      const info = await api('handoff', { method: 'POST' }, 40000);
-      if (info.viewport) viewport = info.viewport;
-      let host = info.url;
-      try { host = new URL(info.url).hostname; } catch (e) { /* show it raw */ }
-      // The agent's browser is still on the page with the check: take it over.
-      if (info.agent) {
-        if (!running) showOverlay("Connecting to the agent's browser…", true);
-        if (await driveAgent()) {
-          showNote('The agent needs you to solve a check on ' + host
-            + (info.reason ? ' (' + info.reason + ')' : '') + '. You have its browser — solve it, '
-            + 'then press Hand back. ' + USER + '\'s agent carries on from there.');
-        }
-        return;
-      }
-      showNote('The agent needs you to solve a check on ' + host
-        + (info.reason ? ' (' + info.reason + ')' : '') + '. Solve it, then press Save login — '
-        + USER + '\'s agent carries on from the page you leave this on.'
-        + (info.note ? ' ' + info.note : ''));
-      el('addr').value = info.url;
-      lastUrl = info.url;
-      addrDirty = false;
-      if (!running) setRunning(true);
-      else navState('Loading…');
-    } catch (e) {
-      if (!running) showOverlay('Type an address above to open the browser.', false);
-      say(e.message, 'err');
-    }
+      setAgentLive(!!(info.agent && info.agent.live));
+    } catch (e) { /* openAt reports anything that matters */ }
   }
 
   openRequested();
   openHandoff();
-  if (!ASK_URL && !HANDOFF) setTimeout(() => { if (!running && mode === 'own') el('addr').focus(); }, 0);
+  if (!ASK_URL && !HANDOFF) setTimeout(() => { if (!agentLive) el('addr').focus(); }, 0);
 })();
 </script>
 <script>

@@ -42,7 +42,7 @@ DOWNLOAD_TIMEOUT = 1800
 SMOKE_TEST_TIMEOUT = 120
 # Per apt call — the index refresh, then tens of MB of X server. Generous
 # because this runs unattended in the background and a slow mirror shouldn't
-# cost the user their sign-in browser.
+# cost the user Google and Microsoft sign-in.
 XVFB_TIMEOUT = 300
 
 _lock = threading.Lock()
@@ -218,20 +218,18 @@ def _install_args():
 
 
 def _install_xvfb():
-    """A virtual display for the human sign-in browser (src/browser_takeover.py).
-
-    Only the sign-in browser needs it: the agent's own browser is headless, but
-    Google and Microsoft refuse to *sign in* a browser they can tell is
-    headless, which is the one thing that flow exists to do. Like the Chromium
+    """A virtual display for the browser (src/browser_server.py) to run headful
+    on: Google and Microsoft refuse to *sign in* a browser they can tell is
+    headless, and the person signs in through this one. Like the Chromium
     libraries above it needs root, so this does nothing on a Linux install,
     where FreeClaw runs as an ordinary user — that install gets Xvfb from
-    install.sh/update.sh instead, and browser_takeover falls back to headless
-    with a message naming the command if it's somehow still missing.
+    install.sh/update.sh instead, and the browser falls back to headless, with
+    a log line naming the command, if it's somehow still missing.
 
     A backstop, not the main path: nothing FreeClaw ships runs as root any
     more, so in practice this returns immediately. It is kept for a container
-    somebody built themselves, where it is the only way the sign-in browser
-    gets a display.
+    somebody built themselves, where it is the only way the browser gets a
+    display.
 
     `apt-get update` first because that is the case this runs in — an image
     that deletes /var/lib/apt/lists after its own install leaves an `apt-get
@@ -252,12 +250,12 @@ def _install_xvfb():
             proc = subprocess.run(args, capture_output=True, text=True,
                                   timeout=XVFB_TIMEOUT, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        logger.warning("Couldn't install Xvfb; the sign-in browser will run headless")
+        logger.warning("Couldn't install Xvfb; the browser will run headless")
         return
     if shutil.which("Xvfb"):
-        logger.info("Xvfb installed for the sign-in browser")
+        logger.info("Xvfb installed for the browser")
     else:
-        logger.warning("Xvfb still absent after apt-get (%s); the sign-in browser "
+        logger.warning("Xvfb still absent after apt-get (%s); the browser "
                        "will run headless",
                        ((proc.stderr or proc.stdout or "").strip()[-200:] or "no output"))
 
@@ -318,7 +316,7 @@ def start():
             _state["message"] = ""
             # Not inside _install(): an install that already has Chromium never
             # reaches it, which would leave every existing FreeClaw without the
-            # virtual display the sign-in browser wants. Backgrounded because
+            # virtual display the browser wants. Backgrounded because
             # this is on the Settings request path, and it's a no-op when Xvfb
             # is already there or we aren't root.
             threading.Thread(target=_install_xvfb, name="xvfb-install",

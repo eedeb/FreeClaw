@@ -83,7 +83,7 @@ removed — a second FreeClaw elsewhere is left alone.
 
 macOS used to run FreeClaw in a container, because there is no systemd here and
 a supervisor had to come from somewhere. The menu bar app is that supervisor
-now, and it is a better one: the sign-in browser gets a real window server
+now, and it is a better one: the browser gets a real window server
 instead of Xvfb, stdio MCP servers can reach the Node and Python you actually
 have installed, and Settings → Update FreeClaw works, which it never could from
 inside a container.
@@ -156,7 +156,7 @@ Three things argued against making it the whole answer:
   distinguish them.
 - A menu bar app is where a Mac user looks for a background app, and it can
   answer "is it running?" without a terminal.
-- The sign-in browser (`src/browser_takeover.py`) launches Chromium *headful*
+- The browser (`src/browser_server.py`) launches Chromium *headful*
   on purpose, because Google and Microsoft sign-in refuse headless browsers. It
   needs a real GUI session — which an Aqua LaunchAgent has too, but so does
   this, and this one also has somewhere to put an icon.
