@@ -97,8 +97,8 @@ divider() {
     echo -e "   ${DIM}${GRAY}────────────────────────────────────────────────────${RESET}"
 }
 
-# Xvfb — the virtual display FreeClaw's sign-in browser runs on
-# (src/browser_takeover.py). Without it that browser falls back to headless,
+# Xvfb — the virtual display FreeClaw's browser runs on (src/browser_server.py).
+# Without it the browser falls back to headless,
 # and headless is precisely what Google and Microsoft sign-in refuse, so a
 # feature that exists to get past a login wall can't. Tens of MB, and the only
 # chance to install it: FreeClaw itself runs as an ordinary user and can't
@@ -110,10 +110,10 @@ divider() {
 # browser starts up without a display.
 install_xvfb() {
     if command -v Xvfb &>/dev/null; then
-        success "Xvfb already present (sign-in browser)"
+        success "Xvfb already present (for the browser)"
         return 0
     fi
-    info "Installing Xvfb (virtual display for the sign-in browser)..."
+    info "Installing Xvfb (virtual display for the browser)..."
     # Every call is `|| true`: `set -e` is on, and a package manager failing
     # here must not take the install down with it. Whether it worked is decided
     # below by looking for the binary, which is the only thing that matters.

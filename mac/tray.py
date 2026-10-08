@@ -10,7 +10,7 @@ Why a menu bar app rather than a LaunchAgent with KeepAlive
 launchd can absolutely keep a process alive, and that was the obvious thing
 to reach for. Three things argued against making it the whole answer:
 
-* FreeClaw's sign-in browser (src/browser_takeover.py) launches Chromium
+* FreeClaw's browser (src/browser_server.py) launches Chromium
   *headful* on purpose, because Google and Microsoft sign-in refuse headless
   browsers. A headful browser needs a real GUI session, which an Aqua
   LaunchAgent has — but so does this, and this one also has somewhere to put
@@ -544,7 +544,7 @@ def set_autostart(enabled):
                                      os.path.abspath(__file__)],
                 "RunAtLoad": True,
                 "WorkingDirectory": APP_DIR,
-                # Aqua, not Background: the sign-in browser is headful and
+                # Aqua, not Background: the browser is headful and
                 # needs a GUI session, and a menu bar icon needs one to appear
                 # in. This is the default for a LaunchAgent, said out loud
                 # because it is load-bearing here.

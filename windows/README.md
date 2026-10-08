@@ -199,8 +199,8 @@ whole run is transcribed to `logs\update.log` — otherwise a windowless update
 that failed leaves nothing to read.
 
 It is a tray app rather than a real Windows service because a service runs in
-session 0, which has no desktop. FreeClaw's sign-in browser
-(`src/browser_takeover.py`) launches Chromium headful on purpose — Google and
+session 0, which has no desktop. FreeClaw's browser
+(`src/browser_server.py`) launches Chromium headful on purpose — Google and
 Microsoft sign-in refuse headless browsers — and headful needs a desktop.
 Running in the interactive session also means stdio MCP servers can reach the
 Node and Python you actually have installed.
@@ -209,16 +209,16 @@ Node and Python you actually have installed.
 
 The built-in `browser` MCP server ships switched off; turning it on in
 Settings is what downloads Chromium. Windows needs no virtual display for any
-of it — the tray runs in the interactive session, so `ensure_display()` returns
-straight away here, exactly as it does on macOS. Xvfb is a Linux answer to a
-problem Windows does not have.
+of it — the tray runs in the interactive session, so the browser draws on the
+real desktop (with its window off the edge of the screen), exactly as it does
+on macOS. Xvfb is a Linux answer to a problem Windows does not have.
 
 Chromium lands where playwright puts it, which on Windows is
 `%LOCALAPPDATA%\ms-playwright` — not the `~/.cache/ms-playwright` used on
 Linux. `src/browser_setup.py` mirrors playwright's own three-way rule, and has
 to: every caller reads "not found" as "not installed", so looking in the wrong
-directory hides the browser tools from the agent, makes the sign-in browser
-refuse to open, and re-downloads a few hundred megabytes that are already on
+directory hides the browser tools from the agent, makes the Browser app
+refuse to open it, and re-downloads a few hundred megabytes that are already on
 disk. Set `PLAYWRIGHT_BROWSERS_PATH` to move it; `0` means "inside the
 playwright package", and is understood too.
 

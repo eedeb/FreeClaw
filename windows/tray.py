@@ -8,8 +8,8 @@ close.
 
 Why a tray app rather than a real Windows service
 -------------------------------------------------
-A service runs in session 0, which has no desktop. FreeClaw's sign-in browser
-(src/browser_takeover.py) launches Chromium *headful* on purpose, because
+A service runs in session 0, which has no desktop. FreeClaw's browser
+(src/browser_server.py) launches Chromium *headful* on purpose, because
 Google and Microsoft sign-in refuse headless browsers — and headful needs a
 desktop to draw on. A tray app runs in the interactive session, so that flow
 works here without the Xvfb dance the Linux install needs. Stdio MCP servers
