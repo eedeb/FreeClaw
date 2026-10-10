@@ -83,19 +83,26 @@ def extract(path, first, last):
         # on it. A short page of real text, or a blank one, isn't.
         scanned = len(text) < MIN_TEXT and any(
             True for _ in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE], max_depth=2))
-        image = None
+        image, unrendered = None, False
         if scanned and images < MAX_IMAGES:
-            w, h = page.get_size()
-            scale = min(2.0, MAX_SIDE / max(w, h, 1))
-            pil = page.render(scale=scale).to_pil().convert("RGB")
-            buf = io.BytesIO()
-            pil.save(buf, "JPEG", quality=80)
-            image = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-            images += 1
+            # Pillow does the JPEG. Without it the page can't be shown, but the
+            # rest of the document still reads — never the whole PDF failing
+            # over one picture.
+            try:
+                w, h = page.get_size()
+                scale = min(2.0, MAX_SIDE / max(w, h, 1))
+                pil = page.render(scale=scale).to_pil().convert("RGB")
+                buf = io.BytesIO()
+                pil.save(buf, "JPEG", quality=80)
+                image = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+                images += 1
+            except ImportError:
+                unrendered = True
         if out and chars + len(text) > MAX_CHARS:
             stopped = n
             break
-        out.append({"n": n, "text": text[:MAX_CHARS], "scanned": scanned, "image": image})
+        out.append({"n": n, "text": text[:MAX_CHARS], "scanned": scanned, "image": image,
+                    "unrendered": unrendered})
         chars += len(text)
     if stopped is None and last < total:
         stopped = last + 1
@@ -144,6 +151,10 @@ def _render(name, data):
         if p["image"]:
             images.append(p["image"])
             parts.append("(No text layer — a scanned page. Its image is attached; read it from that."
+                         + (f" Text found: {p['text']}" if p["text"] else "") + ")")
+        elif p.get("unrendered"):
+            parts.append("(A scanned page, but this install can't turn it into an image — it "
+                         "needs the Pillow package. Tell the user to run ./update.sh."
                          + (f" Text found: {p['text']}" if p["text"] else "") + ")")
         elif p["scanned"]:
             parts.append(f"(A scanned page, past this read's image limit — read_file with "

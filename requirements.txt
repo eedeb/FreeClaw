@@ -17,6 +17,9 @@ python-dotenv
 # and ARM, so nothing compiles. Optional at runtime — without it a PDF is
 # answered with "run ./update.sh" instead of the text.
 pypdfium2>=4
+# Turns a scanned PDF page into the JPEG the model is shown. Without it the
+# text still reads and a scanned page says to run ./update.sh.
+Pillow
 
 # Tokeniser for the local Classy intent classifier (models/run_model.py).
 # It used to arrive indirectly with the old torch-based classifier's dependency
