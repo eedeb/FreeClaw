@@ -24,6 +24,7 @@ import src.fast_browser as fast_browser
 import src.jev as jev
 import src.mcp_catalog as mcp_catalog
 import src.mcp_client as mcp_client
+import src.pdfs as pdfs
 import src.responses_api as responses_api
 import src.scraper as scraper
 import src.session as sessions
@@ -2148,10 +2149,15 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Reads a file from /static — ping.md, and created or uploaded files.",
+                "description": "Reads a file from /static — ping.md, and created or uploaded files. "
+                               "PDFs come back as their text page by page, with scanned pages as images.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "filename": { "type": "string" } },
+                    "properties": {
+                        "filename": { "type": "string" },
+                        "pages": { "type": "string",
+                                   "description": "PDFs only: which pages, e.g. \"21-40\". Omit to start at the beginning." }
+                    },
                     "required": ["filename"]
                 }
             }
@@ -3218,6 +3224,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
                     "carries its About-user and Preferences sections and the "
                     "names of the rest — call search_context with a section "
                     "name to open one of those.")
+        # Not text: read in a child process, page by page (src/pdfs.py).
+        if pdfs.is_pdf(static_dir + filename):
+            return pdfs.read(static_dir + filename, filename, args_dict.get('pages'))
         try:
             with open(static_dir+filename, "r", encoding="utf-8") as f:
                 return f.read()

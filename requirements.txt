@@ -12,6 +12,12 @@ beautifulsoup4
 json-repair
 python-dotenv
 
+# Reading PDFs (src/pdfs.py): read_file's text page by page, and scanned pages
+# rendered as images. Prebuilt wheels for Linux, macOS and Windows on x86-64
+# and ARM, so nothing compiles. Optional at runtime — without it a PDF is
+# answered with "run ./update.sh" instead of the text.
+pypdfium2>=4
+
 # Tokeniser for the local Classy intent classifier (models/run_model.py).
 # It used to arrive indirectly with the old torch-based classifier's dependency
 # tree; now that stack is gone it has to be requested outright, or run_model
