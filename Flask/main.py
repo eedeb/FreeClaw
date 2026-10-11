@@ -25,6 +25,7 @@ import json
 import re
 import struct
 import time
+import queue
 import threading
 import shutil
 import subprocess
@@ -707,7 +708,18 @@ def chat():
         _set_api_enabled(False)
         return jsonify({'response': 'API disabled'})
 
-    def generate():
+    # The turn runs on a thread of its own, and this request only relays its
+    # events. A dropped connection — a tab closed, a phone that lost signal or
+    # timed out mid-turn — used to close the generator the turn ran in, ending
+    # it wherever it had got to and skipping the save: an agent halfway
+    # through "remove this from my cart and add that" removed the one, never
+    # added the other, and left no trace of either in the conversation. Now
+    # the relay stops and the turn finishes on its own, saving as always. The
+    # Stop button (/api/stop) is still how a turn is ended on purpose.
+    events = queue.Queue()
+    finished = object()
+
+    def run_turn():
         # This user's conversation only — another user's turn runs alongside
         # it rather than queueing behind it.
         with _session_lock(name):
@@ -720,7 +732,7 @@ def chat():
             try:
                 # interactive=True: there's a browser on the other end of this
                 # stream that can answer a bash approval prompt (see
-                # /api/approval below).
+                # /api/approval below) — until it hangs up (relay, below).
                 sess = activate_session(name, interactive=True)
                 session_active = True
                 # Arm the Stop button for this turn. Clears any stop left over
@@ -729,7 +741,7 @@ def chat():
                 cancellation.begin_turn(sess)
                 had_title = _has_title(name)
                 for event in agent.agent_stream(user_input=user_input):
-                    yield f"data: {json.dumps(event)}\n\n"
+                    events.put(event)
                 messages = agent.get_messages()
                 title = None if had_title else derive_title(messages)
                 updated_at = save_conversation(name, messages, title=title)
@@ -737,7 +749,7 @@ def chat():
                 # own turn without the ping poller then seeing updated_at move
                 # and re-fetching/re-rendering the whole thread a few seconds
                 # later.
-                yield f"data: {json.dumps({'type': 'done', 'conversation': messages, 'updated_at': updated_at})}\n\n"
+                events.put({'type': 'done', 'conversation': messages, 'updated_at': updated_at})
             except Exception as e:
                 logger.exception("Chat request failed for user=%s", name)
                 # A turn that blew up mid-flight may have left an approval
@@ -758,15 +770,44 @@ def chat():
                         save_conversation(name, agent.get_messages())
                     except Exception:
                         logger.exception("Also failed to save partial conversation for user=%s", name)
-                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+                events.put({'type': 'error', 'error': str(e)})
             finally:
-                # Finished, failed, stopped, or the client hung up mid-stream
-                # (which closes the generator and runs this too) — either way
-                # the flag must not outlive the turn that owns it.
+                # Finished, failed or stopped — either way the flag must not
+                # outlive the turn that owns it.
                 cancellation.end_turn(sessions.for_user(name))
+                events.put(finished)
+
+    # In the app context, as the turn ran before: anything in it that reaches
+    # for current_app still finds this app. It needs nothing from the request.
+    app_context = app.app_context()
+
+    def run_turn_in_app():
+        with app_context:
+            run_turn()
+
+    threading.Thread(target=run_turn_in_app, name=f"turn:{name}", daemon=True).start()
+
+    def relay():
+        try:
+            while True:
+                event = events.get()
+                if event is finished:
+                    return
+                yield f"data: {json.dumps(event)}\n\n"
+        except GeneratorExit:
+            # The client hung up. The turn carries on and saves itself; from
+            # here nobody can answer an approval prompt, so any waiting one is
+            # refused and later ones are refused at once rather than each
+            # sitting out the full timeout — as for a scheduled ping.
+            logger.info("Client left mid-turn for user=%s; the turn carries on", name)
+            sess = sessions.existing(name)
+            if sess is not None:
+                sess.approval_interactive = False
+            approvals.abandon_all(name)
+            raise
 
     return Response(
-        stream_with_context(generate()),
+        relay(),
         mimetype='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     )
