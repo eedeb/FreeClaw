@@ -90,6 +90,12 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
     # back, scrolled, and clicked the same team again, five times over,
     # until its steps ran out.
     forward, wrong = [], {}
+    # What's been typed where: (page path, field, text). Typing the same text
+    # into the same field again is a search that didn't get anywhere — on
+    # ESPN, a fantasy team's name into the site search four times, ~23s.
+    # The page around it changes (the suggestions), so the repeat check
+    # above doesn't see it.
+    typed = set()
     try:
         page = step({"action": "observe"})
     except Exception as e:                                   # noqa: BLE001
@@ -148,6 +154,11 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
             else:
                 kind = (element.get("kind") or "") + " " + (element.get("text") or "")
                 args.update({"text": text, "enter": "search" in kind.lower()})
+                entry = (urlsplit(page.get("url") or "").path, jev.control_key(element), text.strip().lower())
+                if entry in typed:
+                    ending = "repeat"
+                    break
+                typed.add(entry)
         url_before = page.get("url")
         try:
             page = step(args)
