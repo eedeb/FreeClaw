@@ -517,10 +517,17 @@ def _control_line(n, e):
     return line
 
 
-def browser_step(goal, page, done_so_far, can_go_back=True):
+def control_key(e):
+    """What makes two controls the same choice (see browser_step)."""
+    return (e.get("kind"), (e.get("text") or "").lower(), e.get("area"))
+
+
+def browser_step(goal, page, done_so_far, can_go_back=True, avoid=()):
     """The fast loop's next move on `page` (fast_step's JSON) toward `goal`.
     `can_go_back` is False on the page the loop started from: going back
-    there leaves the place the agent chose to start.
+    there leaves the place the agent chose to start. `avoid` holds the
+    control_keys of controls on this page that led somewhere the loop went
+    back from: not offered again.
 
     Returns {"move": "click"|"type"|"scroll"|"back"|"done"|"stop"|"unsure",
     "element": the control for click/type, "p": Jev's share for the pick,
@@ -535,8 +542,8 @@ def browser_step(goal, page, done_so_far, can_go_back=True):
         # out of 5 stars" and "Add to cart" by the dozen, and a copy adds
         # tokens without adding a choice. The first (on screen, or nearest
         # below it) is the one kept.
-        key = (e.get("kind"), (e.get("text") or "").lower(), e.get("area"))
-        if key in seen and not e.get("options"):
+        key = control_key(e)
+        if (key in seen or key in avoid) and not e.get("options"):
             continue
         seen.add(key)
         # Below-the-screen controls are offered too — the browser scrolls to
