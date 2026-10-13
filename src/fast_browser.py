@@ -84,6 +84,12 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
     # here. Unbounded, a loop on ESPN went back four times in a row — off the
     # team page it was started on, through the site's home, to about:blank.
     depth = 0
+    # Each forward step as (page it was taken on, control taken), and per
+    # page the controls that led somewhere the loop then went back from. A
+    # wrong turn isn't offered again: on ESPN the loop clicked a team, went
+    # back, scrolled, and clicked the same team again, five times over,
+    # until its steps ran out.
+    forward, wrong = [], {}
     try:
         page = step({"action": "observe"})
     except Exception as e:                                   # noqa: BLE001
@@ -98,7 +104,8 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
         if page.get("blocker"):
             ending = "check"
             break
-        decision = jev.browser_step(goal, page, done_so_far, can_go_back=depth > 0)
+        decision = jev.browser_step(goal, page, done_so_far, can_go_back=depth > 0,
+                                    avoid=wrong.get(_page_of(page.get("url")), ()))
         if decision is None:
             ending = "nojev" if not log else "unsure"
             break
@@ -150,8 +157,14 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
             break
         if move == "back":
             depth = max(0, depth - 1)
+            if forward:
+                where, key = forward.pop()
+                if key:
+                    wrong.setdefault(where, set()).add(key)
         elif _page_of(page.get("url")) != _page_of(url_before):
             depth += 1
+            forward.append((_page_of(url_before),
+                            jev.control_key(element) if move in ("click", "select") and element else None))
         if page.get("stale"):
             # Nothing was done: the control had gone. Decide again on the
             # page as it is now (this still counts against the step budget).
