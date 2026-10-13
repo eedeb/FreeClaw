@@ -651,6 +651,41 @@ _ELEMENTS_JS = r"""
     refs.push(el);
     el.setAttribute("data-fc-ref", String(item.ref));
   }
+  // The same control repeated per card — "Propose Trade" under each team,
+  // "Add to cart" under each product — is told apart by its card's title.
+  // Without it the copies read alike (and the fast loop keeps only the first),
+  // so it proposed a trade to the first team on the page, not the one asked.
+  // The card is the largest ancestor holding no other copy; its title, the
+  // first piece of text in it that isn't the control's own.
+  const items = out.concat(below, above);
+  const groups = new Map();
+  items.forEach(item => {
+    const key = item.kind + "\u0000" + item.text.toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  for (const copies of groups.values()) {
+    if (copies.length < 2) continue;
+    const els = copies.map(item => refs[item.ref - 1]);
+    copies.forEach((item, i) => {
+      let card = els[i];
+      while (card.parentElement && card.parentElement !== document.body &&
+             !els.some((other, j) => j !== i && card.parentElement.contains(other))) {
+        card = card.parentElement;
+      }
+      if (card === els[i]) return;
+      const own = item.text.toLowerCase();
+      const walk = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        const line = clean(n.nodeValue);
+        if (line.length < 2 || els[i].contains(n) || own.includes(line.toLowerCase())) continue;
+        const parent = n.parentElement;
+        if (parent && /^(SCRIPT|STYLE)$/.test(parent.tagName)) continue;
+        item.area = line.slice(0, 40);
+        break;
+      }
+    });
+  }
   const headings = [...document.querySelectorAll("h1,h2,h3")].map(h => clean(h.innerText))
     .filter(Boolean).slice(0, 8);
   const text = clean(document.body ? document.body.innerText : "").slice(0, 700);
