@@ -392,7 +392,8 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}},
                      "required": ["key"]}},
     {"name": "scroll",
-     "description": "Scroll about a screen. x,y picks the panel to scroll (default: the page).",
+     "description": "Scroll about a screen (or most of the panel at x,y). x,y picks the panel "
+                    "to scroll (default: the page). To reach something you can name, use find.",
      "inputSchema": {"type": "object", "properties": {
          "direction": {"type": "string", "enum": ["down", "up", "left", "right"]}, **_XY},
          "required": ["direction"]}},
@@ -415,8 +416,9 @@ TOOLS = [
                     "start continues a long page.",
      "inputSchema": {"type": "object", "properties": {"start": {"type": "integer"}}}},
     {"name": "find",
-     "description": "Where elements matching text are, as x,y to click. For when the "
-                    "screenshot leaves you unsure.",
+     "description": "Where elements matching text are, as x,y to click; scrolls the best "
+                    "match into view first if none is showing (in lists and panels too). "
+                    "Use it to reach a named item instead of scrolling for it.",
      "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}},
                      "required": ["text"]}},
     # Internal: FreeClaw's fast loop (browser_do) only — the builtin entry in
@@ -435,6 +437,24 @@ TOOLS = [
 ]
 
 TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
+
+
+# The size of the scrollable panel under x,y, for scroll — or null when it's
+# the page itself.
+_PANEL_JS = r"""
+([x, y]) => {
+    let el = document.elementFromPoint(x, y);
+    const page = document.scrollingElement;
+    for (; el && el !== page && el !== document.body; el = el.parentElement) {
+        const st = getComputedStyle(el);
+        if (/(auto|scroll)/.test(st.overflowY + st.overflowX) &&
+            (el.scrollHeight > el.clientHeight + 4 || el.scrollWidth > el.clientWidth + 4)) {
+            return { h: el.clientHeight, w: el.clientWidth };
+        }
+    }
+    return null;
+}
+"""
 
 
 # What's on screen, for Browser.screen_ready: visible controls, their text,
@@ -491,6 +511,7 @@ _FIND_JS = r"""
     return /^h[1-6]$/.test(tag) ? "heading" : "text";
   };
   const seen = new Set(), out = [];
+  window.__fcFound = [];
   const add = (el, text, interactive) => {
     if (seen.has(el) || out.length >= 40) return;
     seen.add(el);
@@ -498,10 +519,16 @@ _FIND_JS = r"""
     if (r.width < 1 || r.height < 1) return;
     const st = getComputedStyle(el);
     if (st.visibility === "hidden" || st.display === "none" || +st.opacity === 0) return;
-    const onScreen = r.bottom > 0 && r.right > 0 && r.top < H && r.left < W;
     const x = Math.round((Math.max(r.left, 0) + Math.min(r.right, W)) / 2);
     const y = Math.round((Math.max(r.top, 0) + Math.min(r.bottom, H)) / 2);
+    // On screen means really showing there: in the window, and not cut off
+    // by a scrolled list it sits in (what's at its middle is it).
+    const inWindow = r.bottom > 0 && r.right > 0 && r.top < H && r.left < W;
+    const top = inWindow ? document.elementFromPoint(x, y) : null;
+    const onScreen = !!top && (top === el || el.contains(top) || top.contains(el));
+    window.__fcFound.push(el);
     out.push({ kind: kind(el), text: text.slice(0, 70), x, y, onScreen, interactive,
+               index: window.__fcFound.length - 1,
                where: r.bottom <= 0 ? "above" : r.top >= H ? "below" : "" });
   };
   for (const el of document.querySelectorAll(INTERACTIVE)) {
@@ -663,6 +690,10 @@ class Browser:
         self.mouse = (VIEWPORT["width"] / 2, VIEWPORT["height"] / 2)
         self.new_tab = False             # a tab opened since the last report
         self._launch_lock = asyncio.Lock()
+        # The page's own data requests still out (page -> {request: started}),
+        # for screen_ready: an app page (ESPN Fantasy, Gmail) draws its shell
+        # first — signed-out header and all — and its data a second later.
+        self._pending = {}
 
         # The live view.
         self.watch_until = 0.0
@@ -751,7 +782,36 @@ class Browser:
         popups land there, and it's nearly always where the agent needs to be."""
         self.page = page
         self.new_tab = True
+        self._track_requests(page)
         asyncio.ensure_future(self._trim_tabs(page))
+
+    def _track_requests(self, page):
+        """Count the page's own document, fetch and XHR requests while
+        they're out. Same site only: ads and trackers poll forever and
+        aren't what the page is waiting for."""
+        pending = self._pending.setdefault(page, {})
+
+        def started(request):
+            try:
+                if request.resource_type in ("document", "fetch", "xhr") and \
+                        _site(request.url) == _site(page.url or request.url):
+                    pending[request] = time.monotonic()
+            except Exception:                                # noqa: BLE001
+                pass
+
+        def ended(request):
+            pending.pop(request, None)
+
+        page.on("request", started)
+        page.on("requestfinished", ended)
+        page.on("requestfailed", ended)
+        page.on("close", lambda *_: self._pending.pop(page, None))
+
+    def loading_data(self, page, recent=3.0):
+        """Whether the page has its own requests out that started in the last
+        `recent` seconds (older ones are long polls, not loading)."""
+        now = time.monotonic()
+        return any(now - t < recent for t in list(self._pending.get(page, {}).values()))
 
     async def _trim_tabs(self, keep):
         """Close the oldest tabs past MAX_TABS — never `keep`, the one just
@@ -826,8 +886,9 @@ class Browser:
         await self.screen_ready(page)
 
     async def screen_ready(self, page, limit=SCREEN_READY_SECONDS):
-        """Until the viewport stops changing: about the same controls and
-        text on screen two looks in a row. A page still parsing needs a
+        """Until the page's own data has arrived and the viewport stops
+        changing: about the same controls and text on screen two looks in a
+        row. A page still parsing needs a
         screenful of controls to count as ready, so its first skeleton
         doesn't; a busy one is ready when two looks differ by a few percent
         (a shop's images keep popping in around what can be clicked). Gives
@@ -848,7 +909,8 @@ class Browser:
             if seen and count and last:
                 same = seen == last[0]
                 near = count >= 15 and close(count, last[1]) and close(text, last[2])
-                if (same and (count >= 15 or state != "loading")) or near:
+                if ((same and (count >= 15 or state != "loading")) or near) \
+                        and not self.loading_data(page):
                     return
             last = (seen, count, text) if seen else None
             await asyncio.sleep(0.25)
@@ -1052,6 +1114,16 @@ def _state_path():
     return path
 
 
+def _site(url):
+    """example.com from https://lm-api.example.com/x — the last two labels,
+    or three for a country's second level (example.co.uk)."""
+    host = (url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]).lower()
+    labels = host.split(".")
+    if len(labels) > 2 and len(labels[-1]) == 2 and len(labels[-2]) <= 3:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
 def _web_url(raw):
     """What navigate should open for `raw`, or a ToolError. Only the web:
     file:// and chrome:// would turn the browser into a reader for the
@@ -1209,8 +1281,15 @@ class Tools:
         # side panel or a dropdown list gets scrolled instead of the page.
         if (x, y) != self.b.mouse:
             await self.b.glide(x, y)
-        step_y = VIEWPORT["height"] * 0.8
-        step_x = VIEWPORT["width"] * 0.8
+        # A list inside the page scrolls by most of its own height, not the
+        # window's: a 300px player list wheeled 640px skips what's in between.
+        try:
+            box = await page.evaluate(_PANEL_JS, [x, y])
+        except Exception:                                    # noqa: BLE001
+            box = None
+        step_y = (box or {}).get("h") or VIEWPORT["height"]
+        step_x = (box or {}).get("w") or VIEWPORT["width"]
+        step_y, step_x = step_y * 0.8, step_x * 0.8
         dx = {"left": -step_x, "right": step_x}.get(direction, 0)
         dy = {"up": -step_y, "down": step_y}.get(direction, 0)
         await page.mouse.wheel(dx, dy)
@@ -1283,6 +1362,15 @@ class Tools:
         await self.b.settle(quick=True)
         try:
             hits = await page.evaluate(_FIND_JS, text)
+            # Nothing showing: scroll the best match into view — inside
+            # whatever list or panel holds it — rather than have the model
+            # scroll a screen at a time and sail past it.
+            if hits and not any(h.get("onScreen") for h in hits):
+                best = next((h for h in hits if h.get("interactive")), hits[0])
+                await page.evaluate("(i) => window.__fcFound[i].scrollIntoView("
+                                    "{block: 'center', behavior: 'instant'})", best["index"])
+                await asyncio.sleep(0.3)
+                hits = await page.evaluate(_FIND_JS, text)
         except Exception as e:                               # noqa: BLE001 — mid-navigation
             raise ToolError(f"Couldn't search the page yet ({str(e).splitlines()[0]}). Try again.")
         lines = []
@@ -1294,7 +1382,8 @@ class Tools:
                              f"{round((h.get('y') or 0) * SHOT_SCALE)})")
             else:
                 lines.append(f"{label}: off-screen, scroll "
-                             f"{'up' if h.get('where') == 'above' else 'down'}")
+                             f"{'up' if h.get('where') == 'above' else 'down'} "
+                             f"(or find it by name to bring it into view)")
         found = "\n".join(lines) if lines else f"Nothing matching \"{text}\" on this page."
         content = await self._reply(image=False)
         content[0]["text"] = found + "\n" + content[0]["text"]
