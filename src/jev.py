@@ -517,8 +517,10 @@ def _control_line(n, e):
     return line
 
 
-def browser_step(goal, page, done_so_far):
+def browser_step(goal, page, done_so_far, can_go_back=True):
     """The fast loop's next move on `page` (fast_step's JSON) toward `goal`.
+    `can_go_back` is False on the page the loop started from: going back
+    there leaves the place the agent chose to start.
 
     Returns {"move": "click"|"type"|"scroll"|"back"|"done"|"stop"|"unsure",
     "element": the control for click/type, "p": Jev's share for the pick,
@@ -552,7 +554,8 @@ def browser_step(goal, page, done_so_far):
             continue
         options[f"e{n}"] = _control_line(n, e)[len(f"[e{n}] "):]
     options["scroll"] = "What the GOAL needs isn't among any of these controls: scroll down."
-    options["back"] = "This page is a wrong turn for the GOAL: go back."
+    if can_go_back:
+        options["back"] = "This page is a wrong turn for the GOAL: go back."
     options["done"] = "The GOAL is already achieved on this page."
     options["stop"] = ("Can't go on without the user (sign-in, CAPTCHA, payment, a choice only "
                        "they can make), the next step is a purchase, message or deletion, or the "
