@@ -437,6 +437,26 @@ TOOLS = [
 TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
 
 
+# What's on screen, for Browser.screen_ready: visible controls, their text,
+# and how many visible images have loaded — and whether the page is still
+# parsing. Only the viewport: below the fold may load for seconds more.
+_SCREEN_JS = r"""
+() => {
+    const H = innerHeight, W = innerWidth;
+    let n = 0, text = 0, images = 0;
+    for (const el of document.querySelectorAll("a,button,input,select,textarea,img,[role=button],h1,h2,h3")) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height || r.bottom <= 0 || r.top >= H || r.right <= 0 || r.left >= W) continue;
+        n++;
+        if (el.tagName === "IMG") { if (el.complete) images++; }
+        else text += (el.innerText || el.value || "").length;
+    }
+    return [n + ":" + text + ":" + images, document.readyState];
+}
+"""
+SCREEN_READY_SECONDS = 4
+
+
 # Run in the page by `find`. Interactive elements first, then any element
 # whose own text matches, so "the Sign in button" and "the paragraph that says
 # 'out of stock'" are both findable. Points are clamped into the element's
@@ -790,20 +810,48 @@ class Browser:
     async def settle(self, quick=False):
         """Give whatever the action set off a moment to land: a click starts
         its navigation a beat later, and a screenshot taken at once shows the
-        page being left."""
-        await asyncio.sleep(0.15 if quick else 0.4)
+        page being left. Then wait for what's on screen to be ready — not
+        the whole page: a shop keeps loading below the fold for seconds
+        after the part anyone can see or click is there."""
+        await asyncio.sleep(0.15 if quick else 0.25)
         page = self.current()
         if page is None:
             return
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=8000)
-        except Exception:                                    # noqa: BLE001
-            return
-        if not quick:
+        if quick:
             try:
-                await page.wait_for_load_state("load", timeout=2500)
+                await page.wait_for_load_state("domcontentloaded", timeout=8000)
             except Exception:                                # noqa: BLE001
                 pass
+            return
+        await self.screen_ready(page)
+
+    async def screen_ready(self, page, limit=SCREEN_READY_SECONDS):
+        """Until the viewport stops changing: about the same controls and
+        text on screen two looks in a row. A page still parsing needs a
+        screenful of controls to count as ready, so its first skeleton
+        doesn't; a busy one is ready when two looks differ by a few percent
+        (a shop's images keep popping in around what can be clicked). Gives
+        up after `limit` seconds — a page that never settles (a ticker, a
+        carousel) is read as it is."""
+        def close(a, b):
+            return abs(a - b) <= max(2, 0.05 * max(a, b))
+
+        deadline = time.monotonic() + limit
+        last = None
+        while time.monotonic() < deadline:
+            try:
+                seen, state = await page.evaluate(_SCREEN_JS)
+                count, text, images = (int(v) for v in seen.split(":"))
+            except Exception:                                # noqa: BLE001 — mid-navigation
+                seen, state, count = None, "loading", 0
+                page = self.current() or page
+            if seen and count and last:
+                same = seen == last[0]
+                near = count >= 15 and close(count, last[1]) and close(text, last[2])
+                if (same and (count >= 15 or state != "loading")) or near:
+                    return
+            last = (seen, count, text) if seen else None
+            await asyncio.sleep(0.25)
 
     async def shot(self):
         """The page as the model sees it, base64 JPEG. Retried once: in the
@@ -1083,7 +1131,7 @@ class Tools:
         self._status(f"Opening {host}")
         error = ""
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(url, wait_until="commit", timeout=30000)
         except Exception as e:                               # noqa: BLE001
             lines = str(e).strip().splitlines()
             error = lines[0] if lines else "The page wouldn't load."
@@ -1096,7 +1144,7 @@ class Tools:
         page = await self.b.ensure()
         self._status("Going back")
         try:
-            moved = await page.go_back(wait_until="domcontentloaded", timeout=15000)
+            moved = await page.go_back(wait_until="commit", timeout=15000)
         except Exception:                                    # noqa: BLE001 — landed regardless
             moved = True
         if moved is None:
@@ -1258,8 +1306,9 @@ class Tools:
         """After a fast_step action: wait (up to `budget` seconds) for the URL
         to change — a search submitted with Enter can take a second to start
         navigating, and settle() alone would read the page being left — then
-        for the page's content to stop changing, so results that render in
-        after load (most shops) are there to be read."""
+        for what's on screen to be ready (settle), so results that render in
+        after load (most shops) are there to be read. Not the whole page:
+        waiting for a shop's bottom to finish loading cost seconds a step."""
         deadline = time.monotonic() + budget
         while time.monotonic() < deadline:
             page = self.b.current() or page
@@ -1267,20 +1316,7 @@ class Tools:
                 break
             await asyncio.sleep(0.15)
         await self.b.settle()
-        page = self.b.current() or page
-        last = None
-        for _ in range(8):
-            try:
-                size = await page.evaluate(
-                    "() => (document.body ? document.body.innerText.length : 0) + ':' + "
-                    "document.querySelectorAll('a,button,input').length")
-            except Exception:                                # noqa: BLE001 — mid-navigation
-                size = None
-            if size is not None and size == last:
-                break
-            last = size
-            await asyncio.sleep(0.3)
-        return page
+        return self.b.current() or page
 
     async def t_fast_step(self, action="observe", x=None, y=None, text="", enter=False, label="",
                           ref=0, link=False):
@@ -1376,7 +1412,7 @@ class Tools:
         elif action == "back":
             self._status("Going back")
             try:
-                await page.go_back(wait_until="domcontentloaded", timeout=15000)
+                await page.go_back(wait_until="commit", timeout=15000)
             except Exception:                                # noqa: BLE001 — landed regardless
                 pass
         # How long a new page may take to *start* loading. A link almost always
@@ -1687,14 +1723,14 @@ class Server:
         elif kind == "scroll":
             await page.mouse.wheel(0, float(command.get("dy") or 0))
         elif kind == "nav":
-            await page.goto(_web_url(command.get("url")), wait_until="domcontentloaded",
+            await page.goto(_web_url(command.get("url")), wait_until="commit",
                             timeout=30000)
         elif kind == "back":
-            await page.go_back(wait_until="domcontentloaded", timeout=30000)
+            await page.go_back(wait_until="commit", timeout=30000)
         elif kind == "forward":
-            await page.go_forward(wait_until="domcontentloaded", timeout=30000)
+            await page.go_forward(wait_until="commit", timeout=30000)
         elif kind == "reload":
-            await page.reload(wait_until="domcontentloaded", timeout=30000)
+            await page.reload(wait_until="commit", timeout=30000)
 
     def _stopped(self):
         """A tool failed: whatever the viewer was told the agent is doing,
