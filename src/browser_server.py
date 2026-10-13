@@ -475,6 +475,11 @@ _SCREEN_JS = r"""
 }
 """
 SCREEN_READY_SECONDS = 4
+# And at most this much waiting for the screen per tool call, however many
+# times the call waits: a fast_step click waits after the click, then again
+# when the page it reads is mid-navigation, and on ESPN — scores and ads
+# that never stop moving — two clicks spent 10 and 12 seconds waiting.
+READY_SECONDS_PER_CALL = SCREEN_READY_SECONDS
 
 
 # Run in the page by `find`. Interactive elements first, then any element
@@ -729,6 +734,8 @@ class Browser:
         # for screen_ready: an app page (ESPN Fantasy, Gmail) draws its shell
         # first — signed-out header and all — and its data a second later.
         self._pending = {}
+        # Screen waiting left for the tool call under way; None outside one.
+        self._ready_left = None
 
         # The live view.
         self.watch_until = 0.0
@@ -927,16 +934,29 @@ class Browser:
         screenful of controls to count as ready, so its first skeleton
         doesn't; a busy one is ready when two looks differ by a few percent
         (a shop's images keep popping in around what can be clicked). Gives
-        up after `limit` seconds — a page that never settles (a ticker, a
+        up after `limit` seconds, or what's left of the tool call's
+        READY_SECONDS_PER_CALL — a page that never settles (a ticker, a
         carousel) is read as it is."""
+        if self._ready_left is not None:
+            limit = min(limit, self._ready_left)
+        started = time.monotonic()
+        try:
+            await self._screen_ready(page, started + limit)
+        finally:
+            if self._ready_left is not None:
+                self._ready_left = max(0.0, self._ready_left - (time.monotonic() - started))
+
+    async def _screen_ready(self, page, deadline):
         def close(a, b):
             return abs(a - b) <= max(2, 0.05 * max(a, b))
 
-        deadline = time.monotonic() + limit
         last = None
         while time.monotonic() < deadline:
             try:
-                seen, state = await page.evaluate(_SCREEN_JS)
+                # Bounded too: mid-navigation, evaluate waits for the next
+                # document, which on a busy page is seconds away.
+                seen, state = await asyncio.wait_for(
+                    page.evaluate(_SCREEN_JS), max(0.05, deadline - time.monotonic()))
                 count, text, images = (int(v) for v in seen.split(":"))
             except Exception:                                # noqa: BLE001 — mid-navigation
                 seen, state, count = None, "loading", 0
@@ -1187,7 +1207,11 @@ class Tools:
         if name not in TOOL_NAMES:
             raise ToolError(f"Unknown tool {name!r}.")
         args = args if isinstance(args, dict) else {}
-        return await getattr(self, "t_" + name)(**_known(name, args))
+        self.b._ready_left = READY_SECONDS_PER_CALL
+        try:
+            return await getattr(self, "t_" + name)(**_known(name, args))
+        finally:
+            self.b._ready_left = None
 
     def _status(self, action, busy=True, **extra):
         """What the viewer's status line says the agent is doing."""
