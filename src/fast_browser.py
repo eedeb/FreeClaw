@@ -52,6 +52,11 @@ _ENDINGS = {
 }
 
 
+def _page_of(url):
+    """A URL without its #fragment: a jump within the page isn't a new page."""
+    return (url or "").split("#", 1)[0]
+
+
 def _describe(element):
     return f'{element.get("kind")} "{(element.get("text") or "")[:50]}"'
 
@@ -74,6 +79,11 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
     # price — is the loop undoing itself, and it hands back rather than
     # flip-flopping until the step budget runs out.
     moves = []
+    # Pages this run has gone forward from. "back" is offered only while
+    # there's one: past it is wherever the agent was before it chose to start
+    # here. Unbounded, a loop on ESPN went back four times in a row — off the
+    # team page it was started on, through the site's home, to about:blank.
+    depth = 0
     try:
         page = step({"action": "observe"})
     except Exception as e:                                   # noqa: BLE001
@@ -88,7 +98,7 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
         if page.get("blocker"):
             ending = "check"
             break
-        decision = jev.browser_step(goal, page, done_so_far)
+        decision = jev.browser_step(goal, page, done_so_far, can_go_back=depth > 0)
         if decision is None:
             ending = "nojev" if not log else "unsure"
             break
@@ -131,12 +141,17 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
             else:
                 kind = (element.get("kind") or "") + " " + (element.get("text") or "")
                 args.update({"text": text, "enter": "search" in kind.lower()})
+        url_before = page.get("url")
         try:
             page = step(args)
         except Exception as e:                               # noqa: BLE001
             logger.warning("fast_step failed: %s", e)
             ending = "error"
             break
+        if move == "back":
+            depth = max(0, depth - 1)
+        elif _page_of(page.get("url")) != _page_of(url_before):
+            depth += 1
         if page.get("stale"):
             # Nothing was done: the control had gone. Decide again on the
             # page as it is now (this still counts against the step budget).
