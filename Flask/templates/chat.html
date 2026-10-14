@@ -2601,6 +2601,7 @@
   const LIVE_FROM = {
     discord: 'From Discord', teams: 'From Microsoft Teams', call: 'On a phone call',
     chat: 'From another device', schedule: 'A scheduled task', api: 'Through the API',
+    task: 'From the main agent', subagent: 'A sub-agent reported back',
   };
 
   // Draws one turn as its events stream in: this page's own message (/chat),
@@ -3028,8 +3029,13 @@
     if (sendBtn.disabled) return; // a live turn is streaming — don't clobber it
     try {
       const res = await fetch('/api/conversation/meta');
-      if (!res.ok) return;
+      if (!res.ok) {
+        // A sub-agent is deleted once it has reported back: nothing left here.
+        if (helping && res.status < 500) openApp('home');
+        return;
+      }
       const meta = await res.json();
+      if (meta.subagent && !helping) showSubagent(meta.subagent);
       // The agent is at work on something this page didn't send — a Discord
       // message, a phone call, another device: show it as it happens.
       if (meta.live) { watchLive(); return; }
@@ -3044,6 +3050,19 @@
       lastUpdatedAt = data.updated_at;
       applyConversation(data);
     } catch (_) { /* transient network hiccup — next tick will retry */ }
+  }
+
+  // A sub-agent's chat: watched, not talked to. Its result goes to the agent
+  // that started it, and then it's deleted (src/subagents.py); Stop still
+  // works, from the same button as any turn.
+  let helping = null;
+  function showSubagent(info) {
+    helping = info;
+    inputEl.disabled = true;
+    inputEl.value = '';
+    inputEl.placeholder = `Sub-agent for ${info.parent}. It reports back there when it's done.`;
+    uploadBtn.style.display = 'none';
+    sendBtn.style.visibility = 'hidden';
   }
 
   // Re-baseline after a change this tab caused itself (its own turn, /reset),

@@ -12,6 +12,7 @@ import src.live_turns as live_turns
 import src.mcp_client as mcp_client
 import src.mcp_catalog as mcp_catalog
 import src.session as sessions
+import src.subagents as subagents
 import src.telemetry as telemetry
 from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
@@ -155,6 +156,11 @@ def logged_in():
 # .env) so tools are ready even for the very first request against an existing
 # conversation — which doesn't otherwise trigger agent.reset(). A flaky MCP
 # server must never stop the app from booting.
+# Sub-agents run beside the conversation that started them, as users of their
+# own the homepage shows (src/subagents.py). Before the tool list below is
+# built: the spawn tool's description depends on it.
+agent.set_subagent_launcher(subagents.launch)
+
 try:
     agent.refresh_tools()
 except Exception as e:
@@ -256,7 +262,7 @@ def api_list_users():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        users = [{'name': name} for name in list_users()]
+        users = [{'name': name, 'subagent': subagents.info(name)} for name in list_users()]
         return jsonify({'users': users, 'static_dir': STATIC_DIR})
     except Exception as e:
         return _log_and_error(e)
@@ -285,6 +291,9 @@ def api_delete_user(name):
         return jsonify({'error': 'Unauthorized'}), 401
     if not user_exists(name):
         return jsonify({'error': 'No such user'}), 404
+    if subagents.info(name):
+        return jsonify({'error': "It's still working, and is deleted when it finishes. "
+                                 "Open it and press Stop to end it now."}), 409
     with _session_lock(name):
         shutil.rmtree(user_dir(name), ignore_errors=True)
         _forget_browser(name)
@@ -664,7 +673,8 @@ def api_get_conversation_meta():
     # A turn under way that this page may not have started (a phone call,
     # another device, a ping): the page follows it at /api/turn/live.
     return jsonify({'updated_at': data.get('updated_at'),
-                    'live': live_turns.current(name) is not None})
+                    'live': live_turns.current(name) is not None,
+                    'subagent': subagents.info(name)})
 
 
 @app.route('/api/turn/live', methods=['GET'])
@@ -729,6 +739,10 @@ def chat():
     user_input = data.get('message', '').strip()
     if not user_input:
         return jsonify({'error': 'Empty message'}), 400
+    helping = subagents.info(name)
+    if helping:
+        return jsonify({'error': f"This is a sub-agent working for {helping['parent']}, and it "
+                                 f"takes no messages. Talk to {helping['parent']} instead."}), 409
 
     # Slash-commands stay as quick, plain JSON responses — no need to stream these.
     if user_input.lower() == '/reset':
@@ -2863,6 +2877,13 @@ def start_ping_scheduler():
         _ping_scheduler_started = True
     threading.Thread(target=_ping_scheduler_loop, daemon=True, name="ping-scheduler").start()
     logger.info("Ping scheduler started (polling every %ss)", PING_POLL_SECONDS)
+    # Here because this is what every way of running the app calls once at
+    # startup: sub-agents the last run left behind are reported and cleared.
+    try:
+        if subagents.recover():
+            logger.info("Reported sub-agents a restart cut off")
+    except Exception:
+        logger.exception("Couldn't clear sub-agents left from the last run")
 
 
 if __name__ == '__main__':

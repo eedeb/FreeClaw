@@ -134,6 +134,18 @@
     .user-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
     .user-name { font-size: 14px; font-weight: 600; }
     .user-card .chevron { margin-left: auto; color: var(--muted); font-size: 12px; flex-shrink: 0; }
+    /* A sub-agent: working for one of the users above until it reports back. */
+    .user-card.subagent { border-style: dashed; }
+    .user-card.subagent .user-avatar { color: var(--muted); background: var(--surface); border-color: var(--border); }
+    .user-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sub-tag {
+      display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; vertical-align: 1px;
+      font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--accent);
+    }
+    .sub-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: sub-pulse 1.4s ease-in-out infinite; }
+    @keyframes sub-pulse { 50% { opacity: 0.25; } }
+    @media (prefers-reduced-motion: reduce) { .sub-dot { animation: none; } }
 
     .user-delete-btn {
       background: none;
@@ -264,19 +276,29 @@
     return (name || '?').trim().slice(0, 2).toUpperCase();
   }
 
-  async function loadUsers() {
-    usersError.style.display = 'none';
+  // What the grid was last drawn from, so the poll below redraws only when
+  // something changed (and doesn't reset a delete that's waiting on confirm).
+  let drawnUsers = null;
+
+  async function loadUsers(quiet = false) {
+    if (!quiet) usersError.style.display = 'none';
     let data;
     try {
       const res = await fetch('/api/users');
       data = await res.json();
       if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
     } catch (e) {
+      if (quiet) return;  // a missed poll; the next one will do
       usersError.textContent = `Couldn't load users: ${e.message}`;
       usersError.style.display = 'block';
       usersGrid.innerHTML = '';
+      drawnUsers = null;
       return;
     }
+    const drawn = JSON.stringify(data.users || []);
+    if (quiet && drawn === drawnUsers) return;
+    drawnUsers = drawn;
+    usersError.style.display = 'none';
     usersGrid.innerHTML = '';
     if ((data.users || []).length === 0) {
       usersGrid.innerHTML = `<div class="empty-hint">No users yet — add one below.${data.static_dir ? ' (looking in ' + escapeHtml(data.static_dir) + ')' : ''}</div>`;
@@ -284,6 +306,22 @@
     (data.users || []).forEach(u => {
       const card = document.createElement('div');
       card.className = 'user-card';
+      if (u.subagent) {
+        // No delete: it deletes itself once it has reported back, and Stop
+        // (in its chat) is how it's ended early.
+        card.classList.add('subagent');
+        card.title = u.subagent.task || '';
+        card.innerHTML = `
+        <div class="user-avatar">${escapeHtml(initials(u.name))}</div>
+        <div class="user-info">
+          <div class="user-name">${escapeHtml(u.name)}<span class="sub-tag"><span class="sub-dot"></span>working</span></div>
+          <div class="user-sub">Sub-agent for ${escapeHtml(u.subagent.parent)}: ${escapeHtml(u.subagent.task)}</div>
+        </div>
+        <div class="chevron">›</div>`;
+        card.addEventListener('click', () => openUser(u.name));
+        usersGrid.appendChild(card);
+        return;
+      }
       card.innerHTML = `
         <div class="user-avatar">${escapeHtml(initials(u.name))}</div>
         <div class="user-info">
@@ -402,6 +440,11 @@
   loadApiStatus();
 
   loadUsers();
+  // Sub-agents come and go while this page is open: one appears when an agent
+  // starts it and disappears once it has reported back.
+  setInterval(() => {
+    if (document.visibilityState === 'visible') loadUsers(true);
+  }, 4000);
 </script>
 </body>
 </html>
