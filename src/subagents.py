@@ -37,6 +37,7 @@ import src.live_turns as live_turns
 import src.mcp_client as mcp_client
 import src.session as sessions
 from src.logging_setup import get_logger
+import src.users as users
 from src.users import (activate_session, conv_files_dir, create_user, list_users,
                        save_conversation, user_dir, user_exists)
 
@@ -152,6 +153,7 @@ def _set_up(parent_sess, child, task):
     # The parent's app choices before anything else: create_user builds the
     # new user's tool catalogue, which is then cached, and built without them
     # it had the install defaults (on hosted, no browser).
+    users.unretire(child)
     os.makedirs(user_dir(child), exist_ok=True)
     for fname in INHERITED_FILES:
         src = os.path.join(user_dir(parent), fname)
@@ -246,7 +248,9 @@ def _deliver(parent, child, task, outcome, reply):
 
 def _delete(child):
     """Everything of the sub-agent's: its folder, its browser and saved logins,
-    its in-memory conversation."""
+    its in-memory conversation. Retired first, so a page that's still open on
+    it can't bring the folder back."""
+    users.retire(child)
     try:
         mcp_client.release_user_browser(child)
     except Exception:

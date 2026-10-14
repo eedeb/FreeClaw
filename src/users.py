@@ -116,12 +116,28 @@ def user_ping_path(name):
     return os.path.join(conv_files_dir(name), "ping.md")
 
 
+# Users the app is deleting on its own (a sub-agent that has reported back,
+# src/subagents.py). A request that found one a moment before the delete would
+# otherwise go on to build it a fresh conversation, bringing the folder back as
+# an ordinary user. Gone from the listing, and never recreated, until the name
+# is handed out again.
+_retired = set()
+
+
+def retire(name):
+    _retired.add(name)
+
+
+def unretire(name):
+    _retired.discard(name)
+
+
 def list_users():
     if not os.path.isdir(STATIC_DIR):
         return []
     users_found = []
     for entry in sorted(os.listdir(STATIC_DIR)):
-        if entry.lower() in RESERVED_NAMES or entry.startswith('.'):
+        if entry.lower() in RESERVED_NAMES or entry.startswith('.') or entry in _retired:
             continue
         full = os.path.join(STATIC_DIR, entry)
         try:
@@ -368,12 +384,17 @@ def ensure_conversation(name):
     Scoped to `name`'s own Session, because several read-only routes call this
     without activating a session first — un-scoped, the reset() below would
     build the fresh conversation on whatever Session that thread last touched."""
+    if name in _retired:
+        return
     _migrate_legacy_conversations(name)
     if not os.path.exists(conversation_path(name)):
         with sessions.use(sessions.for_user(name)):
             agent.set_static_dir(conv_files_dir(name))
             agent.reset()
             save_conversation(name, agent.get_messages(), title="New chat")
+        # Retired while this was being built: what it made goes too.
+        if name in _retired:
+            shutil.rmtree(user_dir(name), ignore_errors=True)
 
 
 def activate_session(name, interactive=False):
