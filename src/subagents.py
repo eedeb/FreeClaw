@@ -148,12 +148,17 @@ def _settled(messages):
 
 
 def _set_up(parent_sess, child, task):
-    create_user(child)
     parent = parent_sess.name
+    # The parent's app choices before anything else: create_user builds the
+    # new user's tool catalogue, which is then cached, and built without them
+    # it had the install defaults (on hosted, no browser).
+    os.makedirs(user_dir(child), exist_ok=True)
     for fname in INHERITED_FILES:
         src = os.path.join(user_dir(parent), fname)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(user_dir(child), fname))
+    agent.invalidate_tools(child)
+    create_user(child)
     # Signed in wherever the main agent is. A copy of the file, not the file:
     # each browser saves its own logins back, and the child's go with it.
     saved = browser_profiles.state_path(parent)
@@ -251,6 +256,8 @@ def _delete(child):
         shutil.rmtree(os.path.dirname(saved), ignore_errors=True)
     shutil.rmtree(user_dir(child), ignore_errors=True)
     sessions.discard(child)
+    # The next sub-agent under this name builds its own.
+    agent.invalidate_tools(child)
 
 
 def recover():
