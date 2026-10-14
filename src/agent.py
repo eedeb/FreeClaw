@@ -2411,11 +2411,7 @@ def build_utility_tools():
                 # The child is told how to behave by its own system prompt
                 # (_subagent_instruction), which is paid for once per sub-agent
                 # rather than on every turn the tool is merely offered.
-                "description": (
-                    "Delegates one task to a sub-agent and returns its report. It can't see this "
-                    "conversation, so `task` must carry everything it needs. Worth it for "
-                    "multi-step work; for one or two tool calls, do them yourself."
-                ),
+                "description": _subagent_description(),
                 "parameters": {
                     "type": "object",
                     "properties": { "task": { "type": "string" } },
@@ -2616,6 +2612,34 @@ MAX_SUBAGENT_DEPTH = 1
 SUBAGENT_RESULT_LIMIT = 4000
 
 
+# Set by Flask/main.py to src.subagents.launch: the sub-agent then runs beside
+# this conversation as a user of its own, visible on the homepage, and its
+# result comes back later as a message. None (the CLI) runs it inside the tool
+# call, as below.
+_subagent_launcher = None
+
+
+def set_subagent_launcher(launch):
+    """Run sub-agents through `launch(parent_session, task) -> tool result`.
+    Drops the cached catalogues, whose tool description says which way they
+    run."""
+    global _subagent_launcher
+    _subagent_launcher = launch
+    invalidate_tools()
+
+
+def _subagent_description():
+    if _subagent_launcher is not None:
+        return ("Starts a sub-agent on one task, working in parallel while you carry on. It "
+                "starts from this conversation, with your memory, files and browser logins; "
+                "`task` says what to do and what to report. Returns at once; the report comes "
+                "back later as a message starting \"SUB-AGENT RESULT\". Worth it for multi-step "
+                "work; for one or two tool calls, do them yourself.")
+    return ("Delegates one task to a sub-agent and returns its report. It can't see this "
+            "conversation, so `task` must carry everything it needs. Worth it for "
+            "multi-step work; for one or two tool calls, do them yourself.")
+
+
 def _subagent_instruction():
     """Added to a child's system prompt by reset(subagent=True). It is not in a
     conversation with anybody — telling it so is what stops it replying with
@@ -2642,6 +2666,8 @@ def _run_subagent(task):
     # while the parent was mid-turn would still buy one full LLM call.
     if cancellation.is_stopped(parent):
         return "The sub-agent was not started: the turn was stopped by the user."
+    if _subagent_launcher is not None:
+        return _subagent_launcher(parent, task)
 
     child = sessions.Session(name=f"{parent.name or 'agent'}:sub",
                              static_dir=parent.static_dir,
