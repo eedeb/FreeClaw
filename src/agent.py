@@ -2644,9 +2644,17 @@ def _subagent_instruction():
     """Added to a child's system prompt by reset(subagent=True). It is not in a
     conversation with anybody — telling it so is what stops it replying with
     clarifying questions no one will ever read."""
-    return ("\nYou are a sub-agent: you were given one task and nobody can answer a question. "
+    note = ("\nYou are a sub-agent: you were given one task and nobody can answer a question. "
             "If something is unclear, take the most reasonable reading, act, and say what you "
             "assumed. Your final message is the whole result the caller gets.\n")
+    if _subagent_launcher is not None:
+        # What a sub-agent got wrong: told the main agent's browser was "open on
+        # the cart", it concluded it couldn't reach that session and gave up.
+        note += ("The conversation before your task is the main agent's, copied so you know "
+                 "the context; do only your task. You have a browser of your own, signed in "
+                 "wherever the main agent is, starting on a blank page: open what you need "
+                 "yourself.\n")
+    return note
 
 
 def _run_subagent(task):
@@ -4460,6 +4468,10 @@ def _follow_through(reply):
     text = (reply or "").strip()
     # A greeting answered (jev._local_route) has nothing to follow through on.
     if sess.turn_route and sess.turn_route.get("router") == "local":
+        return None
+    # A turn that handed work to a sub-agent has finished its part: the rest
+    # comes back later as that sub-agent's result.
+    if _subagent_launcher is not None and SUBAGENT_TOOL_NAME in sess.turn_tool_names:
         return None
     if (not jev.enabled() or cancellation.is_stopped() or not sess.turn_prefix
             or sess.turn_follow_ups >= FOLLOW_THROUGH_MAX or not text
