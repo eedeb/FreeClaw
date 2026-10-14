@@ -2590,6 +2590,24 @@
     // token counts) once the real response comes back.
     addMessage('user', text, displayImageUrl);
 
+    await streamTurn(fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: agentMessage })
+    }));
+  }
+
+  // Where a turn this page didn't start came from, for the note above it.
+  const LIVE_FROM = {
+    discord: 'From Discord', teams: 'From Microsoft Teams', call: 'On a phone call',
+    chat: 'From another device', schedule: 'A scheduled task', api: 'Through the API',
+  };
+
+  // Draws one turn as its events stream in: this page's own message (/chat),
+  // or with `live`, a turn started somewhere else that the page is following
+  // (/api/turn/live) — a Discord message, a phone call, the app on another
+  // device, a scheduled ping — shown just as if it had been sent here.
+  async function streamTurn(request, live = false) {
     let thinking = addThinking();
     let liveWrap = null, liveBubble = null, liveText = '';
     let activeToolIndicator = null;
@@ -2615,11 +2633,14 @@
     };
 
     try {
-      const res = await fetch('/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: agentMessage })
-      });
+      const res = await request;
+      if (live && res.status !== 200) {
+        // It finished between the poll that saw it and this request.
+        if (thinking.parentNode) thinking.remove();
+        setBusy(false);
+        checkForUpdates();
+        return;
+      }
 
       const contentType = res.headers.get('Content-Type') || '';
 
@@ -2855,6 +2876,32 @@
             }
             stopBtn.disabled = true;
 
+          } else if (evt.type === 'live_start') {
+            // The message that started a turn this page is following, under
+            // a note saying where it came from. Everything after it is the
+            // same events this page's own turn would get.
+            if (thinking.parentNode) thinking.remove();
+            addSystemNote(LIVE_FROM[evt.source] || 'From a connected app');
+            addMessage('user', evt.message || '');
+            thinking = addThinking();
+
+          } else if (evt.type === 'live_end') {
+            // The turn is over and saved: show it as saved, like 'done' does
+            // for this page's own turn.
+            if (thinking.parentNode) thinking.remove();
+            activeReasoning = null;
+            activeApproval = null;
+            if (activeToolIndicator) { activeToolIndicator.remove(); activeToolIndicator = null; }
+            try {
+              const full = await fetch('/api/conversation');
+              if (full.ok) {
+                const data = await full.json();
+                dropLiveBubble();
+                lastUpdatedAt = data.updated_at;
+                applyConversation(data);
+              }
+            } catch (_) { /* the next poll brings it */ }
+
           } else if (evt.type === 'done') {
             if (thinking.parentNode) thinking.remove();
             // renderConversation() below rebuilds the thread from the saved
@@ -2887,13 +2934,28 @@
         if (!activeApproval.wrap.classList.contains('settled')) activeApproval.settle('connection lost');
         activeApproval = null;
       }
-      addMessage('agent', '**Connection error.** Is the server running?');
+      // Watching someone else's turn, a dropped stream isn't an error in
+      // this page's own message: the next poll picks the turn up again.
+      if (!live) addMessage('agent', '**Connection error.** Is the server running?');
     }
 
     agentBrowser.turnEnd();
     appUsage.stopAll();
     setBusy(false);
-    if (!isStandalone) inputEl.focus();
+    if (!live && !isStandalone) inputEl.focus();
+  }
+
+  // Follow a turn under way that this page didn't start (see streamTurn).
+  let watchingLive = false;
+  async function watchLive() {
+    if (watchingLive || sendBtn.disabled) return;
+    watchingLive = true;
+    setBusy(true);
+    try {
+      await streamTurn(fetch('/api/turn/live'), true);
+    } finally {
+      watchingLive = false;
+    }
   }
 
   sendBtn.addEventListener('click', sendMessage);
@@ -2951,6 +3013,9 @@
       const data = await res.json();
       lastUpdatedAt = data.updated_at;
       applyConversation(data);
+      // Opened mid-turn (a call in progress, say): join it now, not at the
+      // next poll.
+      checkForUpdates();
     } catch (_) { /* ignore — stay on empty state */ }
   })();
 
@@ -2965,6 +3030,9 @@
       const res = await fetch('/api/conversation/meta');
       if (!res.ok) return;
       const meta = await res.json();
+      // The agent is at work on something this page didn't send — a Discord
+      // message, a phone call, another device: show it as it happens.
+      if (meta.live) { watchLive(); return; }
       if (meta.updated_at == null || meta.updated_at === lastUpdatedAt) return;
       const full = await fetch('/api/conversation');
       if (!full.ok) return;
@@ -2989,9 +3057,11 @@
     } catch (_) { /* worst case the next poll re-renders — harmless */ }
   }
 
+  // Often enough that a turn started elsewhere shows up while it's still
+  // going, not after.
   setInterval(() => {
     if (document.visibilityState === 'visible') checkForUpdates();
-  }, 8000);
+  }, 3000);
 
   // Timers are throttled (iOS: suspended outright) while the page is
   // backgrounded, so a ping delivered with the phone locked would otherwise

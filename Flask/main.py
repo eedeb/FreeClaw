@@ -8,6 +8,7 @@ import src.browser_profiles as browser_profiles
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
 import src.jev as jev
+import src.live_turns as live_turns
 import src.mcp_client as mcp_client
 import src.mcp_catalog as mcp_catalog
 import src.session as sessions
@@ -660,7 +661,39 @@ def api_get_conversation_meta():
         return jsonify({'error': 'No active conversation'}), 400
     ensure_conversation(name)
     data = load_conversation(name)
-    return jsonify({'updated_at': data.get('updated_at')})
+    # A turn under way that this page may not have started (a phone call,
+    # another device, a ping): the page follows it at /api/turn/live.
+    return jsonify({'updated_at': data.get('updated_at'),
+                    'live': live_turns.current(name) is not None})
+
+
+@app.route('/api/turn/live', methods=['GET'])
+def api_turn_live():
+    """Follow the turn this user's agent is working on, wherever it was
+    started, as the same events /chat streams: first a live_start with the
+    message that started it and where from, then what's happened so far, then
+    each event as it happens, then live_end once the turn is over and saved.
+    204 when nothing is running."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = current_user()
+    turn = live_turns.current(name) if name else None
+    if turn is None:
+        return ('', 204)
+    so_far, seen = turn.snapshot()
+
+    def relay():
+        yield f"data: {json.dumps(turn.start_event())}\n\n"
+        for event in so_far:
+            yield f"data: {json.dumps(event)}\n\n"
+        for event in turn.follow(seen):
+            # A comment line on quiet stretches: keeps proxies from closing
+            # the stream, and finds out a watcher who left.
+            yield ": keep-alive\n\n" if event is None else f"data: {json.dumps(event)}\n\n"
+        yield f"data: {json.dumps({'type': 'live_end'})}\n\n"
+
+    return Response(relay(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 # ── CHAT ENTRY POINT ─────────────────────────────────────────
@@ -740,11 +773,16 @@ def chat():
                 # own turn can't kill this one.
                 cancellation.begin_turn(sess)
                 had_title = _has_title(name)
-                for event in agent.agent_stream(user_input=user_input):
-                    events.put(event)
-                messages = agent.get_messages()
-                title = None if had_title else derive_title(messages)
-                updated_at = save_conversation(name, messages, title=title)
+                # Published for any other page watching (live_turns): this
+                # chat open on another device, or the web chat while someone
+                # talks to the agent on a phone call.
+                with live_turns.turn(name, user_input,
+                                     live_turns.source_of(user_input, "chat")) as live:
+                    for event in live.watch(agent.agent_stream(user_input=user_input)):
+                        events.put(event)
+                    messages = agent.get_messages()
+                    title = None if had_title else derive_title(messages)
+                    updated_at = save_conversation(name, messages, title=title)
                 # Hand back the stamp we just wrote so the page can retire its
                 # own turn without the ping poller then seeing updated_at move
                 # and re-fetching/re-rendering the whole thread a few seconds
@@ -1454,9 +1492,10 @@ def v1_chat_completions():
                 activate_session(name, interactive=False)
                 session_active = True
                 had_title = _has_title(name)
-                yield from agent.agent_stream(user_input=user_input)
-                msgs = agent.get_messages()
-                save_conversation(name, msgs, title=None if had_title else derive_title(msgs))
+                with live_turns.turn(name, user_input, "api") as live:
+                    yield from live.watch(agent.agent_stream(user_input=user_input))
+                    msgs = agent.get_messages()
+                    save_conversation(name, msgs, title=None if had_title else derive_title(msgs))
             except Exception:
                 if session_active:
                     try:
@@ -2789,8 +2828,12 @@ def _fire_due_pings():
                     if repeat:
                         when += f", repeats {repeat}"
                     stamped = f"{agent.PING_PREFIX} [{when}]: {action}"
-                    agent.agent(user_input=stamped, ping=True)
-                    save_conversation(name, agent.get_messages())
+                    # Drained here rather than by agent.agent() so a chat page
+                    # that's open can watch it happen (live_turns).
+                    with live_turns.turn(name, stamped, "schedule") as live:
+                        for _event in live.watch(agent.agent_stream(user_input=stamped, ping=True)):
+                            pass
+                        save_conversation(name, agent.get_messages())
                     logger.info("Delivered ping for user=%s scheduled=%s action=%r", name, stamp, action)
                 except Exception as e:
                     # A failed turn must not wedge the scheduler or replay the
