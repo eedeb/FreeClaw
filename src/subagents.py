@@ -58,6 +58,10 @@ MAX_RUNNING = max(1, int(os.environ.get("FC_MAX_SUBAGENTS") or 3))
 # and the spawn tool's description tells the model so.
 RESULT_PREFIX = "SUB-AGENT RESULT"
 
+# How a user's name is shown, to the person and to the agents. A hosted
+# install replaces it to leave out the account prefix.
+display_name = lambda name: name  # noqa: E731
+
 # Users whose names are taken by a child being set up, so two spawns at once
 # can't pick the same one.
 _claim_lock = threading.Lock()
@@ -101,7 +105,7 @@ def launch(parent_sess, task):
     running = children(parent)
     if len(running) >= MAX_RUNNING:
         return (f"Error: {len(running)} sub-agents are already working for you "
-                f"({', '.join(running)}), the most at once. Wait for one to report back, "
+                f"({', '.join(map(display_name, running))}), the most at once. Wait for one to report back, "
                 "or do this yourself.")
     with _claim_lock:
         child = _child_name(parent)
@@ -121,7 +125,7 @@ def launch(parent_sess, task):
     threading.Thread(target=_run, args=(parent, child, task, history, parent_sess.static_dir),
                      name=f"subagent:{child}", daemon=True).start()
     logger.info("Started sub-agent %s for %s", child, parent)
-    return (f"Started sub-agent \"{child}\". It's working in parallel and the user can watch it "
+    return (f"Started sub-agent \"{display_name(child)}\". It's working in parallel and the user can watch it "
             f"on the homepage. Its result will come back to you as a new message starting "
             f"\"{RESULT_PREFIX}\". Don't wait for it or do its task yourself: carry on with "
             f"anything else, or end your turn and tell the user it's on it.")
@@ -184,8 +188,12 @@ def _run(parent, child, task, history, workspace):
             cancellation.begin_turn(sess)
             message = f"[Task from the main agent] {task}"
             try:
+                # ping=True: every tool, no per-message routing. Routed like a
+                # message, a task got a tool set picked for its wording, which
+                # could leave out the browser it needed, and a sub-agent has
+                # nobody to ask for the rest.
                 with live_turns.turn(child, message, "task") as live:
-                    for _event in live.watch(agent.agent_stream(user_input=message)):
+                    for _event in live.watch(agent.agent_stream(user_input=message, ping=True)):
                         pass
                     save_conversation(child, agent.get_messages(), title=task[:60])
                 if cancellation.is_stopped(sess):
@@ -214,7 +222,7 @@ def _deliver(parent, child, task, outcome, reply):
         reply = reply[:agent.SUBAGENT_RESULT_LIMIT] + "\n\n(truncated)"
     if not reply:
         reply = "(It reported nothing. Treat the task as not done.)"
-    message = f"{RESULT_PREFIX} from \"{child}\", which {outcome}. Its task: {task}\n\n{reply}"
+    message = f"{RESULT_PREFIX} from \"{display_name(child)}\", which {outcome}. Its task: {task}\n\n{reply}"
     sess = sessions.for_user(parent)
     with sess.lock, sessions.use(sess):
         try:
