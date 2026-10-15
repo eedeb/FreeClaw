@@ -287,7 +287,18 @@ def translate_stream(events):
     # straight through, or the first tool call of a response that opened with
     # reasoning arrives as index 1 and desyncs the accumulator.
     tool_index = {}
+    try:
+        yield from _translate(events, tool_index)
+    finally:
+        # Closing this generator early (Stop, or a runaway stream) has to
+        # close the connection under it too, or OpenAI keeps generating — and
+        # billing — the rest of a response nobody will read.
+        close = getattr(events, "close", None)
+        if close:
+            close()
 
+
+def _translate(events, tool_index):
     for event in events:
         etype = getattr(event, "type", "")
 
