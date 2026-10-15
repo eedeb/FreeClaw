@@ -6,191 +6,387 @@
   <title>FreeClaw</title>
 
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
   <meta name="apple-mobile-web-app-title" content="FreeClaw"/>
   <meta name="mobile-web-app-capable" content="yes"/>
-  <meta name="theme-color" content="#0d0d0f"/>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
   <meta name="description" content="An AI agent that doesn't burn your money."/>
 
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
 
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* ── Design tokens ──
+       One palette for every FreeClaw page, light or dark with the system.
+       The same block opens each template, so a framed page (Settings in its
+       window, say) always matches the desktop around it. */
     :root {
-      --bg: #0d0d0f;
-      --surface: #141416;
-      --border: #222228;
+      color-scheme: light dark;
+      --bg: #0f1011;
+      --sidebar: #141517;
+      --surface: #17181a;
+      --surface-2: #1d1f22;
+      --surface-3: #25272b;
+      --border: #26282c;
+      --border-strong: #34373c;
+      --text: #ececee;
+      --text-2: #b0b2b8;
+      --muted: #7c7f87;
       --accent: #c8f04a;
       --accent-dim: #a8cc38;
-      --text: #e8e8ec;
-      --muted: #666672;
-      --user-bg: #1a1f10;
-      --agent-bg: #141416;
-      /* Was referenced by the approval card and the stop button but only ever
-         defined in settings.html, so every var(--err) here silently resolved to
-         nothing. Same value as settings.html. */
-      --err: #e05555;
-      --radius: 4px;
-      --mono: 'IBM Plex Mono', monospace;
-      --sans: 'Syne', sans-serif;
+      --accent-ink: #141a05;
+      --accent-text: #c8f04a;
+      --accent-soft: rgba(200, 240, 74, 0.12);
+      --accent-line: rgba(200, 240, 74, 0.32);
+      --user-bg: #2b3a10;
+      --user-text: #f1f8de;
+      --agent-bg: #1d1f22;
+      --code-bg: #0b0c0d;
+      --code-text: #d5e8b5;
+      --err: #ef5f5f;
+      --err-soft: rgba(239, 95, 95, 0.12);
+      --warn: #e6b445;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+      --radius: 10px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --sidebar: #f5f5f3;
+        --surface: #ffffff;
+        --surface-2: #f1f2ef;
+        --surface-3: #e7e8e4;
+        --border: #e5e6e1;
+        --border-strong: #d3d5ce;
+        --text: #18191b;
+        --text-2: #4b4f56;
+        --muted: #7d8189;
+        --accent-dim: #b4dc32;
+        --accent-ink: #1a2205;
+        --accent-text: #4b7a06;
+        --accent-soft: rgba(120, 170, 10, 0.12);
+        --accent-line: rgba(100, 150, 10, 0.35);
+        --user-bg: #e4f3bf;
+        --user-text: #1b2507;
+        --agent-bg: #f1f2ef;
+        --code-bg: #f6f7f4;
+        --code-text: #2d4a06;
+        --err: #d93f3f;
+        --err-soft: rgba(217, 63, 63, 0.09);
+        --warn: #b7800d;
+        --scrim: rgba(20, 22, 18, 0.28);
+        --shadow-sm: 0 1px 2px rgba(20, 22, 18, 0.08);
+        --shadow-lg: 0 24px 60px rgba(20, 22, 18, 0.16), 0 0 0 1px rgba(20, 22, 18, 0.07);
+      }
+    }
+
+    :root {
+      --sidebar-w: 264px;
+      --topbar-h: calc(52px + env(safe-area-inset-top));
+      --col: 760px;
     }
 
     html, body {
       height: 100%;
-      color-scheme: dark;
       background: var(--bg);
       color: var(--text);
       font-family: var(--sans);
       font-size: 15px;
+      -webkit-font-smoothing: antialiased;
       overflow: hidden;
       -webkit-tap-highlight-color: transparent;
-      -webkit-touch-callout: none;
     }
+    button { font: inherit; color: inherit; }
+    svg { flex-shrink: 0; }
 
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background-image:
-        linear-gradient(var(--border) 1px, transparent 1px),
-        linear-gradient(90deg, var(--border) 1px, transparent 1px);
-      background-size: 40px 40px;
-      opacity: 0.35;
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    /* ── Desktop shell ──
-       The page is a desktop: a menu bar along the top, app icons scattered
-       over the wallpaper, the chat thread in a centre column that grows up
-       from the composer at the bottom, and apps opening in windows above it
-       all. Stacking, bottom to top: wallpaper, icons, chat, windows, menu bar. */
-    :root {
-      --topbar-h: calc(38px + env(safe-area-inset-top));
-      /* Where the chat column starts. Pushed down by the script when the
-         icons have nowhere else to go and line up under the menu bar. */
-      --chat-top: var(--topbar-h);
-      --chat-w: min(820px, calc(100vw - 24px));
-      --icon-w: 86px;
-    }
-
-    #desktop {
-      position: fixed;
-      inset: 0;
-      z-index: 1;
-      padding-left: env(safe-area-inset-left);
-      padding-right: env(safe-area-inset-right);
-    }
-
-    /* Wallpaper mark — stands in for the old empty-state placeholder, and
-       the thread rises up over it once there is one. */
-    #wallpaper {
+    /* ── Shell ──
+       A sidebar of everything there is to open, and the conversation beside
+       it. Apps open in windows over the conversation. On a phone the sidebar
+       slides in from the left instead. */
+    #shell {
+      /* Not fixed: that would make it a stacking context, and the phone
+         drawer has to rise above the windows and the scrim from in here. */
       position: absolute;
-      left: 50%;
-      top: 42%;
-      transform: translate(-50%, -50%);
+      inset: 0;
+      display: grid;
+      grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 14px;
-      text-align: center;
-      pointer-events: none;
-      transition: opacity 0.45s ease, transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
-      z-index: 0;
+      min-height: 0;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      padding: calc(12px + env(safe-area-inset-top)) 10px calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+      -webkit-user-select: none;
+      user-select: none;
+      z-index: 30;
     }
-    #wallpaper .eagle-wrap {
-      width: 84px; height: 84px;
-      border-radius: 20px;
-      overflow: hidden;
-      opacity: 0.18;
-      border: 1px solid rgba(200,240,74,0.15);
-    }
-    #wallpaper .eagle-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    #wallpaper .empty-name {
-      font-size: 15px; font-weight: 700; letter-spacing: 0.2em;
-      text-transform: uppercase; color: var(--muted); opacity: 0.45;
-    }
-    #wallpaper .empty-sub {
-      font-family: var(--mono); font-size: 11px; color: var(--muted);
-      line-height: 1.9; opacity: 0.4;
-    }
-    body.thread #wallpaper { opacity: 0; transform: translate(-50%, -62%); }
-
-    /* ── Menu bar ── */
-    #topbar {
-      position: fixed;
-      top: 0; left: 0; right: 0;
-      height: var(--topbar-h);
-      padding: env(safe-area-inset-top) calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left));
+    .sb-head {
       display: flex;
       align-items: center;
       gap: 10px;
-      background: rgba(13,13,15,0.82);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border-bottom: 1px solid var(--border);
-      z-index: 5000;
-      -webkit-user-select: none;
-      user-select: none;
+      padding: 2px 6px 14px;
     }
-
-    .header-icon {
-      width: 22px; height: 22px;
-      border-radius: 6px;
+    .sb-logo {
+      width: 28px; height: 28px;
+      border-radius: 8px;
       overflow: hidden;
       flex-shrink: 0;
-      border: 1px solid rgba(200,240,74,0.2);
+      box-shadow: var(--shadow-sm);
     }
-    .header-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .sb-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .sb-brand { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; flex: 1; }
+    .sb-close {
+      display: none;
+      width: 32px; height: 32px;
+      border: none; background: none; border-radius: 8px;
+      color: var(--muted); cursor: pointer;
+      align-items: center; justify-content: center;
+    }
+    .sb-close:hover { background: var(--surface-3); color: var(--text); }
+    .sb-close svg { width: 18px; height: 18px; }
 
-    .header-dot {
+    #reset-btn {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      padding: 9px 12px;
+      margin-bottom: 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13.5px;
+      font-weight: 550;
+      cursor: pointer;
+      box-shadow: var(--shadow-sm);
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    }
+    #reset-btn svg { width: 16px; height: 16px; color: var(--muted); }
+    #reset-btn:hover { background: var(--surface-2); }
+    #reset-btn:active { transform: scale(0.98); }
+    #reset-btn kbd {
+      margin-left: auto;
+      font-family: var(--sans); font-size: 11px; color: var(--muted);
+    }
+
+    #icons {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      margin: 0 -4px;
+      padding: 0 4px;
+      scrollbar-width: thin;
+    }
+    .sb-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 10px 6px;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .sb-label:first-child { padding-top: 2px; }
+    .sb-label button {
+      border: none; background: none; cursor: pointer;
+      color: var(--muted); font-size: 11.5px; font-weight: 550;
+      padding: 2px 6px; margin-right: -6px; border-radius: 6px;
+    }
+    .sb-label button:hover { color: var(--text); background: var(--surface-3); }
+
+    /* Each thing that opens: Files, Browser, an installed app. */
+    .app-icon {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 36px;
+      padding: 6px 10px;
+      border: none;
+      border-radius: 8px;
+      background: none;
+      color: var(--text-2);
+      font-size: 13.5px;
+      font-weight: 500;
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .app-icon[hidden] { display: none; }
+    .app-icon:hover { background: var(--surface-3); color: var(--text); }
+    .app-icon:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
+    .app-icon.active { background: var(--surface-3); color: var(--text); }
+    .app-icon.active .app-tile { color: var(--accent-text); }
+    .app-tile {
+      position: relative;
+      width: 22px; height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: var(--muted);
+      transition: color 0.12s;
+    }
+    .app-icon:hover .app-tile { color: var(--text); }
+    .app-tile svg { width: 18px; height: 18px; }
+    .app-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Installed MCP apps: the vendor's icon or a tinted first letter. */
+    .app-icon.mcp-app .app-tile {
+      border-radius: 6px;
+      background: var(--surface);
+      box-shadow: 0 0 0 1px var(--border);
+      overflow: hidden;
+    }
+    .app-icon.mcp-app .app-tile img { width: 16px; height: 16px; object-fit: contain; border-radius: 3px; }
+    .app-icon.mcp-app.letter .app-tile { background: hsl(var(--h, 80) 55% 45% / 0.18); box-shadow: none; }
+    .app-letter {
+      font-weight: 700; font-size: 12px; line-height: 1; text-transform: uppercase;
+      color: hsl(var(--h, 80) 60% 50%);
+    }
+    .app-state {
+      flex-shrink: 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .app-icon.off .app-tile { filter: grayscale(1); opacity: 0.45; }
+    .app-icon.off .app-label { opacity: 0.55; }
+    .sb-empty {
+      padding: 4px 10px 6px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+
+    /* In use: the agent is calling one of this app's tools right now. */
+    .app-icon::after {
+      content: '';
       width: 7px; height: 7px;
       border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 8px var(--accent);
-      animation: pulse 2.5s ease-in-out infinite;
       flex-shrink: 0;
+      background: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+      opacity: 0;
+      transform: scale(0.4);
+      transition: opacity 0.2s, transform 0.2s;
     }
+    .app-icon.using { color: var(--text); }
+    .app-icon.using .app-tile { color: var(--accent-text); }
+    .app-icon.using::after { opacity: 1; transform: none; animation: pulse 1.4s ease-in-out infinite; }
+    .app-icon.launch { animation: navFlash 0.9s ease; }
+    @keyframes navFlash { 0%, 100% { background: none; } 30% { background: var(--accent-soft); } }
     @keyframes pulse {
-      0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent); }
-      50% { opacity: 0.4; box-shadow: 0 0 3px var(--accent); }
+      0%, 100% { box-shadow: 0 0 0 3px var(--accent-soft); }
+      50%      { box-shadow: 0 0 0 6px transparent; }
     }
 
-    .header-title {
-      display: flex;
-      align-items: baseline;
-      gap: 9px;
-      min-width: 0; /* allow text to truncate */
-      flex-shrink: 1;
+    /* The person whose agent this is, and the way back to the user list. */
+    .sb-foot {
+      border-top: 1px solid var(--border);
+      margin: 8px -10px 0;
+      padding: 10px 10px 0;
     }
-    .header-title h1 {
-      font-family: var(--sans);
+    #icon-home { gap: 10px; padding: 6px 8px; }
+    .avatar {
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      background: var(--accent);
+      color: var(--accent-ink);
       font-size: 12px;
       font-weight: 700;
-      letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: var(--text);
-      line-height: 1;
-      white-space: nowrap;
     }
-    .header-tagline {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      letter-spacing: 0.03em;
+    .who { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+    #chat-user-name {
+      font-size: 13.5px; font-weight: 600; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .who small { font-size: 11.5px; color: var(--muted); }
+    #icon-home .switch-ico { width: 16px; height: 16px; color: var(--muted); }
+
+    /* ── Main column ── */
+    #desktop {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+    }
+
+    #topbar {
+      height: var(--topbar-h);
+      padding: env(safe-area-inset-top) calc(16px + env(safe-area-inset-right)) 0 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+      border-bottom: 1px solid transparent;
+      background: var(--bg);
+      transition: border-color 0.2s;
+      -webkit-user-select: none;
+      user-select: none;
+      z-index: 6;
+    }
+    body.thread #topbar { border-bottom-color: var(--border); }
+    .menu-btn {
+      display: none;
+      width: 36px; height: 36px;
+      margin-left: -8px;
+      border: none; background: none; border-radius: 9px;
+      color: var(--text-2); cursor: pointer;
+      align-items: center; justify-content: center;
+    }
+    .menu-btn:hover { background: var(--surface-2); }
+    .menu-btn svg { width: 20px; height: 20px; }
+    .header-title {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      flex-shrink: 1;
+    }
+    #chat-title {
+      font-size: 14.5px;
+      font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 260px;
+      max-width: 340px;
     }
-    @media (max-width: 560px) { .header-tagline { display: none; } }
+    .header-sub {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11.5px; color: var(--muted);
+    }
+    .header-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #3ec46d;
+    }
+    body.busy .header-dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 
-    /* Open windows, like a taskbar folded into the menu bar. */
+    /* Open windows, as tabs in the header. */
     #tasks {
       flex: 1;
       min-width: 0;
@@ -202,315 +398,229 @@
     .task {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      max-width: 150px;
+      gap: 7px;
+      max-width: 170px;
       background: none;
       border: 1px solid transparent;
-      border-radius: 6px;
+      border-radius: 8px;
       color: var(--muted);
-      font-family: var(--mono);
-      font-size: 10.5px;
-      letter-spacing: 0.04em;
-      padding: 4px 9px;
+      font-size: 12.5px;
+      font-weight: 500;
+      padding: 5px 10px;
       cursor: pointer;
       white-space: nowrap;
       transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
     }
-    .task svg { width: 13px; height: 13px; flex-shrink: 0; }
-    .task:hover { color: var(--text); background: rgba(255,255,255,0.04); }
-    .task.active { color: var(--accent); border-color: rgba(200,240,74,0.25); background: rgba(200,240,74,0.06); }
-    .task.minimized { opacity: 0.55; }
-    @media (max-width: 560px) { .task span { display: none; } }
+    .task span { overflow: hidden; text-overflow: ellipsis; }
+    .task svg { width: 14px; height: 14px; }
+    .task:hover { color: var(--text); background: var(--surface-2); }
+    .task.active { color: var(--text); background: var(--surface-2); border-color: var(--border); }
+    .task.minimized { opacity: 0.6; }
 
     .header-right {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       flex-shrink: 0;
     }
-    #clock {
-      font-family: var(--mono);
-      font-size: 10.5px;
-      color: var(--text);
-      opacity: 0.75;
-      white-space: nowrap;
-    }
-    @media (max-width: 420px) { #clock { display: none; } }
-
+    #clock { font-size: 12px; color: var(--muted); white-space: nowrap; }
     #token-count {
-      font-family: var(--mono);
-      font-size: 10px;
+      font-size: 11.5px;
       color: var(--muted);
       white-space: nowrap;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--surface-2);
       cursor: default;
+      font-variant-numeric: tabular-nums;
     }
-    /* An exact count from the provider, as opposed to the '~' estimate —
-       worth distinguishing, since the two measure different things. */
-    #token-count.exact { color: var(--accent-dim); }
-    @media (max-width: 380px) { #token-count { display: none; } }
+    /* An exact count from the provider, as opposed to the '~' estimate. */
+    #token-count.exact { color: var(--accent-text); background: var(--accent-soft); }
 
-    #reset-btn {
-      background: none;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 9.5px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 4px 9px;
-      cursor: pointer;
-      transition: border-color 0.15s, color 0.15s;
-      -webkit-user-select: none;
-      user-select: none;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    #reset-btn:hover { border-color: rgba(192,57,57,0.5); color: #e05555; }
-    #reset-btn:active { border-color: rgba(192,57,57,0.5); color: #e05555; transform: scale(0.96); }
-
-    /* ── Desktop icons ──
-       Absolutely placed and moved with transform, so being shoved out of the
-       thread's way (or dragged somewhere new) animates for free. */
-    #icons {
+    /* ── Welcome ──
+       What an empty conversation shows: a hello and a few things to try. The
+       thread takes its place once there is one. */
+    #wallpaper {
       position: absolute;
-      inset: 0;
-      z-index: 2;
-      pointer-events: none;
-    }
-    .app-icon {
-      position: absolute;
-      left: 0; top: 0;
-      width: var(--icon-w);
+      left: 0; right: 0;
+      top: 38%;
+      transform: translateY(-50%);
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 7px;
-      padding: 8px 4px 6px;
-      background: none;
-      border: 1px solid transparent;
-      border-radius: 12px;
-      color: var(--text);
-      cursor: default;
-      pointer-events: auto;
-      touch-action: none;
-      -webkit-user-select: none;
-      user-select: none;
-      transition: transform 0.55s cubic-bezier(0.2, 0.85, 0.25, 1), opacity 0.3s ease,
-                  background 0.15s, border-color 0.15s;
-      will-change: transform;
+      gap: 10px;
+      padding: 0 20px;
+      text-align: center;
+      transition: opacity 0.3s ease, transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+      z-index: 1;
     }
-    .app-icon[hidden] { display: none; }
-    .app-icon:focus-visible { outline: none; border-color: rgba(200,240,74,0.4); }
-    .app-icon.dragging { transition: none; z-index: 5; opacity: 0.85; }
-    .app-icon.selected { background: rgba(200,240,74,0.07); border-color: rgba(200,240,74,0.22); }
-    .app-tile {
-      width: 54px; height: 54px;
-      border-radius: 14px;
+    #wallpaper .eagle-wrap {
+      width: 56px; height: 56px;
+      border-radius: 16px;
+      overflow: hidden;
+      margin-bottom: 8px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25), 0 0 0 1px var(--border);
+    }
+    #wallpaper .eagle-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    #wallpaper .empty-name {
+      font-size: clamp(22px, 3.2vw, 30px);
+      font-weight: 650;
+      letter-spacing: -0.025em;
+    }
+    #wallpaper .empty-sub {
+      font-size: 14.5px;
+      color: var(--muted);
+      line-height: 1.55;
+      max-width: 440px;
+    }
+    .suggestions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      width: min(620px, 100%);
+      margin-top: 22px;
+    }
+    .suggestion {
       display: flex;
-      align-items: center;
-      justify-content: center;
-      background: linear-gradient(160deg, var(--tile-a, #1d1d22), var(--tile-b, #121215));
-      border: 1px solid rgba(255,255,255,0.07);
-      box-shadow: 0 8px 22px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
-      color: var(--accent);
-      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      flex-direction: column;
+      gap: 3px;
+      padding: 13px 15px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface);
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.15s;
     }
-    .app-tile svg { width: 26px; height: 26px; }
-    .app-icon:hover .app-tile { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08); }
-    .app-icon:active .app-tile { transform: scale(0.94); }
-    .app-label {
-      font-family: var(--mono);
-      font-size: 10.5px;
-      letter-spacing: 0.04em;
-      padding: 1px 6px;
-      border-radius: 4px;
-      text-shadow: 0 1px 3px rgba(0,0,0,0.9);
-      white-space: nowrap;
-    }
-    .app-icon.selected .app-label { background: rgba(200,240,74,0.85); color: #10100c; text-shadow: none; }
-    /* Lined up under the menu bar on screens too narrow to step aside. */
-    .app-icon.compact { gap: 4px; padding: 4px 2px; }
-    .app-icon.compact .app-tile { width: 38px; height: 38px; border-radius: 11px; }
-    .app-icon.compact .app-tile svg { width: 19px; height: 19px; }
-    .app-icon.compact .app-label { font-size: 9px; }
+    .suggestion:hover { background: var(--surface-2); border-color: var(--border-strong); transform: translateY(-1px); }
+    .suggestion b { font-size: 13.5px; font-weight: 600; color: var(--text); }
+    .suggestion span { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+    body.thread #wallpaper { opacity: 0; transform: translateY(-56%); pointer-events: none; }
+    @media (max-height: 560px) { .suggestions { display: none; } }
 
-    #icon-browser  { --tile-a: #1a2531; --tile-b: #10151c; }
-    #icon-files    { --tile-a: #2a2516; --tile-b: #17140c; }
-    #icon-settings { --tile-a: #22222b; --tile-b: #131318; }
-    #icon-home     { --tile-a: #1d2512; --tile-b: #11150a; }
-    #icon-appstore { --tile-a: #1c2130; --tile-b: #10131b; }
-
-    /* ── Installed MCP apps ──
-       One icon per server from the App Store. The tile holds the vendor's
-       icon, or the name's first letter tinted from the name. */
-    .app-icon.mcp-app .app-tile img { width: 30px; height: 30px; object-fit: contain; border-radius: 7px; }
-    .app-icon.mcp-app .app-tile .app-letter {
-      font-family: var(--sans); font-weight: 700; font-size: 24px; line-height: 1;
-      color: hsl(var(--h, 80) 70% 70%); text-transform: uppercase;
-    }
-    .app-icon.mcp-app.letter .app-tile { --tile-a: hsl(var(--h, 80) 30% 17%); --tile-b: hsl(var(--h, 80) 30% 9%); }
-    .app-icon.compact.mcp-app .app-tile img { width: 22px; height: 22px; }
-    .app-icon.compact.mcp-app .app-tile .app-letter { font-size: 17px; }
-    /* Switched off for this user: still there, clearly asleep. */
-    .app-icon.off .app-tile { filter: grayscale(1) brightness(0.7); opacity: 0.45; }
-    .app-icon.off .app-label { opacity: 0.5; }
-
-    /* In use: the agent is calling one of this app's tools right now. A ring
-       of light runs round the tile while it glows. */
-    @property --ring { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
-    .app-tile { position: relative; }
-    .app-icon.using .app-tile {
-      box-shadow: 0 0 0 1px rgba(200,240,74,0.55), 0 0 22px 3px rgba(200,240,74,0.4), 0 8px 22px rgba(0,0,0,0.45);
-      animation: usingPulse 1.6s ease-in-out infinite;
-    }
-    .app-icon.using .app-tile::before {
-      content: '';
-      position: absolute;
-      inset: -5px;
-      border-radius: 19px;
-      padding: 2px;
-      background: conic-gradient(from var(--ring), transparent 0 50%, rgba(200,240,74,0.25) 62%, var(--accent) 80%, #fff 84%, transparent 90%);
-      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-      -webkit-mask-composite: xor;
-      mask-composite: exclude;
-      animation: usingRing 1.1s linear infinite;
-      pointer-events: none;
-    }
-    .app-icon.compact.using .app-tile::before { border-radius: 16px; inset: -4px; }
-    .app-icon.using .app-label { color: var(--accent); }
-    @keyframes usingRing { to { --ring: 360deg; } }
-    @keyframes usingPulse {
-      0%, 100% { box-shadow: 0 0 0 1px rgba(200,240,74,0.55), 0 0 14px 1px rgba(200,240,74,0.3), 0 8px 22px rgba(0,0,0,0.45); }
-      50%      { box-shadow: 0 0 0 1px rgba(200,240,74,0.8), 0 0 28px 6px rgba(200,240,74,0.5), 0 8px 22px rgba(0,0,0,0.45); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .app-icon.using .app-tile, .app-icon.using .app-tile::before { animation: none; }
-    }
-
-    /* ── Chat column ──
-       Spans the whole height but only its thread and composer take clicks,
-       so icons beside or above a short thread stay usable. The thread is
-       bottom-anchored: it starts just above the composer and climbs. */
+    /* ── Conversation ── */
     #chat {
-      position: absolute;
-      left: 50%;
-      width: var(--chat-w);
-      top: var(--chat-top);
-      bottom: 0;
-      transform: translateX(-50%);
-      z-index: 3;
+      position: relative;
+      flex: 1;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       justify-content: flex-end;
+      z-index: 2;
       pointer-events: none;
-      transition: top 0.45s cubic-bezier(0.2, 0.85, 0.25, 1);
     }
 
-    /* ── Messages ── */
     #messages {
       flex: 0 1 auto;
       min-height: 0;
       pointer-events: auto;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: 18px 6px 12px;
+      /* Full-width scroller, centred column: the scrollbar sits at the
+         window's edge, like any chat app, not beside the text. */
+      padding: 24px max(20px, calc((100% - var(--col)) / 2)) 16px;
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      gap: 6px;
       scroll-behavior: smooth;
       -webkit-overflow-scrolling: touch;
       overscroll-behavior: contain;
-      /* Older messages fade out as they pass under the menu bar / icons. */
-      -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px);
-      mask-image: linear-gradient(to bottom, transparent 0, #000 22px);
     }
     body:not(.thread) #messages { padding: 0; }
-
-    #messages::-webkit-scrollbar { width: 3px; }
+    #messages::-webkit-scrollbar { width: 10px; }
     #messages::-webkit-scrollbar-track { background: transparent; }
-    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    #messages::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 10px; border: 3px solid var(--bg); }
 
     .message {
       display: flex;
       flex-direction: column;
-      max-width: 88%;
-      animation: fadeUp 0.22s ease forwards;
+      max-width: 85%;
+      animation: fadeUp 0.25s ease forwards;
       opacity: 0;
+      margin-top: 8px;
     }
-    @media (min-width: 600px) { .message { max-width: 78%; } }
-
+    @media (min-width: 600px) { .message { max-width: 80%; } }
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(6px); }
       to   { opacity: 1; transform: translateY(0); }
     }
-
     .message.user  { align-self: flex-end;   align-items: flex-end; }
     .message.agent { align-self: flex-start; align-items: flex-start; }
 
     .msg-label {
-      font-family: var(--mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      margin-bottom: 5px;
+      font-size: 11.5px;
       color: var(--muted);
+      margin: 0 4px 5px;
     }
-    .message.user .msg-label { color: var(--accent-dim); }
+    .message.user .msg-label { display: none; }
+    .message.agent .msg-label { padding-left: 26px; position: relative; }
+    .message.agent .msg-label::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 50%;
+      width: 18px; height: 18px;
+      margin-top: -9px;
+      border-radius: 5px;
+      background: url("https://freeclaw.eedeb.dev/eagle.png") center / cover;
+    }
 
     /* What a Jev-routed turn was sent: hover (or tap) the tag on the reply.
        The panel is one fixed element on <body> (showRoutePanel), not a child
        of the message: #messages scrolls, so it would clip it, and each
        .message's fade-in transform would trap it under the ones after. */
     .route-tag { cursor: help; border-bottom: 1px dotted currentColor; outline: none; }
-    .route-tag:focus-visible { color: var(--accent); }
+    .route-tag:focus-visible { color: var(--accent-text); }
     .route-panel {
       position: fixed; z-index: 1000; overflow: auto;
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-      padding: 10px 12px; color: var(--text);
-      font-family: var(--mono); font-size: 11px; line-height: 1.5;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: var(--shadow-lg);
+      padding: 12px 14px; color: var(--text);
+      font-size: 12px; line-height: 1.5;
     }
-    .rp-head { color: var(--accent); }
-    .rp-title { color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; margin: 9px 0 3px; }
+    .rp-head { color: var(--accent-text); font-weight: 600; }
+    .rp-title { color: var(--muted); font-size: 11px; font-weight: 600; margin: 10px 0 3px; }
     .rp-row { display: flex; gap: 10px; }
     .rp-k { flex: 0 0 100px; color: var(--muted); }
     .rp-v { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     .rp-none, .rp-digest { color: var(--muted); overflow-wrap: anywhere; }
-    .rp-foot { margin-top: 9px; padding-top: 6px; border-top: 1px solid var(--border); color: var(--muted); }
+    .rp-foot { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--muted); }
 
     .bubble {
-      padding: 11px 14px;
-      border-radius: var(--radius);
-      line-height: 1.65;
-      border: 1px solid var(--border);
+      padding: 10px 15px;
+      border-radius: 20px;
+      line-height: 1.6;
       word-break: break-word;
       overflow-wrap: break-word;
+      font-size: 15px;
     }
-    .message.user .bubble  { background: var(--user-bg); border-color: #2a3318; color: #d8f0a0; }
-    .message.agent .bubble { background: var(--agent-bg); border-color: var(--border); }
+    .message.user .bubble  { background: var(--user-bg); color: var(--user-text); border-bottom-right-radius: 6px; white-space: pre-wrap; }
+    .message.agent .bubble { background: var(--agent-bg); color: var(--text); border-bottom-left-radius: 6px; }
 
     /* Markdown */
-    .bubble p { margin-bottom: 0.6em; }
+    .bubble p { margin-bottom: 0.65em; }
     .bubble p:last-child { margin-bottom: 0; }
     .bubble code {
-      font-family: var(--mono); font-size: 0.82em;
-      background: #1e1e24; border: 1px solid var(--border);
-      padding: 1px 5px; border-radius: 3px; color: var(--accent); word-break: break-all;
+      font-family: var(--mono); font-size: 0.84em;
+      background: var(--surface-3);
+      padding: 1px 5px; border-radius: 5px; word-break: break-all;
     }
     .bubble pre {
-      background: #0a0a0c; border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 12px;
+      background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 14px;
       overflow-x: auto; margin: 8px 0; -webkit-overflow-scrolling: touch;
     }
-    .bubble pre code { background: none; border: none; padding: 0; color: #c8e6a0; font-size: 0.82em; word-break: normal; }
+    .bubble pre code { background: none; padding: 0; color: var(--code-text); font-size: 0.82em; word-break: normal; }
     .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
     .bubble li { margin-bottom: 3px; }
-    .bubble h1, .bubble h2, .bubble h3 { font-family: var(--sans); font-weight: 700; margin: 10px 0 5px; color: var(--accent); }
-    .bubble h1 { font-size: 1.1em; } .bubble h2 { font-size: 1em; } .bubble h3 { font-size: 0.92em; }
-    .bubble strong { color: #fff; font-weight: 600; }
-    .bubble blockquote { border-left: 2px solid var(--accent); padding-left: 12px; color: var(--muted); margin: 6px 0; }
-    .bubble a { color: var(--accent); text-decoration: underline; }
+    .bubble h1, .bubble h2, .bubble h3 { font-weight: 650; margin: 12px 0 5px; letter-spacing: -0.01em; }
+    .bubble h1:first-child, .bubble h2:first-child, .bubble h3:first-child { margin-top: 2px; }
+    .bubble h1 { font-size: 1.15em; } .bubble h2 { font-size: 1.05em; } .bubble h3 { font-size: 0.97em; }
+    .bubble strong { font-weight: 650; }
+    .bubble blockquote { border-left: 3px solid var(--accent-line); padding-left: 12px; color: var(--text-2); margin: 6px 0; }
+    .bubble a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
+    .bubble table { border-collapse: collapse; margin: 8px 0; font-size: 0.93em; display: block; overflow-x: auto; }
+    .bubble th, .bubble td { border: 1px solid var(--border-strong); padding: 5px 9px; text-align: left; }
+    .bubble hr { border: none; border-top: 1px solid var(--border-strong); margin: 10px 0; }
 
     /* Uploaded image attachments */
     .bubble .msg-image-link { display: block; cursor: zoom-in; }
@@ -520,149 +630,128 @@
       max-height: 360px;
       width: auto;
       height: auto;
-      border-radius: 3px;
-      border: 1px solid var(--border);
+      border-radius: 12px;
     }
     .bubble .msg-caption { margin-top: 8px; text-decoration: none; }
 
     /* Thinking dots */
-    .thinking .bubble { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
+    .thinking .bubble { display: flex; gap: 5px; align-items: center; padding: 15px 17px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: blink 1.2s ease-in-out infinite; }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink {
+      0%, 80%, 100% { opacity: 0.25; transform: scale(0.85); }
+      40% { opacity: 1; transform: scale(1); }
+    }
 
     /* A line from FreeClaw itself in the thread — a follow-through nudge, a
        reconnect — not a message from either side. */
     .sys-note {
       align-self: center; max-width: 88%; text-align: center;
-      font-family: var(--mono); font-size: 10.5px; color: var(--muted);
-      letter-spacing: 0.04em; padding: 2px 8px;
-    }
-    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s ease-in-out infinite; }
-    .dot:nth-child(2) { animation-delay: 0.2s; }
-    .dot:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes blink {
-      0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
-      40% { opacity: 1; transform: scale(1); }
+      font-size: 12px; color: var(--muted);
+      padding: 4px 12px; margin: 6px 0;
+      border-radius: 999px; background: var(--surface-2);
     }
 
     /* Empty state — still how the script marks an empty thread, but the
-       wallpaper draws the placeholder now, so it takes no room here. */
+       welcome screen draws the placeholder, so it takes no room here. */
     #empty-state { display: none; }
 
-    /* ── Input area ── a floating composer, docked at the bottom. */
+    /* ── Composer ── */
     #input-area {
-      display: flex;
-      flex-direction: column;
       flex-shrink: 0;
       pointer-events: auto;
-      margin-bottom: calc(12px + env(safe-area-inset-bottom));
-      padding: 9px;
-      border: 1px solid #2a2a31;
-      border-radius: 14px;
-      background: rgba(20,20,23,0.86);
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
-      box-shadow: 0 14px 44px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+      width: min(var(--col), calc(100% - 32px));
+      margin: 4px auto calc(14px + env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      padding: 8px;
+      border: 1px solid var(--border-strong);
+      border-radius: 24px;
+      background: var(--surface);
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
+    #input-area:focus-within { border-color: var(--muted); box-shadow: 0 6px 28px rgba(0, 0, 0, 0.16); }
+    .composer-note {
+      text-align: center;
+      font-size: 11.5px;
+      color: var(--muted);
+      margin: -6px 0 calc(10px + env(safe-area-inset-bottom));
+      pointer-events: auto;
+    }
+    #chat:has(.composer-note) #input-area { margin-bottom: 12px; }
+    @media (max-width: 719px) { .composer-note { display: none; } #chat:has(.composer-note) #input-area { margin-bottom: calc(10px + env(safe-area-inset-bottom)); } }
 
     #input-row {
       display: flex;
-      gap: 10px;
+      gap: 6px;
       align-items: flex-end;
     }
-
     #user-input {
       flex: 1;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
+      background: transparent;
+      border: none;
       color: var(--text);
       font-family: var(--sans);
       font-size: 16px; /* prevents iOS zoom */
-      padding: 11px 14px;
+      padding: 8px 6px;
       resize: none;
-      min-height: 44px;
-      max-height: 130px;
+      min-height: 38px;
+      max-height: 200px;
       outline: none;
-      transition: border-color 0.15s;
-      line-height: 1.5;
+      line-height: 1.45;
       -webkit-appearance: none;
       appearance: none;
     }
-    #user-input:focus { border-color: #3a3a44; }
     #user-input::placeholder { color: var(--muted); }
+    #user-input:disabled { opacity: 0.7; }
 
-    #send-btn {
-      background: var(--accent);
+    #send-btn, #stop-btn, #upload-btn {
+      width: 38px; height: 38px;
+      border-radius: 50%;
       border: none;
-      border-radius: var(--radius);
-      width: 44px; height: 44px;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
-      transition: background 0.15s, transform 0.1s;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s, color 0.15s;
       -webkit-user-select: none;
       user-select: none;
     }
-    #send-btn:active { transform: scale(0.92); background: var(--accent-dim); }
-    #send-btn:disabled { background: #2a2a30; cursor: not-allowed; }
-    #send-btn svg { width: 18px; height: 18px; }
+    #send-btn { background: var(--accent); color: var(--accent-ink); }
+    #send-btn:hover { background: var(--accent-dim); }
+    #send-btn:active { transform: scale(0.92); }
+    #send-btn:disabled { background: var(--surface-3); color: var(--muted); cursor: not-allowed; }
+    #send-btn svg, #stop-btn svg { width: 18px; height: 18px; }
 
     /* ── Stop button ──
        Takes the send button's place for the length of a turn rather than
-       sitting beside it: same 44px footprint so the composer doesn't reflow,
-       and the one control in that corner is always the one that makes sense
-       right now. Only shown while something is actually running, so it can't
-       be pressed when there's nothing to stop. */
-    #stop-btn {
-      display: none;
-      background: var(--err);
-      border: none;
-      border-radius: var(--radius);
-      width: 44px; height: 44px;
-      cursor: pointer;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: background 0.15s, transform 0.1s, opacity 0.15s;
-      -webkit-user-select: none;
-      user-select: none;
-    }
+       sitting beside it: same footprint so the composer doesn't reflow, and
+       the one control in that corner is always the one that makes sense
+       right now. Only shown while something is actually running. */
+    #stop-btn { display: none; background: var(--text); color: var(--bg); }
     #stop-btn.visible { display: flex; }
-    #stop-btn:active { transform: scale(0.92); background: #c04444; }
+    #stop-btn:active { transform: scale(0.92); }
     #stop-btn:disabled { opacity: 0.5; cursor: default; }
-    #stop-btn svg { width: 18px; height: 18px; display: block; }
+    #stop-btn svg { display: block; }
 
-    /* ── Upload button ── */
-    #upload-btn {
-      background: none;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      width: 44px; height: 44px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: border-color 0.15s, background 0.15s, transform 0.1s;
-      color: var(--muted);
-      -webkit-user-select: none;
-      user-select: none;
-    }
-    #upload-btn:hover { border-color: var(--accent); color: var(--accent); }
-    #upload-btn:active { transform: scale(0.92); background: rgba(200,240,74,0.07); }
+    #upload-btn { background: none; color: var(--muted); }
+    #upload-btn:hover { background: var(--surface-2); color: var(--text); }
+    #upload-btn:active { transform: scale(0.92); }
     #upload-btn svg { width: 20px; height: 20px; }
 
     /* ── File preview pill ── */
     #file-preview {
       display: none;
       align-items: center;
-      gap: 7px;
-      padding: 5px 10px;
-      background: #1a1f10;
-      border: 1px solid #2a3318;
-      border-radius: var(--radius);
-      margin-bottom: 6px;
+      gap: 8px;
+      padding: 7px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin: 0 0 6px;
       position: relative;
       overflow: hidden;
       animation: fadeUp 0.18s ease forwards;
@@ -671,39 +760,33 @@
     #file-preview-bar {
       position: absolute;
       left: 0; top: 0; bottom: 0;
-      background: rgba(200,240,74,0.08);
-      border-radius: var(--radius);
+      background: var(--accent-soft);
       width: 0%;
       transition: width 0.25s ease;
       pointer-events: none;
     }
     #file-preview-name {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: #d8f0a0;
+      position: relative;
+      font-size: 13px;
+      font-weight: 500;
       flex: 1;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    #file-preview-status {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      white-space: nowrap;
-    }
+    #file-preview-status { position: relative; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
     #file-remove-btn {
-      background: none;
-      border: none;
+      position: relative;
+      background: none; border: none;
       color: var(--muted);
       cursor: pointer;
-      padding: 0 2px;
-      font-size: 14px;
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      font-size: 12px;
       line-height: 1;
-      transition: color 0.15s;
       flex-shrink: 0;
     }
-    #file-remove-btn:hover { color: #e05555; }
+    #file-remove-btn:hover { color: var(--err); background: var(--err-soft); }
 
     /* ── PWA Splash ── */
     #splash {
@@ -715,42 +798,34 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 20px;
+      gap: 16px;
       pointer-events: none;
     }
     #splash.visible { display: flex; }
     #splash.hide { animation: splashOut 0.35s ease forwards; }
-
     .splash-icon {
-      width: 100px; height: 100px;
-      border-radius: 24px;
+      width: 88px; height: 88px;
+      border-radius: 22px;
       overflow: hidden;
-      border: 1px solid rgba(200,240,74,0.25);
-      box-shadow: 0 0 50px rgba(200,240,74,0.1);
-      animation: splashIconIn 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards;
+      box-shadow: 0 16px 50px rgba(0, 0, 0, 0.3);
+      animation: splashIconIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
       opacity: 0;
     }
     .splash-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .splash-name {
-      font-family: var(--sans);
       font-size: 22px;
-      font-weight: 700;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: var(--accent);
+      font-weight: 650;
+      letter-spacing: -0.02em;
       opacity: 0;
       animation: splashTextIn 0.4s ease 0.35s forwards;
     }
     .splash-sub {
-      font-family: var(--mono);
-      font-size: 10px;
+      font-size: 13px;
       color: var(--muted);
-      letter-spacing: 0.06em;
       opacity: 0;
       margin-top: -8px;
       animation: splashTextIn 0.4s ease 0.5s forwards;
     }
-
     @keyframes splashIconIn {
       from { opacity: 0; transform: scale(0.75) translateY(12px); }
       to   { opacity: 1; transform: scale(1) translateY(0); }
@@ -759,52 +834,49 @@
       from { opacity: 0; transform: translateY(6px); }
       to   { opacity: 1; transform: translateY(0); }
     }
-    @keyframes splashOut {
-      from { opacity: 1; }
-      to   { opacity: 0; visibility: hidden; }
-    }
+    @keyframes splashOut { from { opacity: 1; } to { opacity: 0; visibility: hidden; } }
 
     /* ── Tool call blocks ── */
     .tool-group {
       align-self: flex-start;
-      max-width: 88%;
+      max-width: 85%;
       animation: fadeUp 0.22s ease forwards;
       opacity: 0;
-      margin: 2px 0;
+      margin: 1px 0 1px 26px;
     }
     @media (min-width: 600px) { .tool-group { max-width: 78%; } }
 
     .tool-toggle {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       cursor: pointer;
-      padding: 5px 10px;
-      border-radius: var(--radius);
+      padding: 4px 11px 4px 9px;
+      border-radius: 999px;
       border: 1px solid var(--border);
-      background: #0f0f12;
+      background: var(--surface);
       color: var(--muted);
-      font-family: var(--mono);
-      font-size: 10px;
-      letter-spacing: 0.07em;
-      text-transform: uppercase;
+      font-size: 12px;
+      font-weight: 500;
       user-select: none;
       -webkit-user-select: none;
-      transition: border-color 0.15s, color 0.15s;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
       width: fit-content;
+      max-width: 100%;
     }
-    .tool-toggle:hover { border-color: rgba(200,240,74,0.3); color: var(--accent); }
-
+    .tool-toggle > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tool-toggle:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-2); }
     .tool-toggle-arrow {
       display: inline-block;
       transition: transform 0.18s ease;
       font-style: normal;
-      font-size: 9px;
+      font-size: 8px;
+      opacity: 0.7;
     }
     .tool-toggle.open .tool-toggle-arrow { transform: rotate(90deg); }
 
     .tool-live-dot {
-      width: 5px; height: 5px; border-radius: 50%;
+      width: 6px; height: 6px; border-radius: 50%;
       background: var(--accent);
       animation: blink 1.2s ease-in-out infinite;
       flex-shrink: 0;
@@ -813,64 +885,43 @@
 
     .tool-details {
       display: none;
-      margin-top: 4px;
+      margin-top: 6px;
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: 12px;
       overflow: hidden;
+      background: var(--surface);
     }
     .tool-details.open { display: block; }
-
-    .tool-section {
-      padding: 9px 12px;
-      border-bottom: 1px solid var(--border);
-    }
+    .tool-section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
     .tool-section:last-child { border-bottom: none; }
-
-    .tool-section-label {
-      font-family: var(--mono);
-      font-size: 9px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 5px;
-    }
-
-    .tool-name {
-      color: var(--accent);
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 500;
-    }
-
+    .tool-section-label { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+    .tool-name { color: var(--accent-text); font-family: var(--mono); font-size: 11.5px; font-weight: 500; }
     .tool-code {
       font-family: var(--mono);
-      font-size: 10.5px;
+      font-size: 11.5px;
       line-height: 1.55;
-      color: #c8e6a0;
-      background: #0a0a0c;
-      border-radius: 3px;
-      padding: 8px 10px;
+      color: var(--code-text);
+      background: var(--code-bg);
+      border-radius: 8px;
+      padding: 9px 11px;
       overflow-x: auto;
       white-space: pre-wrap;
       word-break: break-all;
       -webkit-overflow-scrolling: touch;
       margin: 0;
+      max-height: 320px;
     }
-
-    .tool-result-ok   { color: #c8e6a0; }
-    .tool-result-err  { color: #e07070; }
+    .tool-result-ok   { color: var(--code-text); }
+    .tool-result-err  { color: var(--err); }
 
     /* ── Reasoning block ──
-       Reasoning models stream their thinking on a field of its own, ahead of
-       the reply. Collapsed by default: it's usually several times longer than
-       the answer and is there to be checked, not read. Reuses the tool pill
-       wholesale (.tool-group / .tool-toggle / .tool-details / .tool-section) —
-       only the body differs, since this is prose rather than code. */
+       Collapsed by default: it's usually several times longer than the answer
+       and is there to be checked, not read. Reuses the tool pill wholesale. */
     .reasoning-body {
       font-family: var(--sans);
-      font-size: 12.5px;
+      font-size: 13px;
       line-height: 1.6;
-      color: #9a9aa8;
+      color: var(--text-2);
       background: transparent;
       white-space: pre-wrap;
       word-break: normal;
@@ -878,73 +929,54 @@
       padding: 0;
       margin: 0;
     }
-    /* Still streaming. Its own keyframe rather than the dots' `blink`, which
-       scales as well as fades and reads as a wobble on text. The arrow stays
-       live throughout, so the panel can be opened to watch the thinking
-       arrive rather than only read it back afterwards. */
     .reasoning-live .reasoning-label { animation: reasoningPulse 1.4s ease-in-out infinite; }
-    @keyframes reasoningPulse {
-      0%, 100% { opacity: 0.45; }
-      50%      { opacity: 1; }
-    }
+    @keyframes reasoningPulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 
     /* ── Bash approval prompt ──
-       Shown when the agent wants to run a shell command not already covered by
-       a saved always-allow rule. The agent's turn is blocked on the other side
-       of it, so it's styled to demand attention rather than blend in with the
-       tool pills. Reuses .tool-group (width/animation) and .tool-code (the
-       command block) — only what differs is defined here. */
+       The agent's turn is blocked on the other side of it, so it's styled to
+       demand attention rather than blend in with the tool pills. */
     .approval {
-      border: 1px solid rgba(224,85,85,0.45);
-      border-left: 2px solid var(--err);
-      border-radius: var(--radius);
-      background: #17131a;
-      padding: 11px 13px;
+      border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
+      border-radius: 14px;
+      background: var(--err-soft);
+      padding: 13px 15px;
     }
-    .approval-head {
-      font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
-      text-transform: uppercase; color: var(--err); margin-bottom: 7px;
-    }
-    .approval .tool-code { color: #e8d8a0; margin-bottom: 9px; }
+    .approval-head { font-size: 12.5px; font-weight: 650; color: var(--err); margin-bottom: 8px; }
+    .approval .tool-code { margin-bottom: 10px; }
     .approval-actions { display: flex; flex-wrap: wrap; gap: 6px; }
     .approval-btn {
-      font-family: var(--mono); font-size: 10.5px; padding: 7px 10px;
-      border-radius: var(--radius); border: 1px solid var(--border);
+      font-size: 12.5px; font-weight: 550; padding: 7px 12px;
+      border-radius: 8px; border: 1px solid var(--border-strong);
       background: var(--surface); color: var(--text); cursor: pointer;
-      transition: border-color 0.15s, color 0.15s, opacity 0.15s;
+      transition: border-color 0.15s, color 0.15s, opacity 0.15s, background 0.15s;
     }
-    .approval-btn:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+    .approval-btn:hover:not(:disabled) { background: var(--surface-2); }
     .approval-btn.deny:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
     .approval-btn:disabled { opacity: 0.4; cursor: default; }
-    .approval-note {
-      font-family: var(--mono); font-size: 9.5px; color: var(--muted);
-      margin-top: 8px; line-height: 1.5;
-    }
-    .approval.settled { border-color: var(--border); border-left-color: var(--muted); }
+    .approval-note { font-size: 11.5px; color: var(--muted); margin-top: 9px; line-height: 1.5; }
+    .approval.settled { border-color: var(--border); background: var(--surface); }
     .approval.settled .approval-head { color: var(--muted); }
 
     /* ── Sign-in request ──
-       The agent hit a login or a CAPTCHA and handed it to the user
-       (request_sign_in, request_captcha_help).
-       Built on the approval card, but in the accent rather than the warning
-       colour: it's an invitation, and nothing is blocked waiting on it. */
-    .signin { border-color: rgba(200,240,74,0.35); border-left-color: var(--accent); background: #13150f; }
-    .signin .approval-head { color: var(--accent); }
+       Built on the approval card, but in the accent: it's an invitation, and
+       nothing is blocked waiting on it. */
+    .signin { border-color: var(--accent-line); background: var(--accent-soft); }
+    .signin .approval-head { color: var(--accent-text); }
     .signin-host { font-family: var(--mono); font-size: 13px; color: var(--text); margin-bottom: 10px; word-break: break-all; }
     .signin a.approval-btn { text-decoration: none; display: inline-block; }
-    .signin .approval-btn.primary { background: var(--accent); border-color: var(--accent); color: #10100c; }
-    .signin .approval-btn.primary:hover { background: var(--accent-dim); color: #10100c; }
+    .signin .approval-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .signin .approval-btn.primary:hover { background: var(--accent-dim); }
     .signin.saved .approval-head::after { content: ' · saved ✓'; }
-    .signin.past { border-color: var(--border); border-left-color: var(--muted); background: transparent; }
+    .signin.past { border-color: var(--border); background: var(--surface); }
     .signin.past .approval-head { color: var(--muted); }
 
     /* ── Windows ──
-       Apps open in these: dragged by the title bar, resized from the corner,
-       brought to the front on any press. On a phone there's no room to
-       arrange anything, so every window simply fills the screen. */
+       Apps open in these, over the conversation: dragged by the title bar,
+       resized from the corner, brought to the front on any press. On a phone
+       there's no room to arrange anything, so every window fills the screen. */
     #windows {
       position: fixed;
-      left: 0; right: 0; bottom: 0;
+      left: var(--sidebar-w); right: 0; bottom: 0;
       top: var(--topbar-h);
       z-index: 10;
       pointer-events: none;
@@ -956,38 +988,23 @@
       min-width: 300px;
       min-height: 200px;
       background: var(--surface);
-      border: 1px solid #26262d;
-      border-radius: 11px;
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
       overflow: hidden;
       pointer-events: auto;
-      box-shadow: 0 18px 50px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,0,0,0.35);
-      transition: box-shadow 0.2s, border-color 0.2s;
+      box-shadow: var(--shadow-lg);
+      transition: box-shadow 0.2s;
     }
     .win[hidden], .win.minimized { display: none; }
-    .win.focused {
-      border-color: #33333c;
-      box-shadow: 0 28px 70px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,0,0,0.35), 0 0 0 1px rgba(200,240,74,0.05) inset;
-    }
-    .win.opening { animation: winIn 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.1); }
+    .win.opening { animation: winIn 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.05); }
     .win.closing { animation: winOut 0.14s ease-in forwards; pointer-events: none; }
-    @keyframes winIn  { from { opacity: 0; transform: scale(0.94) translateY(10px); } to { opacity: 1; transform: none; } }
-    @keyframes winOut { to   { opacity: 0; transform: scale(0.96) translateY(6px); } }
-
+    @keyframes winIn  { from { opacity: 0; transform: scale(0.96) translateY(8px); } to { opacity: 1; transform: none; } }
+    @keyframes winOut { to   { opacity: 0; transform: scale(0.97) translateY(6px); } }
     .win.max {
       left: 0 !important; top: 0 !important;
       width: 100% !important; height: 100% !important;
       border-radius: 0;
-      border-width: 1px 0 0;
-    }
-    @media (max-width: 719px) {
-      .win {
-        left: 0 !important; top: 0 !important;
-        width: 100% !important; height: 100% !important;
-        min-width: 0;
-        border-radius: 0;
-        border-width: 1px 0 0;
-      }
-      .win-resize, .wl.max { display: none; }
+      border-width: 0;
     }
 
     .win-bar {
@@ -995,10 +1012,10 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      height: 36px;
-      padding: 0 12px;
+      height: 40px;
+      padding: 0 14px;
       flex-shrink: 0;
-      background: linear-gradient(#1c1c21, #16161a);
+      background: var(--surface-2);
       border-bottom: 1px solid var(--border);
       cursor: grab;
       touch-action: none;
@@ -1012,50 +1029,45 @@
     body.wm-drag iframe, body.wm-resize iframe { pointer-events: none; }
     body.wm-drag, body.wm-resize { -webkit-user-select: none; user-select: none; }
 
-    .win-lights { display: flex; gap: 7px; position: relative; z-index: 1; }
+    .win-lights { display: flex; gap: 8px; position: relative; z-index: 1; }
     .wl {
       width: 12px; height: 12px;
       border-radius: 50%;
       border: none;
       padding: 0;
-      background: #34343c;
+      background: var(--border-strong);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: rgba(0,0,0,0.6);
+      color: rgba(0, 0, 0, 0.55);
       font-size: 9px;
       line-height: 1;
       transition: background 0.15s;
     }
     .wl::after { content: attr(data-glyph); opacity: 0; font-weight: 700; }
     .win-lights:hover .wl::after { opacity: 1; }
-    .win.focused .wl.close, .win-lights:hover .wl.close { background: #e05555; }
-    .win.focused .wl.min,   .win-lights:hover .wl.min   { background: #e0b43c; }
-    .win.focused .wl.max,   .win-lights:hover .wl.max   { background: var(--accent-dim); }
+    .win.focused .wl.close, .win-lights:hover .wl.close { background: #ff5f57; }
+    .win.focused .wl.min,   .win-lights:hover .wl.min   { background: #febc2e; }
+    .win.focused .wl.max,   .win-lights:hover .wl.max   { background: #28c840; }
     .win-title {
       position: absolute;
-      left: 80px; right: 80px;
-      text-align: center;
+      left: 84px; right: 84px;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 7px;
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
       color: var(--muted);
       white-space: nowrap;
       overflow: hidden;
       pointer-events: none;
     }
-    .win-title svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .win-title svg { width: 15px; height: 15px; }
     .win.focused .win-title { color: var(--text); }
     .win-title .wt-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    /* A page title, in its own case — it's the site's words, not a label. */
-    .win-title .wt-text.page { text-transform: none; letter-spacing: 0.02em; font-family: var(--sans); font-size: 12px; font-weight: 600; }
-    .win.focused .win-title svg { color: var(--accent); }
+    .win-title .wt-text.page { font-weight: 500; }
 
     .win-body {
       flex: 1;
@@ -1065,13 +1077,7 @@
       flex-direction: column;
       background: var(--bg);
     }
-    .win-body iframe {
-      flex: 1;
-      width: 100%;
-      border: 0;
-      display: block;
-      background: var(--bg);
-    }
+    .win-body iframe { flex: 1; width: 100%; border: 0; display: block; background: var(--bg); }
     .win-resize {
       position: absolute;
       right: 0; bottom: 0;
@@ -1079,11 +1085,7 @@
       cursor: nwse-resize;
       touch-action: none;
       z-index: 2;
-      background:
-        linear-gradient(135deg, transparent 0 55%, var(--muted) 55% 61%, transparent 61% 72%, var(--muted) 72% 78%, transparent 78%);
-      opacity: 0.45;
     }
-    .win-resize:hover { opacity: 0.9; }
     .win.max .win-resize { display: none; }
 
     /* ── Files window ──
@@ -1098,30 +1100,21 @@
       background: var(--surface);
       padding-bottom: env(safe-area-inset-bottom);
     }
-
     .ctx-head {
       display: flex;
-      align-items: baseline;
-      gap: 9px;
-      padding: 11px 16px 10px;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
+      min-height: 52px;
     }
     .ctx-title {
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--accent);
+      font-size: 14px;
+      font-weight: 650;
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .ctx-user {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+    .ctx-user { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #ctx-text {
       flex: 1;
       width: 100%;
@@ -1131,116 +1124,88 @@
       background: transparent;
       color: var(--text);
       font-family: var(--mono);
-      font-size: 12.5px;
+      font-size: 13px;
       line-height: 1.65;
-      padding: 14px 16px;
+      padding: 16px 18px;
       -webkit-overflow-scrolling: touch;
     }
     #ctx-text::placeholder { color: var(--muted); }
     #ctx-text:disabled { opacity: 0.5; }
-
     .ctx-foot {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 11px 16px 13px;
+      gap: 8px;
+      padding: 10px 14px;
       border-top: 1px solid var(--border);
       flex-shrink: 0;
+      background: var(--surface);
     }
-    #ctx-status {
-      font-family: var(--mono);
-      font-size: 9.5px;
-      color: var(--muted);
-      line-height: 1.4;
-      flex: 1;
-      min-width: 0;
-    }
+    #ctx-status { font-size: 12px; color: var(--muted); line-height: 1.4; flex: 1; min-width: 0; }
     #ctx-status.err { color: var(--err); }
-    #ctx-status.ok  { color: var(--accent-dim); }
+    #ctx-status.ok  { color: var(--accent-text); }
     #ctx-save {
       background: var(--accent);
       border: none;
-      border-radius: var(--radius);
-      color: #0d0d0f;
-      font-family: var(--mono);
-      font-size: 10.5px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 8px 15px;
+      border-radius: 8px;
+      color: var(--accent-ink);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 16px;
       cursor: pointer;
       flex-shrink: 0;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, background 0.15s;
     }
-    #ctx-save:disabled { opacity: 0.35; cursor: default; }
-
+    #ctx-save:hover:not(:disabled) { background: var(--accent-dim); }
+    #ctx-save:disabled { opacity: 0.4; cursor: default; }
     /* A panel section is laid out with flex when shown, so `hidden` alone
        loses to that — this is what actually hides the half we're not on. */
     #context-panel [hidden] { display: none !important; }
-
     #ctx-back {
+      width: 30px; height: 30px;
+      display: flex; align-items: center; justify-content: center;
       background: none;
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
-      font-size: 12px;
+      border-radius: 8px;
+      color: var(--text-2);
+      font-size: 14px;
       line-height: 1;
-      padding: 6px 9px;
       cursor: pointer;
       flex-shrink: 0;
-      align-self: center;
-      transition: border-color 0.15s, color 0.15s;
+      transition: background 0.15s;
     }
-    #ctx-back:hover { border-color: var(--accent-dim); color: var(--accent); }
-
-    .ctx-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-    #ctx-list-view {
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-    }
-    #ctx-list { list-style: none; margin: 0; padding: 6px 0; }
+    #ctx-back:hover { background: var(--surface-2); }
+    #ctx-list-view { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    #ctx-list { list-style: none; margin: 0; padding: 6px; }
     .ctx-row {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       width: 100%;
       background: none;
       border: none;
-      border-bottom: 1px solid var(--border);
+      border-radius: 8px;
       color: var(--text);
-      font-family: var(--mono);
-      font-size: 12px;
+      font-size: 13.5px;
       text-align: left;
-      padding: 11px 16px;
+      padding: 9px 10px;
       cursor: pointer;
       transition: background 0.12s;
     }
-    .ctx-row:hover { background: rgba(255,255,255,0.04); }
-    .ctx-row-icon { flex-shrink: 0; font-size: 13px; line-height: 1; }
-    .ctx-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ctx-row.protected .ctx-row-name { color: var(--accent); }
-    .ctx-row-meta {
+    .ctx-row:hover { background: var(--surface-2); }
+    .ctx-row-icon {
       flex-shrink: 0;
-      font-size: 9.5px;
-      color: var(--muted);
-      letter-spacing: 0.04em;
+      width: 30px; height: 30px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--surface-2);
+      font-size: 14px; line-height: 1;
     }
-    #ctx-list-empty, #ctx-binary {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-      line-height: 1.7;
-      padding: 18px 16px;
-    }
-
-    #ctx-file-view {
-      flex: 1;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-    }
+    .ctx-row:hover .ctx-row-icon { background: var(--surface-3); }
+    .ctx-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+    .ctx-row.protected .ctx-row-name { color: var(--accent-text); }
+    .ctx-row-meta { flex-shrink: 0; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    #ctx-list-empty, #ctx-binary { font-size: 13px; color: var(--muted); line-height: 1.6; padding: 20px 18px; }
+    #ctx-file-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     #ctx-image-wrap {
       flex: 1;
       min-height: 0;
@@ -1249,61 +1214,35 @@
       justify-content: center;
       padding: 16px;
       overflow: auto;
+      background: var(--surface-2);
     }
-    #ctx-image { max-width: 100%; max-height: 100%; border-radius: var(--radius); }
-
+    #ctx-image { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: var(--shadow-sm); }
     #ctx-delete {
       background: none;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 10.5px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 8px 12px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      color: var(--text-2);
+      font-size: 13px;
+      font-weight: 550;
+      padding: 6px 13px;
       cursor: pointer;
       flex-shrink: 0;
-      transition: border-color 0.15s, color 0.15s;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
     }
-    #ctx-delete:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
-    #ctx-delete:disabled { opacity: 0.35; cursor: default; }
+    #ctx-delete:hover:not(:disabled) { border-color: var(--err); color: var(--err); background: var(--err-soft); }
+    #ctx-delete:disabled { opacity: 0.4; cursor: default; }
 
     /* ── Agent browser ──
-       The agent's real browser, live: the Browser page in watch mode
-       (browser.html?watch=agent) in a window of its own, cursor and all. The
-       dot in the title bar pulses while a turn is using it. */
-    .ab-live {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: var(--muted);
-      flex-shrink: 0;
-    }
-    #win-agent.working .ab-live { background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: pulse 1.6s ease-in-out infinite; }
-
-    /* Where the agent's browser lives on a phone: a picture-in-picture card
-       in the corner, rather than a sheet over the chat it's working for. */
-    @media (max-width: 719px) {
-      #win-agent.win {
-        left: auto !important; right: 8px;
-        top: 8px !important;
-        width: min(320px, calc(100% - 16px)) !important;
-        height: 236px !important;
-        border-radius: 11px;
-        border-width: 1px;
-      }
-    }
-
-    .app-icon.launch .app-tile { animation: iconLaunch 0.7s cubic-bezier(0.3, 0.7, 0.3, 1); }
-    @keyframes iconLaunch {
-      0%, 100% { transform: none; }
-      35% { transform: translateY(-10px) scale(1.08); }
-      65% { transform: translateY(0) scale(0.97); }
-    }
+       The agent's real browser, live: the Browser page in watch mode in a
+       window of its own. The dot in the title bar pulses while a turn is
+       using it. */
+    .ab-live { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+    #win-agent.working .ab-live { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 
     /* ── App window ──
-       What double-clicking an installed MCP app opens: its icon, what it is,
-       and the one choice that lives here — on or off. Removing it is the App
-       Store's job. */
+       What opening an installed MCP app shows: its icon, what it is, and the
+       one choice that lives here — on or off. Removing it is the App Store's
+       job. */
     .mw {
       flex: 1;
       min-height: 0;
@@ -1313,66 +1252,126 @@
       align-items: center;
       text-align: center;
       gap: 6px;
-      padding: 22px 20px 18px;
+      padding: 26px 22px 18px;
       background: var(--surface);
     }
     .mw-icon {
       width: 64px; height: 64px;
-      border-radius: 17px;
+      border-radius: 16px;
       display: flex; align-items: center; justify-content: center;
-      background: linear-gradient(160deg, var(--tile-a, #1d1d22), var(--tile-b, #121215));
-      border: 1px solid rgba(255,255,255,0.07);
-      box-shadow: 0 10px 26px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
-      margin-bottom: 6px;
+      background: var(--surface-2);
+      box-shadow: 0 0 0 1px var(--border), var(--shadow-sm);
+      margin-bottom: 8px;
       transition: filter 0.2s, opacity 0.2s, box-shadow 0.3s;
     }
-    .mw-icon img { width: 36px; height: 36px; object-fit: contain; border-radius: 8px; }
-    .mw-icon .app-letter { font-weight: 700; font-size: 28px; color: hsl(var(--h, 80) 70% 70%); text-transform: uppercase; }
-    .mw-icon.letter { --tile-a: hsl(var(--h, 80) 30% 17%); --tile-b: hsl(var(--h, 80) 30% 9%); }
-    .mw.off .mw-icon { filter: grayscale(1) brightness(0.7); opacity: 0.5; }
-    .mw.using .mw-icon { box-shadow: 0 0 0 1px rgba(200,240,74,0.6), 0 0 24px 4px rgba(200,240,74,0.4); }
-    .mw-name { font-size: 18px; font-weight: 700; }
+    .mw-icon img { width: 38px; height: 38px; object-fit: contain; border-radius: 8px; }
+    .mw-icon .app-letter { font-size: 28px; }
+    .mw-icon.letter { background: hsl(var(--h, 80) 55% 45% / 0.18); box-shadow: none; }
+    .mw.off .mw-icon { filter: grayscale(1); opacity: 0.5; }
+    .mw.using .mw-icon { box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px var(--accent-soft); }
+    .mw-name { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
     .mw-sub {
-      font-family: var(--mono); font-size: 10px; color: var(--muted);
+      font-family: var(--mono); font-size: 11.5px; color: var(--muted);
       max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .mw-status { font-family: var(--mono); font-size: 11px; color: var(--muted); margin: 8px 0 4px; min-height: 16px; }
-    .mw-status b { color: var(--accent); font-weight: 500; }
+    .mw-status { font-size: 13px; color: var(--muted); margin: 10px 0 6px; min-height: 18px; }
+    .mw-status b { color: var(--accent-text); font-weight: 600; }
     .mw.off .mw-status b { color: var(--text); }
     .mw.using .mw-status::before {
-      content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-      background: var(--accent); box-shadow: 0 0 6px var(--accent); margin-right: 7px; vertical-align: 1px;
+      content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent); margin-right: 8px; vertical-align: 1px;
       animation: pulse 1.4s ease-in-out infinite;
     }
     .mw-seg {
-      display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
-      background: var(--bg);
+      display: inline-flex; padding: 3px; gap: 2px;
+      border-radius: 10px; background: var(--surface-3);
     }
     .mw-seg button {
-      background: none; border: none; color: var(--muted);
-      font-family: var(--sans); font-weight: 600; font-size: 13px;
-      padding: 9px 22px; cursor: pointer; transition: background 0.15s, color 0.15s;
+      background: none; border: none; color: var(--text-2);
+      font-weight: 550; font-size: 13px;
+      padding: 7px 20px; border-radius: 8px; cursor: pointer; transition: background 0.15s, color 0.15s;
     }
-    .mw-seg button + button { border-left: 1px solid var(--border); }
     .mw-seg button:hover:not(:disabled) { color: var(--text); }
-    .mw-seg button.on-btn.active  { background: var(--accent); color: #10100c; }
-    .mw-seg button.off-btn.active { background: #2a2a31; color: var(--text); }
+    .mw-seg button.on-btn.active  { background: var(--accent); color: var(--accent-ink); box-shadow: var(--shadow-sm); }
+    .mw-seg button.off-btn.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
     .mw-seg button:disabled { cursor: default; }
-    .mw-msg { font-family: var(--mono); font-size: 10.5px; line-height: 1.5; min-height: 15px; margin-top: 4px; }
+    .mw-msg { font-size: 12px; line-height: 1.5; min-height: 16px; margin-top: 4px; }
     .mw-msg.err { color: var(--err); }
-    .mw-msg.warn { color: #e0b43c; }
-    .mw-note { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: auto; padding-top: 12px; line-height: 1.6; }
-    .mw-note a { color: var(--accent-dim); cursor: pointer; text-decoration: none; }
+    .mw-msg.warn { color: var(--warn); }
+    .mw-note { font-size: 12px; color: var(--muted); margin-top: auto; padding-top: 14px; line-height: 1.6; }
+    .mw-note a { color: var(--accent-text); cursor: pointer; text-decoration: none; font-weight: 550; }
     .mw-note a:hover { text-decoration: underline; }
-    #win-mcp .win-title .mw-title-ico { width: 13px; height: 13px; border-radius: 3px; object-fit: contain; }
+    #win-mcp .win-title .mw-title-ico { width: 14px; height: 14px; border-radius: 3px; object-fit: contain; }
 
-    /* Softer corners inside the floating composer. */
-    #user-input, #send-btn, #stop-btn, #upload-btn, #file-preview { border-radius: 9px; }
-    #user-input { background: rgba(13,13,15,0.7); }
+    /* ── Smaller screens ── */
+    #scrim {
+      position: fixed;
+      inset: 0;
+      background: var(--scrim);
+      z-index: 25;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s;
+    }
+    @media (max-width: 1100px) { #clock { display: none; } }
+    @media (max-width: 899px) {
+      #shell { grid-template-columns: minmax(0, 1fr); }
+      #sidebar {
+        position: fixed;
+        top: 0; bottom: 0; left: 0;
+        width: min(300px, 86vw);
+        transform: translateX(-102%);
+        visibility: hidden;
+        transition: transform 0.28s cubic-bezier(0.2, 0.85, 0.25, 1), visibility 0s linear 0.28s;
+        z-index: 6000;
+      }
+      body.nav-open #sidebar { transform: none; visibility: visible; box-shadow: var(--shadow-lg); transition: transform 0.28s cubic-bezier(0.2, 0.85, 0.25, 1); }
+      body.nav-open #scrim { opacity: 1; pointer-events: auto; z-index: 5999; }
+      .sb-close, .menu-btn { display: flex; }
+      #topbar { padding-left: calc(16px + env(safe-area-inset-left)); }
+      #windows { left: 0; }
+      .suggestions { grid-template-columns: minmax(0, 1fr); width: min(420px, 100%); }
+      .suggestion:nth-child(n+3) { display: none; }
+    }
+    @media (max-width: 719px) {
+      #chat-title { max-width: 52vw; }
+      .task span { display: none; }
+      #token-count { display: none; }
+      #messages { padding-left: 14px; padding-right: 14px; }
+      .message { max-width: 90%; }
+      .tool-group { margin-left: 0; max-width: 92%; }
+      #input-area { width: calc(100% - 20px); margin-bottom: calc(10px + env(safe-area-inset-bottom)); }
+      .win {
+        left: 0 !important; top: 0 !important;
+        width: 100% !important; height: 100% !important;
+        min-width: 0;
+        border-radius: 0;
+        border-width: 1px 0 0;
+      }
+      .win-resize, .wl.max, .wl.min { display: none; }
+      /* One plain close button: there's nothing to arrange on a phone. */
+      .win-bar { height: 48px; }
+      .win-lights { order: 2; margin-left: auto; }
+      .wl.close { width: 30px; height: 30px; background: var(--surface-3) !important; color: var(--text-2); font-size: 15px; }
+      .wl.close::after { opacity: 1; font-weight: 500; }
+      .win-title { left: 16px; right: 56px; justify-content: flex-start; }
+      /* The agent's browser on a phone: a picture-in-picture card in the
+         corner, rather than a sheet over the chat it's working for. */
+      #win-agent.win {
+        left: auto !important; right: 8px;
+        top: 8px !important;
+        width: min(320px, calc(100% - 16px)) !important;
+        height: 236px !important;
+        border-radius: 14px;
+        border-width: 1px;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .app-icon.using::after, .message, .tool-group { animation: none; opacity: 1; }
+    }
 
     /* Leaving for the user picker. */
-    body.leaving #desktop, body.leaving #windows { opacity: 0; transform: scale(0.985); transition: opacity 0.2s ease, transform 0.2s ease; }
-
+    body.leaving #shell, body.leaving #windows { opacity: 0; transform: scale(0.99); transition: opacity 0.2s ease, transform 0.2s ease; }
   </style>
 </head>
 <body>
@@ -1383,7 +1382,7 @@
   <div class="splash-sub">an AI agent that doesn't burn your money</div>
 </div>
 
-<!-- App glyphs, drawn once and reused by the icons, window titles and task pills. -->
+<!-- App glyphs, drawn once and reused by the sidebar, window titles and tabs. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <symbol id="i-browser" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.4 5.6 12 3z"/>
@@ -1406,93 +1405,139 @@
   <symbol id="i-mcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><path d="M16.5 13.5v6M13.5 16.5h6"/>
   </symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 12.5a7.5 7.5 0 0 1-10.9 6.7L4 20.5l1.3-4.6A7.5 7.5 0 1 1 20 12.5z"/>
+  </symbol>
+  <symbol id="i-new" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 4H6.5A2.5 2.5 0 0 0 4 6.5v11A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V12"/><path d="M17.6 3.6a2 2 0 0 1 2.8 2.8L12 14.8l-3.6.8.8-3.6z"/>
+  </symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <path d="M4 7h16M4 12h16M4 17h10"/>
+  </symbol>
+  <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <path d="M6 6l12 12M18 6 6 18"/>
+  </symbol>
+  <symbol id="i-switch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m8 9 4-4 4 4M8 15l4 4 4-4"/>
+  </symbol>
 </svg>
 
-<header id="topbar">
-  <div class="header-icon">
-    <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
-  </div>
-  <div class="header-dot"></div>
-  <div class="header-title">
-    <h1 id="chat-user-name">FreeClaw</h1>
-    <span class="header-tagline" id="chat-title">an AI agent that doesn't burn your money</span>
-  </div>
-  <nav id="tasks" aria-label="Open windows"></nav>
-  <div class="header-right">
-    <span id="token-count">~0 tokens</span>
-    <button id="reset-btn">reset</button>
-    <span id="clock"></span>
-  </div>
-</header>
-
-<div id="desktop">
-  <div id="wallpaper" aria-hidden="true">
-    <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
-    <div class="empty-name">FreeClaw</div>
-    <div class="empty-sub">search the web · run bash<br>connect MCP tools · write files</div>
-  </div>
-
-  <!-- Double-click to open (a tap on touch screens); drag to rearrange. -->
-  <div id="icons">
-    <button class="app-icon" id="icon-browser" data-app="browser" title="Browser" hidden>
-      <span class="app-tile"><svg><use href="#i-browser"/></svg></span>
-      <span class="app-label">Browser</span>
-    </button>
-    <button class="app-icon" id="icon-files" data-app="files" title="Files">
-      <span class="app-tile"><svg><use href="#i-files"/></svg></span>
-      <span class="app-label">Files</span>
-    </button>
-    <button class="app-icon" id="icon-settings" data-app="settings" title="Settings">
-      <span class="app-tile"><svg><use href="#i-settings"/></svg></span>
-      <span class="app-label">Settings</span>
-    </button>
-    <button class="app-icon" id="icon-appstore" data-app="appstore" title="App Store">
-      <span class="app-tile"><svg><use href="#i-appstore"/></svg></span>
-      <span class="app-label">App Store</span>
-    </button>
-    <!-- Installed MCP apps are added after this by refreshMcpApps(). -->
-    <button class="app-icon" id="icon-home" data-app="home" title="Back to users">
-      <span class="app-tile"><svg><use href="#i-home"/></svg></span>
-      <span class="app-label">Home</span>
-    </button>
-  </div>
-
-  <div id="chat">
-    <div id="messages">
-      <div id="empty-state"></div>
+<div id="shell">
+  <aside id="sidebar" aria-label="FreeClaw">
+    <div class="sb-head">
+      <div class="sb-logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+      <span class="sb-brand">FreeClaw</span>
+      <button class="sb-close" id="nav-close" title="Close menu"><svg><use href="#i-close"/></svg></button>
     </div>
 
-    <div id="input-area">
-      <div id="file-preview">
-        <div id="file-preview-bar"></div>
-        <span id="file-preview-name">filename.txt</span>
-        <span id="file-preview-status">ready</span>
-        <button id="file-remove-btn" title="Remove file">✕</button>
+    <!-- Archives this conversation into history/ and starts an empty one. -->
+    <button id="reset-btn" title="Start a new chat (this one is kept in Files → history)">
+      <svg><use href="#i-new"/></svg>New chat
+    </button>
+
+    <nav id="icons">
+      <div class="sb-label">Workspace</div>
+      <button class="app-icon active" id="icon-chat" data-app="chat" title="Chat">
+        <span class="app-tile"><svg><use href="#i-chat"/></svg></span>
+        <span class="app-label">Chat</span>
+      </button>
+      <button class="app-icon" id="icon-files" data-app="files" title="Files">
+        <span class="app-tile"><svg><use href="#i-files"/></svg></span>
+        <span class="app-label">Files</span>
+      </button>
+      <button class="app-icon" id="icon-browser" data-app="browser" title="Browser" hidden>
+        <span class="app-tile"><svg><use href="#i-browser"/></svg></span>
+        <span class="app-label">Browser</span>
+      </button>
+      <button class="app-icon" id="icon-appstore" data-app="appstore" title="App Store">
+        <span class="app-tile"><svg><use href="#i-appstore"/></svg></span>
+        <span class="app-label">App Store</span>
+      </button>
+      <button class="app-icon" id="icon-settings" data-app="settings" title="Settings">
+        <span class="app-tile"><svg><use href="#i-settings"/></svg></span>
+        <span class="app-label">Settings</span>
+      </button>
+
+      <div class="sb-label">Apps <button type="button" id="get-apps" title="Find apps in the App Store">+ Add</button></div>
+      <!-- Installed MCP apps are listed here by renderMcpServers(). -->
+      <div id="mcp-apps">
+        <p class="sb-empty" id="mcp-empty">Connect Gmail, GitHub, Notion and more from the App Store.</p>
       </div>
-      <div id="input-row">
-        <button id="upload-btn" title="Attach file">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19"/>
-            <line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-        </button>
-        <input type="file" id="file-input" style="display:none"/>
-        <textarea id="user-input" placeholder="Ask anything…" rows="1"></textarea>
-        <button id="send-btn" title="Send">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#0d0d0f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="19" x2="12" y2="5"/>
-            <polyline points="5 12 12 5 19 12"/>
-          </svg>
-        </button>
-        <button id="stop-btn" title="Stop generating">
-          <svg viewBox="0 0 24 24" fill="#0d0d0f" aria-hidden="true">
-            <rect x="7" y="7" width="10" height="10" rx="1.5"/>
-          </svg>
-        </button>
+    </nav>
+
+    <div class="sb-foot">
+      <button class="app-icon" id="icon-home" data-app="home" title="Switch user">
+        <span class="avatar" id="user-avatar">?</span>
+        <span class="who"><span id="chat-user-name">FreeClaw</span><small>Switch user</small></span>
+        <svg class="switch-ico"><use href="#i-switch"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <main id="desktop">
+    <header id="topbar">
+      <button class="menu-btn" id="nav-open" title="Menu"><svg><use href="#i-menu"/></svg></button>
+      <div class="header-title">
+        <span id="chat-title">New chat</span>
+        <span class="header-sub"><span class="header-dot"></span><span id="header-sub-text">Agent ready</span></span>
+      </div>
+      <nav id="tasks" aria-label="Open windows"></nav>
+      <div class="header-right">
+        <span id="token-count">~0 tokens</span>
+        <span id="clock"></span>
+      </div>
+    </header>
+
+    <div id="wallpaper">
+      <div class="eagle-wrap"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
+      <div class="empty-name" id="greeting">How can I help?</div>
+      <div class="empty-sub">Your agent can browse the web, use your apps, work with files and run jobs on a schedule.</div>
+      <div class="suggestions">
+        <button type="button" class="suggestion" data-prompt="What's the weather this weekend where I live?"><b>Check the weather</b><span>for this weekend, from a real forecast</span></button>
+        <button type="button" class="suggestion" data-prompt="Every morning at 7, give me a quick rundown of my day."><b>Plan my mornings</b><span>a daily rundown, on a schedule</span></button>
+        <button type="button" class="suggestion" data-prompt="Find me three well-reviewed budget headphones under $50 and compare them."><b>Shop for me</b><span>compare products across the web</span></button>
+        <button type="button" class="suggestion" data-prompt="Remember that I like short answers with the important part first."><b>Teach it about you</b><span>it remembers for next time</span></button>
       </div>
     </div>
-  </div>
+
+    <div id="chat">
+      <div id="messages">
+        <div id="empty-state"></div>
+      </div>
+
+      <div id="input-area">
+        <div id="file-preview">
+          <div id="file-preview-bar"></div>
+          <span id="file-preview-name">filename.txt</span>
+          <span id="file-preview-status">ready</span>
+          <button id="file-remove-btn" title="Remove file">✕</button>
+        </div>
+        <div id="input-row">
+          <button id="upload-btn" title="Attach file">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m20.5 11.5-8.2 8.2a5.3 5.3 0 0 1-7.5-7.5l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/>
+            </svg>
+          </button>
+          <input type="file" id="file-input" style="display:none"/>
+          <textarea id="user-input" placeholder="Message FreeClaw…" rows="1"></textarea>
+          <button id="send-btn" title="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5"/>
+              <polyline points="5 12 12 5 19 12"/>
+            </svg>
+          </button>
+          <button id="stop-btn" title="Stop generating">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <p class="composer-note">Enter to send · Shift+Enter for a new line</p>
+    </div>
+  </main>
 </div>
+<div id="scrim"></div>
 
 <div id="windows">
   <!-- Browser and Settings are their own pages, loaded into a frame the first
@@ -2522,7 +2567,7 @@
 
       if (data.error) {
         fileStatus.textContent = 'error';
-        fileBar.style.background = 'rgba(224,85,85,0.15)';
+        fileBar.style.background = 'var(--err-soft)';
         fileBar.style.width = '100%';
         pendingFile = null;
       } else {
@@ -2549,6 +2594,8 @@
     sendBtn.disabled = busy;
     stopBtn.classList.toggle('visible', busy);
     sendBtn.style.display = busy ? 'none' : 'flex';
+    subTextEl.textContent = busy ? 'Working…' : 'Agent ready';
+    document.body.classList.toggle('busy', busy);
     // Re-armed per turn: it's disabled after a press to stop a second click
     // racing the first, and has to come back for the next turn.
     if (busy) stopBtn.disabled = false;
@@ -2965,7 +3012,7 @@
   });
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto';
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 130) + 'px';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + 'px';
   });
 
   resetBtn.addEventListener('click', async () => {
@@ -2996,6 +3043,7 @@
   function applyConversation(data) {
     if (data.user) currentUser = data.user;
     if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
+    greet(data.user);
     if (data.user && !mcpAppsLoaded) refreshMcpApps();
     if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
     const msgs = data.messages || [];
@@ -3433,21 +3481,20 @@
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', () => {
       messagesEl.scrollTop = messagesEl.scrollHeight;
-      scheduleLayout();
     });
   }
 
   // ══ Desktop ═══════════════════════════════════════════════════════
-  // Purely presentation: app icons on the wallpaper, apps in windows. Nothing
-  // below talks to the server except by loading the Browser and Settings
-  // pages into frames.
+  // Purely presentation: the sidebar of apps, apps in windows over the
+  // conversation. Nothing below talks to the server except by loading the
+  // Browser, Settings and App Store pages into frames.
 
   const iconsEl   = document.getElementById('icons');
-  const chatEl    = document.getElementById('chat');
-  const inputArea = document.getElementById('input-area');
+  const mcpListEl = document.getElementById('mcp-apps');
+  const mcpEmpty  = document.getElementById('mcp-empty');
   const tasksEl   = document.getElementById('tasks');
   const clockEl   = document.getElementById('clock');
-  const rootStyle = document.documentElement.style;
+  const subTextEl = document.getElementById('header-sub-text');
 
   // Small wrappers: storage can be missing or throw (private windows,
   // blocked site data), and nothing here is worth failing over.
@@ -3458,7 +3505,7 @@
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* per-browser nicety only */ }
   }
 
-  // ── Menu bar clock ──
+  // ── Header clock ──
   function tickClock() {
     clockEl.textContent = new Date().toLocaleString([], {
       weekday: 'short', hour: 'numeric', minute: '2-digit',
@@ -3467,157 +3514,66 @@
   tickClock();
   setInterval(tickClock, 15000);
 
-  // ── Icons ──────────────────────────────────────────────────────────
-  // Each icon has a home spot — scattered by default, or wherever it was last
-  // dragged — stored as fractions of the desktop so it survives a resize.
-  // When the thread grows over an icon, the icon steps aside into the margin
-  // next to the chat column; when there's no margin wide enough (a phone),
-  // all the icons line up in a row under the menu bar instead and the chat
-  // column starts below them.
-  const ICON_HOME = {
-    browser:  [0.22, 0.20],
-    files:    [0.76, 0.16],
-    settings: [0.31, 0.50],
-    home:     [0.69, 0.46],
-    appstore: [0.77, 0.74],
-  };
-  // A phone has no room around the wallpaper mark, so the corners.
-  const ICON_HOME_NARROW = {
-    browser:  [0.20, 0.10],
-    files:    [0.80, 0.14],
-    settings: [0.22, 0.86],
-    home:     [0.78, 0.82],
-    appstore: [0.50, 0.93],
-  };
-  const iconPos = loadPref('fc-icon-pos');
-  const ICON_GAP = 12;
+  // ── Sidebar ────────────────────────────────────────────────────────
+  // On a phone it's a drawer: the menu button opens it, and opening anything
+  // from it (or tapping beside it) puts it away again.
+  const openNav  = () => document.body.classList.add('nav-open');
+  const closeNav = () => document.body.classList.remove('nav-open');
+  document.getElementById('nav-open').addEventListener('click', openNav);
+  document.getElementById('nav-close').addEventListener('click', closeNav);
+  document.getElementById('scrim').addEventListener('click', closeNav);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeNav(); });
 
-  // Which remembered spot an icon uses. The built-in apps by app name;
-  // installed apps by their server's name, since they all open the one
-  // 'mcp' window.
-  const iconKey = el => el.dataset.mcp ? 'mcp:' + el.dataset.mcp : el.dataset.app;
-
-  // Where an installed app sits until it's dragged somewhere: down the two
-  // side edges, alternating, away from the built-in apps in the middle. A
-  // phone gets rows in the gap between the wallpaper mark and the bottom icons.
-  function mcpHome(i, narrow) {
-    if (narrow) return [0.14 + (i % 4) * 0.24, 0.63 + Math.floor(i / 4) * 0.13];
-    const right = i % 2 === 1;
-    const n = Math.floor(i / 2);
-    const col = Math.floor(n / 5);
-    return [right ? 0.95 - col * 0.08 : 0.05 + col * 0.08, 0.08 + (n % 5) * 0.2];
+  // The conversation is always there under the windows: "Chat" tucks every
+  // window away and puts the cursor back in the composer.
+  function showChat() {
+    closeNav();
+    wm.order.forEach(app => { if (isOpen(app)) minimizeApp(app); });
+    if (!inputEl.disabled) inputEl.focus();
   }
 
-  const iconEls = () => [...iconsEl.querySelectorAll('.app-icon')].filter(el => !el.hidden);
-
-  function setIconXY(el, x, y) {
-    el._x = x; el._y = y;
-    el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
-  }
-
-  const overlaps = (a, b, pad) =>
-    a.x < b.x + b.w + pad && a.x + a.w + pad > b.x &&
-    a.y < b.y + b.h + pad && a.y + a.h + pad > b.y;
-
-  let layoutQueued = false;
-  function scheduleLayout() {
-    if (layoutQueued) return;
-    layoutQueued = true;
-    requestAnimationFrame(() => { layoutQueued = false; layoutIcons(); });
-  }
-
-  function layoutIcons() {
-    const icons = iconEls();
-    if (!icons.length) return;
-    const topbarH = document.getElementById('topbar').offsetHeight;
-    const W = window.innerWidth;
-    const iw = icons[0].offsetWidth || 86;
-    const hasThread = document.body.classList.contains('thread');
-    const colW = chatEl.offsetWidth;
-    const gutter = (W - colW) / 2;
-    const stepAside = gutter >= iw + 16;
-
-    // No room beside the column: a tidy row under the menu bar, and the chat
-    // column starts beneath it so nothing is ever underneath the thread.
-    const strip = hasThread && !stepAside;
-    icons.forEach(el => el.classList.toggle('compact', strip));
-    if (strip) {
-      // As many rows as it takes: installed apps can outnumber what fits
-      // across a phone.
-      const w = icons[0].offsetWidth, h = icons[0].offsetHeight;
-      const gap = 6;
-      const perRow = Math.max(1, Math.floor((W - 16 + gap) / (w + gap)));
-      const rows = Math.ceil(icons.length / perRow);
-      icons.forEach((el, i) => {
-        const row = Math.floor(i / perRow);
-        const inRow = Math.min(perRow, icons.length - row * perRow);
-        const total = inRow * w + (inRow - 1) * gap;
-        const x = Math.max(8, (W - total) / 2) + (i % perRow) * (w + gap);
-        setIconXY(el, x, topbarH + 6 + row * (h + 4));
-      });
-      rootStyle.setProperty('--chat-top', (topbarH + rows * (h + 4) + 6) + 'px');
-      return;
-    }
-    rootStyle.setProperty('--chat-top', 'var(--topbar-h)');
-
-    const ih = icons[0].offsetHeight;
-    const b = {
-      left: 8, right: W - 8,
-      top: topbarH + 10,
-      bottom: inputArea.getBoundingClientRect().top - 10,
-    };
-    const clampX = x => Math.min(Math.max(x, b.left), b.right - iw);
-    const clampY = y => Math.min(Math.max(y, b.top), Math.max(b.top, b.bottom - ih));
-
-    // Home spots first.
-    const defaults = W < 720 ? ICON_HOME_NARROW : ICON_HOME;
-    let mcpIndex = 0;
-    const placed = icons.map(el => {
-      const key = iconKey(el);
-      const slot = el.dataset.mcp ? mcpIndex++ : 0;
-      const [fx, fy] = iconPos[key] || defaults[key]
-        || (el.dataset.mcp ? mcpHome(slot, W < 720) : [0.5, 0.5]);
-      return {
-        el,
-        x: clampX(b.left + fx * (b.right - b.left) - iw / 2),
-        y: clampY(b.top + fy * (b.bottom - b.top) - ih / 2),
-        w: iw, h: ih,
-      };
+  // Which row is lit: the window in front, or Chat when none is.
+  function markActiveNav() {
+    const front = wm.focused;
+    iconsEl.querySelectorAll('.app-icon').forEach(el => {
+      const key = el.dataset.mcp ? 'mcp' : el.dataset.app;
+      const on = front
+        ? key === front && (key !== 'mcp' || el.dataset.mcp === mcpWindow.name)
+        : key === 'chat';
+      el.classList.toggle('active', on);
     });
+  }
 
-    // Then out of the thread's way: into the margin on whichever side of the
-    // column the icon was already nearer.
-    if (hasThread) {
-      const col = chatEl.getBoundingClientRect();
-      const msg = messagesEl.getBoundingClientRect();
-      const thread = { x: col.left, y: msg.top, w: col.width, h: b.bottom - msg.top + 10 };
-      for (const p of placed) {
-        if (!overlaps(p, thread, ICON_GAP)) continue;
-        p.x = (p.x + iw / 2 < W / 2)
-          ? Math.max(b.left, col.left - iw - 18)
-          : Math.min(b.right - iw, col.right + 18);
-      }
-    }
+  // Opening an icon: an installed app opens the shared app window on itself.
+  const openIcon = el => {
+    if (el.dataset.app === 'chat') return showChat();
+    closeNav();
+    openApp(el.dataset.app, el.dataset.mcp ? { mcp: el.dataset.mcp } : undefined);
+  };
+  function wireIcon(el) {
+    el.addEventListener('click', () => openIcon(el));
+  }
+  document.querySelectorAll('#sidebar .app-icon').forEach(wireIcon);
+  document.getElementById('get-apps').addEventListener('click', () => { closeNav(); openApp('appstore'); });
 
-    // Finally, no two icons on top of each other: sweep top to bottom pushing
-    // later ones down, and if that runs off the bottom, back up again.
-    placed.sort((a, c) => a.y - c.y);
-    for (let pass = 0; pass < 3; pass++) {
-      for (let i = 0; i < placed.length; i++) {
-        for (let j = 0; j < i; j++) {
-          const a = placed[j], c = placed[i];
-          if (overlaps(a, c, 4)) c.y = a.y + a.h + 8;
-        }
-        if (placed[i].y > b.bottom - ih) {
-          placed[i].y = b.bottom - ih;
-          for (let j = i - 1; j >= 0; j--) {
-            const a = placed[j], c = placed[j + 1];
-            if (overlaps(a, c, 4)) a.y = Math.max(b.top, c.y - a.h - 8);
-          }
-        }
-      }
-    }
-    placed.forEach(p => setIconXY(p.el, p.x, p.y));
+  // The welcome screen's suggestions only fill the composer: nothing is sent
+  // until the user says so, and they can edit it first.
+  document.querySelectorAll('.suggestion').forEach(btn => btn.addEventListener('click', () => {
+    if (inputEl.disabled) return;
+    inputEl.value = btn.dataset.prompt;
+    inputEl.dispatchEvent(new Event('input'));
+    inputEl.focus();
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  }));
+
+  function greet(name) {
+    const h = new Date().getHours();
+    const part = h < 5 ? 'evening' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+    const el = document.getElementById('greeting');
+    el.textContent = name ? `Good ${part}, ${name}` : 'How can I help?';
+    const av = document.getElementById('user-avatar');
+    const initials = String(name || '?').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2);
+    av.textContent = initials || '?';
   }
 
   // Whether there's a thread to make room for. showEmptyState() leaves only
@@ -3627,80 +3583,9 @@
     if (document.body.classList.contains('thread') !== has) {
       document.body.classList.toggle('thread', has);
     }
-    scheduleLayout();
   }
   new MutationObserver(syncThreadState).observe(messagesEl, { childList: true });
-  if (window.ResizeObserver) {
-    // The thread climbing as replies stream in, the composer growing a line.
-    const ro = new ResizeObserver(scheduleLayout);
-    ro.observe(messagesEl);
-    ro.observe(inputArea);
-  }
-  window.addEventListener('resize', () => { scheduleLayout(); clampAllWindows(); });
-
-  // Click selects, double-click opens — a tap opens straight away on touch.
-  // Drag to move; the new spot is remembered in this browser.
-  function selectIcon(el) {
-    iconsEl.querySelectorAll('.app-icon.selected').forEach(i => { if (i !== el) i.classList.remove('selected'); });
-    if (el) el.classList.add('selected');
-  }
-  document.getElementById('desktop').addEventListener('pointerdown', e => {
-    if (!e.target.closest('.app-icon') && !e.target.closest('#chat > *')) selectIcon(null);
-  });
-
-  // Opening an icon: an installed app opens the shared app window on itself.
-  const openIcon = el => openApp(el.dataset.app, el.dataset.mcp ? { mcp: el.dataset.mcp } : undefined);
-
-  iconsEl.querySelectorAll('.app-icon').forEach(wireIcon);
-
-  function wireIcon(el) {
-    let start = null;   // { px, py, x, y, pointerType } while pressed
-    let moved = false;
-
-    el.addEventListener('pointerdown', e => {
-      if (e.button !== 0) return;
-      start = { px: e.clientX, py: e.clientY, x: el._x || 0, y: el._y || 0, type: e.pointerType };
-      moved = false;
-      el.setPointerCapture(e.pointerId);
-    });
-    el.addEventListener('pointermove', e => {
-      if (!start) return;
-      const dx = e.clientX - start.px, dy = e.clientY - start.py;
-      if (!moved && Math.hypot(dx, dy) < 5) return;
-      moved = true;
-      el.classList.add('dragging');
-      el.style.transform = `translate(${start.x + dx}px, ${start.y + dy}px)`;
-    });
-    const release = e => {
-      if (!start) return;
-      const s = start;
-      start = null;
-      el.classList.remove('dragging');
-      if (!moved) {
-        if (s.type === 'touch' || s.type === 'pen') openIcon(el);
-        else selectIcon(el);
-        return;
-      }
-      // Remember the drop point as the new home. layoutIcons() re-clamps it
-      // and steps it aside again if it was dropped on the thread.
-      const topbarH = document.getElementById('topbar').offsetHeight;
-      const top = topbarH + 10, bottom = inputArea.getBoundingClientRect().top - 10;
-      const x = s.x + (e.clientX - s.px), y = s.y + (e.clientY - s.py);
-      iconPos[iconKey(el)] = [
-        Math.min(1, Math.max(0, (x + el.offsetWidth / 2 - 8) / (window.innerWidth - 16))),
-        Math.min(1, Math.max(0, (y + el.offsetHeight / 2 - top) / Math.max(1, bottom - top))),
-      ];
-      savePref('fc-icon-pos', iconPos);
-      selectIcon(el);
-      layoutIcons();
-    };
-    el.addEventListener('pointerup', release);
-    el.addEventListener('pointercancel', release);
-    el.addEventListener('dblclick', () => { if (!moved) openIcon(el); });
-    el.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openIcon(el); }
-    });
-  }
+  window.addEventListener('resize', () => clampAllWindows());
 
   // ── Windows ────────────────────────────────────────────────────────
   const APPS = {
@@ -3790,7 +3675,6 @@
     const spec = APPS[app];
     const win = winEl(app);
     if (!spec || !win) return;
-    selectIcon(null);
     if (app === 'mcp') {
       if (!opts.mcp && !mcpWindow.name) return;
       if (opts.mcp) mcpWindow.show(opts.mcp);
@@ -3891,6 +3775,7 @@
       });
       tasksEl.appendChild(btn);
     }
+    markActiveNav();
   }
 
   // ── Dragging, resizing, focusing ──
@@ -3973,13 +3858,12 @@
   });
 
   // ── Installed apps ─────────────────────────────────────────────────
-  // Every server added through the App Store (or Settings) is an icon on
-  // the desktop: the vendor's icon, or its first letter; greyed out while
-  // it's switched off for this user; glowing while the agent is using it.
-  // Double-clicking one opens the app window, whose only job is on/off —
+  // Every server added through the App Store (or Settings) is a row in the
+  // sidebar's Apps list: the vendor's icon, or its first letter; greyed out
+  // while it's switched off for this user; a live dot while the agent is
+  // using it. Opening one shows the app window, whose only job is on/off —
   // removing an app is done from the App Store.
   let mcpServers = [];
-  const homeIcon = document.getElementById('icon-home');
   const mcpIconEl = name => [...iconsEl.querySelectorAll('.app-icon.mcp-app')].find(el => el.dataset.mcp === name);
 
   function mcpHue(name) {
@@ -4024,14 +3908,13 @@
 
     const browserIcon = document.getElementById('icon-browser');
     const ready = servers.some(s => s.browser && s.enabled !== false && s.browser.status === 'ready');
-    let changed = false;
-    if (browserIcon && browserIcon.hidden === ready) { browserIcon.hidden = !ready; changed = true; }
+    if (browserIcon) browserIcon.hidden = !ready;
 
     // Builtins aren't "installed" — the browser already has its own icon.
     const apps = servers.filter(s => !s.builtin);
     const want = new Set(apps.map(s => s.name));
     iconsEl.querySelectorAll('.app-icon.mcp-app').forEach(el => {
-      if (!want.has(el.dataset.mcp)) { el.remove(); changed = true; }
+      if (!want.has(el.dataset.mcp)) el.remove();
     });
     for (const s of apps) {
       let el = mcpIconEl(s.name);
@@ -4040,16 +3923,16 @@
         el.className = 'app-icon mcp-app';
         el.dataset.app = 'mcp';
         el.dataset.mcp = s.name;
-        el.innerHTML = '<span class="app-tile"></span><span class="app-label"></span>';
+        el.innerHTML = '<span class="app-tile"></span><span class="app-label"></span><span class="app-state"></span>';
         el.querySelector('.app-label').textContent = s.name;
-        iconsEl.insertBefore(el, homeIcon);
+        mcpListEl.appendChild(el);
         wireIcon(el);
         if (appUsage.active(s.name)) el.classList.add('using');
-        changed = true;
       }
       const on = s.enabled !== false;
       el.title = s.name + (on ? '' : ' (off)');
       el.classList.toggle('off', !on);
+      el.querySelector('.app-state').textContent = on ? '' : 'Off';
       // Refetched only when where it comes from changes, not on every toggle.
       const iconFrom = mcpHost(s);
       if (el.dataset.iconFrom !== iconFrom) {
@@ -4057,8 +3940,9 @@
         fillAppIcon(el.querySelector('.app-tile'), el, s);
       }
     }
-    if (changed) layoutIcons();
+    mcpEmpty.hidden = apps.length > 0;
     mcpWindow.sync();
+    markActiveNav();
   }
 
   const mcpWindow = (() => {
@@ -4280,9 +4164,6 @@
   })();
 
   syncThreadState();
-  layoutIcons();
-  // Web fonts change the label widths; settle once they're in.
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleLayout);
 
 </script>
 </body>

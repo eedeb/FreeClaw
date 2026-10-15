@@ -4,10 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>FreeClaw · Settings</title>
-  <meta name="theme-color" content="#0d0d0f"/>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
   <script>
     // Opened as a window on the chat desktop: the desktop is the navigation
     // there, so this page drops its own header.
@@ -15,200 +16,277 @@
   </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design tokens ──
+       One palette for every FreeClaw page, light or dark with the system.
+       The same block opens each template, so a framed page (Settings in its
+       window, say) always matches the desktop around it. */
     :root {
-      --bg: #0d0d0f; --surface: #141416; --border: #222228;
-      --accent: #c8f04a; --accent-dim: #a8cc38; --text: #e8e8ec;
-      --muted: #666672; --err: #e05555;
-      --radius: 4px; --mono: 'IBM Plex Mono', monospace; --sans: 'Syne', sans-serif;
+      color-scheme: light dark;
+      --bg: #0f1011;
+      --sidebar: #141517;
+      --surface: #17181a;
+      --surface-2: #1d1f22;
+      --surface-3: #25272b;
+      --border: #26282c;
+      --border-strong: #34373c;
+      --text: #ececee;
+      --text-2: #b0b2b8;
+      --muted: #7c7f87;
+      --accent: #c8f04a;
+      --accent-dim: #a8cc38;
+      --accent-ink: #141a05;
+      --accent-text: #c8f04a;
+      --accent-soft: rgba(200, 240, 74, 0.12);
+      --accent-line: rgba(200, 240, 74, 0.32);
+      --user-bg: #2b3a10;
+      --user-text: #f1f8de;
+      --agent-bg: #1d1f22;
+      --code-bg: #0b0c0d;
+      --code-text: #d5e8b5;
+      --err: #ef5f5f;
+      --err-soft: rgba(239, 95, 95, 0.12);
+      --warn: #e6b445;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+      --radius: 10px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-tap-highlight-color: transparent; }
-    body::before {
-      content: ''; position: fixed; inset: 0;
-      background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
-      background-size: 40px 40px; opacity: 0.35; pointer-events: none; z-index: 0;
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --sidebar: #f5f5f3;
+        --surface: #ffffff;
+        --surface-2: #f1f2ef;
+        --surface-3: #e7e8e4;
+        --border: #e5e6e1;
+        --border-strong: #d3d5ce;
+        --text: #18191b;
+        --text-2: #4b4f56;
+        --muted: #7d8189;
+        --accent-dim: #b4dc32;
+        --accent-ink: #1a2205;
+        --accent-text: #4b7a06;
+        --accent-soft: rgba(120, 170, 10, 0.12);
+        --accent-line: rgba(100, 150, 10, 0.35);
+        --user-bg: #e4f3bf;
+        --user-text: #1b2507;
+        --agent-bg: #f1f2ef;
+        --code-bg: #f6f7f4;
+        --code-text: #2d4a06;
+        --err: #d93f3f;
+        --err-soft: rgba(217, 63, 63, 0.09);
+        --warn: #b7800d;
+        --scrim: rgba(20, 22, 18, 0.28);
+        --shadow-sm: 0 1px 2px rgba(20, 22, 18, 0.08);
+        --shadow-lg: 0 24px 60px rgba(20, 22, 18, 0.16), 0 0 0 1px rgba(20, 22, 18, 0.07);
+      }
     }
-    .wrap { position: relative; z-index: 1; max-width: 760px; margin: 0 auto; padding: 20px 18px 80px; }
+
+
+    html, body { min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+    a { color: var(--accent-text); }
+    .wrap { position: relative; max-width: 760px; margin: 0 auto; padding: 24px 22px 80px; }
+    code, .mono { font-family: var(--mono); font-size: 0.9em; }
 
     header {
       display: flex; align-items: center; gap: 12px;
-      padding: 10px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 26px;
+      padding: 6px 0 18px; margin-bottom: 4px;
     }
-    header .logo { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; flex-shrink: 0; }
-    header .logo img { width: 100%; height: 100%; object-fit: cover; }
-    header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
-    header .sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+    header .logo { width: 36px; height: 36px; border-radius: 10px; overflow: hidden; flex-shrink: 0; box-shadow: 0 0 0 1px var(--border); }
+    header .logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    header h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+    header .sub { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
     header .spacer { flex: 1; }
     .nav-btn {
-      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
-      border-radius: var(--radius); padding: 7px 12px; font-family: var(--mono); font-size: 12px;
-      cursor: pointer; text-decoration: none; transition: all 0.15s;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--surface); border: 1px solid var(--border-strong); color: var(--text);
+      border-radius: 9px; padding: 7px 13px; font-size: 13px; font-weight: 550;
+      cursor: pointer; text-decoration: none; transition: background 0.15s;
     }
-    .nav-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+    .nav-btn:hover { background: var(--surface-2); }
 
-    section { margin-bottom: 34px; }
-    .sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
-    .sec-head h2 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
-    .sec-desc { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 14px; }
+    /* Jump to a section; the one on screen is lit. */
+    .sec-nav {
+      position: sticky; top: 0; z-index: 5;
+      display: flex; gap: 4px; overflow-x: auto;
+      margin: 0 -22px 22px; padding: 10px 22px;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      scrollbar-width: none;
+    }
+    .sec-nav::-webkit-scrollbar { display: none; }
+    .sec-nav a {
+      flex-shrink: 0;
+      padding: 6px 12px; border-radius: 999px;
+      font-size: 13px; font-weight: 550; color: var(--muted); text-decoration: none;
+      transition: background 0.15s, color 0.15s;
+    }
+    .sec-nav a:hover { color: var(--text); background: var(--surface-2); }
+    .sec-nav a.on { color: var(--text); background: var(--surface-3); }
+
+    section { margin-bottom: 40px; scroll-margin-top: 64px; }
+    .sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .sec-head h2 { font-size: 18px; font-weight: 650; letter-spacing: -0.015em; }
+    .sec-desc { font-size: 13.5px; color: var(--muted); line-height: 1.6; margin-bottom: 16px; }
+    .sec-desc b { color: var(--text-2); font-weight: 600; }
 
     .banner {
-      font-family: var(--mono); font-size: 11px; line-height: 1.6;
-      border: 1px solid var(--border); border-left: 2px solid var(--accent-dim);
-      background: var(--surface); border-radius: var(--radius); padding: 9px 12px; margin-bottom: 14px; color: var(--text);
+      font-size: 13px; line-height: 1.55;
+      border: 1px solid var(--accent-line);
+      background: var(--accent-soft); border-radius: 12px; padding: 11px 14px; margin-bottom: 14px; color: var(--text);
     }
 
-    .card-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
-    .empty { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 6px 0 12px; }
+    .card-list { display: flex; flex-direction: column; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--surface); }
+    .card-list:empty { display: none; }
+    .empty { font-size: 13px; color: var(--muted); padding: 14px 16px; }
     .card {
       display: flex; align-items: center; gap: 12px;
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px;
+      background: var(--surface); padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
     }
+    .card:last-child { border-bottom: none; }
     .card.draggable { cursor: grab; }
     .card.dragging { opacity: 0.4; }
-    .card.drag-over { border-top: 2px solid var(--accent); }
-    .drag-handle {
-      font-family: var(--mono); color: var(--muted); flex-shrink: 0; cursor: grab; padding: 0 2px;
-      user-select: none; touch-action: none;
-    }
+    .card.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
+    .drag-handle { color: var(--muted); flex-shrink: 0; cursor: grab; padding: 0 2px; user-select: none; touch-action: none; }
     .card-rank {
-      font-family: var(--mono); font-size: 10px; color: var(--muted); flex-shrink: 0; width: 14px; text-align: center;
+      font-size: 11px; font-weight: 600; color: var(--muted); flex-shrink: 0;
+      width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2);
+      display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums;
     }
     .card-info { min-width: 0; flex: 1; }
     .card-name { font-size: 14px; font-weight: 600; }
-    .card-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 3px; word-break: break-all; }
-    .card-sub .k { color: var(--accent-dim); }
-    .card.disabled { opacity: 0.5; }
-    .card.disabled .card-name::after { content: ' · off'; color: var(--muted); font-weight: 400; font-size: 11px; }
+    .card-sub { font-size: 12px; color: var(--muted); margin-top: 3px; word-break: break-all; line-height: 1.5; }
+    .card-sub .k { color: var(--accent-text); font-weight: 550; }
+    .card-sub a { color: var(--accent-text); }
+    .card.disabled .card-info { opacity: 0.55; }
+    .card.disabled .card-name::after { content: ' · off'; color: var(--muted); font-weight: 400; font-size: 12px; }
 
+    /* iOS-style switch. */
     .toggle {
-      appearance: none; -webkit-appearance: none; width: 30px; height: 17px; border-radius: 9px;
-      background: var(--border); position: relative; cursor: pointer; flex-shrink: 0; transition: background 0.15s;
+      appearance: none; -webkit-appearance: none; width: 38px; height: 22px; border-radius: 999px;
+      background: var(--surface-3); position: relative; cursor: pointer; flex-shrink: 0; transition: background 0.2s;
+      border: none; padding: 0;
     }
-    .toggle::before { content: ''; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--muted); transition: transform 0.15s, background 0.15s; }
-    .toggle:checked { background: var(--accent-dim); }
-    .toggle:checked::before { transform: translateX(13px); background: var(--accent); }
+    .toggle::before {
+      content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+      background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); transition: transform 0.2s;
+    }
+    .toggle:checked { background: #34c759; }
+    .toggle:checked::before { transform: translateX(16px); }
+    .toggle:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
     .del {
-      background: none; border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius);
-      padding: 5px 9px; font-family: var(--mono); font-size: 10px; cursor: pointer; flex-shrink: 0; transition: all 0.15s;
+      background: none; border: 1px solid var(--border-strong); color: var(--text-2); border-radius: 8px;
+      padding: 5px 11px; font-size: 12.5px; font-weight: 550; cursor: pointer; flex-shrink: 0; transition: all 0.15s;
     }
-    .del:hover { border-color: rgba(224,85,85,0.5); color: var(--err); }
-    .del.confirm { border-color: rgba(224,85,85,0.5); color: var(--err); }
+    .del:hover, .del.confirm { border-color: var(--err); color: var(--err); background: var(--err-soft); }
 
-    .form { display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius); padding: 13px; }
-    .form-label { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-    .form input {
-      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
-      padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
+    .form { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+    .form-label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+    .form input, .modal input, .env-row input, .form select, .who select {
+      background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px;
+      padding: 9px 12px; font-family: var(--sans); font-size: 14px; width: 100%;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .form input:focus { outline: none; border-color: var(--accent-dim); }
-    .form select {
-      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
-      padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
+    .form input:focus, .modal input:focus, .env-row input:focus, .form select:focus, .who select:focus {
+      outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-soft);
     }
-    .form select:focus { outline: none; border-color: var(--accent-dim); }
+    input::placeholder { color: var(--muted); }
     /* "Enabled for: [user]" — the row that says whose switches the list below
-       belongs to. Sits outside .form (it isn't part of adding anything), so it
-       restates the select styling rather than inheriting it. */
-    .who { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; flex-wrap: wrap; }
-    .who select {
-      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
-      padding: 6px 9px; font-family: var(--mono); font-size: 12px;
-    }
-    .who select:focus { outline: none; border-color: var(--accent-dim); }
-    .who .note { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+       belongs to. */
+    .who { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .who select { width: auto; padding: 6px 10px; font-size: 13px; }
+    .who .note { font-size: 12.5px; color: var(--muted); }
 
-    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
 
-    /* A labelled switch inside a form. The card .toggle above needs its sizing
-       restated here: `.form input` is the more specific selector of the two and
-       would otherwise stretch it to the full row width. */
-    .form-check { display: flex; align-items: center; gap: 10px; }
-    .form-check .toggle {
-      width: 30px; height: 17px; padding: 0; border: none;
-      border-radius: 9px; background: var(--border); flex-shrink: 0;
-    }
-    .form-check .toggle:checked { background: var(--accent-dim); }
-    .form-check .form-label { text-transform: none; letter-spacing: 0; line-height: 1.5; }
+    /* A labelled switch inside a form. `.form input` is the more specific
+       selector, so the switch's own sizing is restated here. */
+    .form-check { display: flex; align-items: flex-start; gap: 12px; }
+    .form-check .toggle { width: 38px; height: 22px; padding: 0; border: none; border-radius: 999px; background: var(--surface-3); margin-top: 1px; }
+    .form-check .toggle:checked { background: #34c759; }
+    .form-check .toggle:focus { box-shadow: none; }
+    .form-check .form-label { font-weight: 400; color: var(--muted); line-height: 1.55; font-size: 12.5px; }
     .form-check .form-label b { color: var(--text); font-weight: 600; }
 
     button.primary {
-      background: var(--accent); color: #0d0d0f; border: none; border-radius: var(--radius);
-      padding: 10px 14px; font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; transition: transform 0.1s, opacity 0.15s;
+      background: var(--accent); color: var(--accent-ink); border: none; border-radius: 9px;
+      padding: 10px 16px; font-family: var(--sans); font-weight: 600; font-size: 14px; cursor: pointer;
+      transition: transform 0.1s, opacity 0.15s, background 0.15s;
     }
+    button.primary:hover { background: var(--accent-dim); }
     button.primary:active { transform: scale(0.98); }
     button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
     button.ghost {
-      background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
-      padding: 10px 14px; font-family: var(--sans); font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s;
+      background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 9px;
+      padding: 10px 16px; font-family: var(--sans); font-weight: 600; font-size: 14px; cursor: pointer; transition: all 0.15s;
     }
-    button.ghost:hover { border-color: var(--accent-dim); }
+    button.ghost:hover { background: var(--surface-2); }
+    button.ghost.confirm { border-color: var(--err); color: var(--err); }
 
-    .msg { font-family: var(--mono); font-size: 11px; margin-top: 2px; display: none; line-height: 1.5; }
-    .msg.ok { color: var(--accent); display: block; } .msg.err { color: var(--err); display: block; }
+    .msg { font-size: 13px; margin-top: 2px; display: none; line-height: 1.5; }
+    .msg.ok { color: var(--accent-text); display: block; } .msg.err { color: var(--err); display: block; }
 
-    .env-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
-    .env-row label { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    #env-fields { display: flex; flex-direction: column; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+    #env-fields:empty { display: none; }
+    .env-row { display: flex; flex-direction: column; gap: 6px; }
+    .env-row label { font-size: 13px; font-weight: 550; color: var(--text-2); }
 
-    .restart-box { border: 1px solid var(--border); border-left: 2px solid var(--err); background: var(--surface); border-radius: var(--radius); padding: 15px; }
-    .restart-box p { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
-    #restart-status { font-family: var(--mono); font-size: 11px; color: var(--accent-dim); margin-top: 10px; display: none; }
-    #restart-status.show { display: block; }
-    #restart-status.err { color: var(--err); }
-
-    /* Update — same shell as the restart box, accented rather than warned:
-       this is the routine action, restarting is the blunt one. */
+    .restart-box, .update-box { border: 1px solid var(--border); background: var(--surface); border-radius: 14px; padding: 16px; }
+    .restart-box p, .update-box p { font-size: 13.5px; color: var(--muted); line-height: 1.6; margin-bottom: 14px; }
+    #restart-status, #update-status { font-size: 13px; color: var(--accent-text); margin-top: 10px; display: none; }
+    #restart-status.show, #update-status.show { display: block; }
+    #restart-status.err, #update-status.err { color: var(--err); }
     #update-section { display: none; }
     #update-section.show { display: block; }
-    .update-box { border: 1px solid var(--border); border-left: 2px solid var(--accent); background: var(--surface); border-radius: var(--radius); padding: 15px; }
-    .update-box p { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
-    #update-status { font-family: var(--mono); font-size: 11px; color: var(--accent-dim); margin-top: 10px; display: none; }
-    #update-status.show { display: block; }
-    #update-status.err { color: var(--err); }
     /* The update log. Fixed height and pinned to the bottom so a long pip run
        does not push the rest of the page around while it scrolls. */
     #update-log {
       display: none; margin-top: 12px; padding: 10px 12px;
       max-height: 260px; overflow-y: auto;
-      background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-      font-family: var(--mono); font-size: 10.5px; line-height: 1.65;
-      color: var(--muted); white-space: pre-wrap; word-break: break-word;
+      background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+      font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
+      color: var(--text-2); white-space: pre-wrap; word-break: break-word;
     }
     #update-log.show { display: block; }
 
     .sec-head .spacer { flex: 1; }
     button.small {
-      background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
-      padding: 6px 11px; font-family: var(--mono); font-weight: 500; font-size: 11px; cursor: pointer; transition: all 0.15s;
+      background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px;
+      padding: 6px 12px; font-family: var(--sans); font-weight: 550; font-size: 13px; cursor: pointer; transition: all 0.15s;
     }
-    button.small:hover { border-color: var(--accent-dim); color: var(--accent); }
+    button.small:hover { background: var(--surface-2); }
 
     .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
+      position: fixed; inset: 0; background: var(--scrim); z-index: 100;
       display: flex; align-items: center; justify-content: center; padding: 20px;
+      backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
     }
     .modal-overlay[hidden] { display: none; }
     .modal {
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-      padding: 18px; max-width: 420px; width: 100%; max-height: 90vh; overflow-y: auto;
-      display: flex; flex-direction: column; gap: 9px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+      padding: 20px; max-width: 440px; width: 100%; max-height: 90vh; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow-lg);
     }
     .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
-    .modal-head h3 { font-size: 16px; font-weight: 700; }
+    .modal-head h3 { font-size: 17px; font-weight: 650; }
     .modal-close {
-      background: none; border: none; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer;
+      background: var(--surface-2); border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer;
+      width: 28px; height: 28px; border-radius: 50%;
     }
     .modal-close:hover { color: var(--text); }
-    .modal-desc { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin-bottom: 4px; }
-    .modal .form-label a { color: var(--accent-dim); text-decoration: none; }
+    .modal-desc { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 4px; }
+    .modal .form-label a { color: var(--accent-text); text-decoration: none; }
     .modal .form-label a:hover { text-decoration: underline; }
-    .modal input {
-      background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius);
-      padding: 9px 11px; font-family: var(--mono); font-size: 12px; width: 100%;
-    }
-    .modal input:focus { outline: none; border-color: var(--accent-dim); }
-    html.embedded { color-scheme: dark; }
+    .credits { font-size: 12px; color: var(--muted); text-align: center; padding: 0 0 30px; }
+    .credits a { color: var(--accent-text); text-decoration: none; }
     html.embedded header { display: none; }
-    html.embedded .wrap { padding-top: 14px; }
+    html.embedded .wrap { padding-top: 0; }
   </style>
 </head>
 <body>
@@ -217,19 +295,30 @@
     <div class="logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
     <div>
       <h1>Settings</h1>
-      <div class="sub">providers · vision · jev · mcp · approvals · environment</div>
+      <div class="sub">Models, apps, approvals and this server</div>
     </div>
     <div class="spacer"></div>
-    <a class="nav-btn" href="/">⌂ home</a>
+    <a class="nav-btn" href="/">Home</a>
   </header>
 
+  <nav class="sec-nav" aria-label="Sections">
+    <a href="#providers">Providers</a>
+    <a href="#vision">Vision</a>
+    <a href="#jev">Jev</a>
+    <a href="#mcp">MCP servers</a>
+    <a href="#approvals">Approvals</a>
+    <a href="#environment">Environment</a>
+    <a href="#update-section" id="sec-nav-update" hidden>Update</a>
+    <a href="#restart">Restart</a>
+  </nav>
+
   <!-- ── PROVIDERS ── -->
-  <section>
-    <div class="sec-head"><h2>Providers</h2><div class="spacer"></div><button id="quick-setup-btn" class="small" type="button">⚡ quick setup</button></div>
+  <section id="providers">
+    <div class="sec-head"><h2>Providers</h2><div class="spacer"></div><button id="quick-setup-btn" class="small" type="button">⚡ Quick setup</button></div>
     <div class="sec-desc">
       Any OpenAI-compatible chat endpoint. The agent tries your enabled providers in order, top to bottom,
       falling through to the next if one fails or is rate-limited. Free option:
-      <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="color:var(--accent-dim)">get a Groq API key</a>.
+      <a href="https://console.groq.com/keys" target="_blank" rel="noopener" >get a Groq API key</a>.
       Prompt caching needs no setup — FreeClaw sends what each model requires and drops it for any endpoint
       that objects.
     </div>
@@ -266,9 +355,9 @@
   </section>
 
   <!-- ── VISION MODEL ── -->
-  <section>
-    <div class="sec-head"><h2>Vision Model</h2></div>
-    <div class="sec-desc">Which connected provider handles <span style="font-family:var(--mono)">get_image_description</span> — describing images the agent is asked about. The provider needs a model set in Providers above.</div>
+  <section id="vision">
+    <div class="sec-head"><h2>Vision model</h2></div>
+    <div class="sec-desc">Which connected provider handles <span class="mono">get_image_description</span> — describing images the agent is asked about. The provider needs a model set in Providers above.</div>
     <div class="form">
       <select id="vision-select"></select>
       <button id="vision-save" class="primary">Save vision model</button>
@@ -277,9 +366,9 @@
   </section>
 
   <!-- ── JEV ── -->
-  <section>
+  <section id="jev">
     <div class="sec-head"><h2>Jev</h2></div>
-    <div class="sec-desc">Optional. With a key from <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener" style="color:var(--accent-dim)">console.typesafe.ai</a>, Jev reads each message first and sends the model only the tools, earlier messages and memory it needs — fewer tokens per turn. Leave it blank and FreeClaw routes messages with its built-in classifier.</div>
+    <div class="sec-desc">Optional. With a key from <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener" >console.typesafe.ai</a>, Jev reads each message first and sends the model only the tools, earlier messages and memory it needs — fewer tokens per turn. Leave it blank and FreeClaw routes messages with its built-in classifier.</div>
     <div class="form">
       <input id="jev-key" type="password" placeholder="Jev API key" autocomplete="new-password" spellcheck="false"/>
       <button id="jev-save" class="primary">Save key</button>
@@ -290,10 +379,10 @@
   </section>
 
   <!-- ── MCP SERVERS ── -->
-  <section>
-    <div class="sec-head"><h2>MCP Servers</h2></div>
+  <section id="mcp">
+    <div class="sec-head"><h2>MCP servers</h2></div>
     <div class="sec-desc">
-      Connect external <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" style="color:var(--accent-dim)">Model Context Protocol</a> servers to give the agent new tools.
+      Connect external <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" >Model Context Protocol</a> servers to give the agent new tools.
       <b>Remote (HTTP)</b> talks to a hosted server over a URL. <b>Local (stdio)</b> runs a command on this
       machine and speaks to it over its stdin/stdout — which is how most published MCP servers ship.
       Adding and removing a server covers the whole install; <b>switching one on is per user</b>, so each
@@ -323,7 +412,7 @@
         <div class="sec-desc" style="margin:6px 0 0">
           Runs on the machine FreeClaw runs on, so the runtime it needs (node/npx, uv/uvx, python) has to be
           installed there. Wrap paths containing spaces in
-          double quotes. Secrets go in <span style="font-family:var(--mono)">.env</span> under Environment
+          double quotes. Secrets go in <span class="mono">.env</span> under Environment
           below; the process inherits them.
         </div>
       </div>
@@ -333,13 +422,13 @@
   </section>
 
   <!-- ── BASH APPROVALS ── -->
-  <section>
-    <div class="sec-head"><h2>Bash Approvals</h2></div>
+  <section id="approvals">
+    <div class="sec-head"><h2>Shell approvals</h2></div>
     <div class="sec-desc">
       Every shell command the agent tries to run is put to you for approval first — the agent is never asked
       and can't approve itself. Commands you marked <b>always allow</b> are listed here and run without
       prompting; remove one to go back to being asked. These are saved per user, for
-      <span id="ba-user" style="font-family:var(--mono);color:var(--accent-dim)">the current user</span>.
+      <span id="ba-user" class="mono">the current user</span>.
     </div>
     <div id="ba-list" class="card-list"></div>
     <button id="ba-clear" class="ghost" style="display:none">Remove all rules</button>
@@ -347,9 +436,9 @@
   </section>
 
   <!-- ── ENVIRONMENT ── -->
-  <section>
+  <section id="environment">
     <div class="sec-head"><h2>Environment</h2></div>
-    <div class="sec-desc">Login password, session secret, and other <span style="font-family:var(--mono)">.env</span> settings.</div>
+    <div class="sec-desc">Login password, session secret, and other <span class="mono">.env</span> settings.</div>
     <div id="env-fields"></div>
     <button id="env-save" class="primary">Save environment</button>
     <div id="env-msg" class="msg"></div>
@@ -371,11 +460,11 @@
   </section>
 
   <!-- ── RESTART ── -->
-  <section>
-    <div class="sec-head"><h2>Restart Server</h2></div>
+  <section id="restart">
+    <div class="sec-head"><h2>Restart server</h2></div>
     <div class="restart-box">
       <p>Most changes above apply on the next message with no restart. A restart is only needed for a new
-      session secret, an updated dependency, or code pulled by <span style="font-family:var(--mono)">update.sh</span>.
+      session secret, an updated dependency, or code pulled by <span class="mono">update.sh</span>.
       The server goes down for a few seconds and this page reloads itself when it's back.</p>
       <button id="restart-btn" class="ghost">Restart now</button>
       <div id="restart-status"></div>
@@ -392,7 +481,7 @@
     </div>
     <div class="modal-desc">
       Paste in free API keys and this adds Groq, NVIDIA NIM, and OpenRouter as chat
-      providers, plus an NVIDIA NIM vision model — all saved to your <span style="font-family:var(--mono)">.env</span>.
+      providers, plus an NVIDIA NIM vision model — all saved to your <span class="mono">.env</span>.
     </div>
     <div class="form-label">Groq API key — <a href="https://console.groq.com/keys" target="_blank" rel="noopener">get one</a></div>
     <input id="qs-groq" type="password" placeholder="gsk_…" autocomplete="new-password" spellcheck="false"/>
@@ -406,9 +495,9 @@
 </div>
 
 <!-- --CREDITS -- -->
-<div class="sec-desc">
-      Made by Elliot DeBruin - 
-      <a href="https://eedeb.dev" target="_blank" rel="noopener" style="color:var(--accent-dim)">eedeb.dev</a>
+<div class="credits">
+      Made by Elliot DeBruin ·
+      <a href="https://eedeb.dev" target="_blank" rel="noopener">eedeb.dev</a>
 </div>
   
 <script>
@@ -854,7 +943,7 @@
       // The agent's browser starts signed out of everything, so a site behind
       // a login is a wall until someone signs it in there. Only worth offering
       // once Chromium is actually there — that browser needs it too.
-      else if (b.status === 'ready') bits.push('<a href="/browser" style="color:var(--accent)">open browser →</a>');
+      else if (b.status === 'ready') bits.push('<a href="/browser">open browser →</a>');
     }
     return bits.join(' · ');
   }
@@ -1105,6 +1194,7 @@
       if (!info.supported) return;               // stays hidden (no git checkout, no updater)
       updateKind = info.kind;
       section.classList.add('show');
+      document.getElementById('sec-nav-update').hidden = false;
       const version = info.version ? `You're on v${info.version}. ` : '';
       blurb.textContent = updateKind === 'windows'
         ? `${version}Downloads the latest installer and runs it. FreeClaw closes while it installs, then comes back — your chats, files and settings are left alone.`
@@ -1218,6 +1308,33 @@
 
   // Initial load
   loadProviders().then(loadVisionModel); loadMcp(); loadBashApprovals(); loadEnv(); loadUpdate();
+
+  // ── Section bar ──
+  // Lights the section being read: the last one whose heading has passed
+  // under the bar.
+  (function () {
+    const links = [...document.querySelectorAll('.sec-nav a')];
+    const bar = document.querySelector('.sec-nav');
+    function spy() {
+      const line = bar.getBoundingClientRect().bottom + 24;
+      let current = links[0];
+      for (const a of links) {
+        const sec = !a.hidden && document.querySelector(a.getAttribute('href'));
+        if (sec && sec.getBoundingClientRect().top <= line) current = a;
+      }
+      // At the very bottom the last sections can't scroll up to the bar.
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        current = links.filter(a => !a.hidden).pop();
+      }
+      links.forEach(a => a.classList.toggle('on', a === current));
+      if (current && current.scrollIntoView && bar.scrollWidth > bar.clientWidth) {
+        bar.scrollTo({ left: current.offsetLeft - 22, behavior: 'smooth' });
+      }
+    }
+    window.addEventListener('scroll', spy, { passive: true });
+    window.addEventListener('resize', spy);
+    spy();
+  })();
 </script>
 <script>
   // Inside a desktop window: raise the window on any press, and hand links to

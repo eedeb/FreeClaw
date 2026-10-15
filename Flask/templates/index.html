@@ -6,224 +6,282 @@
   <title>FreeClaw</title>
 
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
   <meta name="apple-mobile-web-app-title" content="FreeClaw"/>
   <meta name="mobile-web-app-capable" content="yes"/>
-  <meta name="theme-color" content="#0d0d0f"/>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
   <meta name="description" content="An AI agent that doesn't burn your money."/>
 
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
 
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* ── Design tokens ──
+       One palette for every FreeClaw page, light or dark with the system.
+       The same block opens each template, so a framed page (Settings in its
+       window, say) always matches the desktop around it. */
     :root {
-      --bg: #0d0d0f;
-      --surface: #141416;
-      --border: #222228;
+      color-scheme: light dark;
+      --bg: #0f1011;
+      --sidebar: #141517;
+      --surface: #17181a;
+      --surface-2: #1d1f22;
+      --surface-3: #25272b;
+      --border: #26282c;
+      --border-strong: #34373c;
+      --text: #ececee;
+      --text-2: #b0b2b8;
+      --muted: #7c7f87;
       --accent: #c8f04a;
       --accent-dim: #a8cc38;
-      --text: #e8e8ec;
-      --muted: #666672;
-      --radius: 4px;
-      --mono: 'IBM Plex Mono', monospace;
-      --sans: 'Syne', sans-serif;
+      --accent-ink: #141a05;
+      --accent-text: #c8f04a;
+      --accent-soft: rgba(200, 240, 74, 0.12);
+      --accent-line: rgba(200, 240, 74, 0.32);
+      --user-bg: #2b3a10;
+      --user-text: #f1f8de;
+      --agent-bg: #1d1f22;
+      --code-bg: #0b0c0d;
+      --code-text: #d5e8b5;
+      --err: #ef5f5f;
+      --err-soft: rgba(239, 95, 95, 0.12);
+      --warn: #e6b445;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+      --radius: 10px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --sidebar: #f5f5f3;
+        --surface: #ffffff;
+        --surface-2: #f1f2ef;
+        --surface-3: #e7e8e4;
+        --border: #e5e6e1;
+        --border-strong: #d3d5ce;
+        --text: #18191b;
+        --text-2: #4b4f56;
+        --muted: #7d8189;
+        --accent-dim: #b4dc32;
+        --accent-ink: #1a2205;
+        --accent-text: #4b7a06;
+        --accent-soft: rgba(120, 170, 10, 0.12);
+        --accent-line: rgba(100, 150, 10, 0.35);
+        --user-bg: #e4f3bf;
+        --user-text: #1b2507;
+        --agent-bg: #f1f2ef;
+        --code-bg: #f6f7f4;
+        --code-text: #2d4a06;
+        --err: #d93f3f;
+        --err-soft: rgba(217, 63, 63, 0.09);
+        --warn: #b7800d;
+        --scrim: rgba(20, 22, 18, 0.28);
+        --shadow-sm: 0 1px 2px rgba(20, 22, 18, 0.08);
+        --shadow-lg: 0 24px 60px rgba(20, 22, 18, 0.16), 0 0 0 1px rgba(20, 22, 18, 0.07);
+      }
     }
 
+
     html, body {
-      height: 100%;
-      background: var(--bg);
+      min-height: 100%;
+      background: var(--sidebar);
       color: var(--text);
       font-family: var(--sans);
       font-size: 15px;
+      -webkit-font-smoothing: antialiased;
       -webkit-tap-highlight-color: transparent;
     }
 
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background-image:
-        linear-gradient(var(--border) 1px, transparent 1px),
-        linear-gradient(90deg, var(--border) 1px, transparent 1px);
-      background-size: 40px 40px;
-      opacity: 0.35;
-      pointer-events: none;
-      z-index: 0;
-    }
-
     #app {
-      position: relative;
-      z-index: 1;
-      max-width: 640px;
+      max-width: 520px;
       margin: 0 auto;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      padding: env(safe-area-inset-top) env(safe-area-inset-right) 24px env(safe-area-inset-left);
+      padding: env(safe-area-inset-top) calc(16px + env(safe-area-inset-right)) 24px calc(16px + env(safe-area-inset-left));
     }
 
     header {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 18px 16px 14px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(13,13,15,0.97);
-      backdrop-filter: blur(16px);
+      padding: 18px 0 0;
     }
-    .header-icon { width: 30px; height: 30px; border-radius: 7px; overflow: hidden; border: 1px solid rgba(200,240,74,0.2); flex-shrink: 0; }
+    .header-icon { width: 28px; height: 28px; border-radius: 8px; overflow: hidden; flex-shrink: 0; box-shadow: var(--shadow-sm); }
     .header-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .header-title h1 {
-      font-size: 13px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; line-height: 1;
-    }
-    .header-tagline { font-family: var(--mono); font-size: 9px; color: var(--muted); letter-spacing: 0.03em; }
+    .header-title h1 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.2; }
+    .header-tagline { display: none; }
     header a#logout-link {
-      margin-left: auto;
-      font-family: var(--mono); font-size: 10px; color: var(--muted); text-decoration: none;
-      border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px;
+      font-size: 13px; font-weight: 550; color: var(--text-2); text-decoration: none;
+      padding: 6px 10px; border-radius: 8px;
     }
+    header a#logout-link:hover { background: var(--surface-3); color: var(--text); }
 
     /* ── API toggle chip ── */
     #api-toggle-btn {
-      display: flex; align-items: center; gap: 5px;
-      background: none;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
-      font-family: var(--mono); font-size: 10px;
-      padding: 6px 10px;
+      margin-left: auto;
+      display: flex; align-items: center; gap: 7px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      color: var(--text-2);
+      font-family: var(--sans); font-size: 12.5px; font-weight: 550;
+      padding: 5px 11px;
       cursor: pointer;
       flex-shrink: 0;
-      transition: border-color 0.15s, color 0.15s;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
     }
-    #api-toggle-btn.enabled { border-color: rgba(200,240,74,0.35); color: var(--accent); }
-    .api-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background 0.15s; }
-    #api-toggle-btn.enabled .api-dot { background: var(--accent); }
+    #api-toggle-btn:hover { background: var(--surface-2); }
+    #api-toggle-btn.enabled { border-color: var(--accent-line); color: var(--accent-text); background: var(--accent-soft); }
+    .api-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background 0.15s; }
+    #api-toggle-btn.enabled .api-dot { background: #34c759; }
 
-    main { padding: 18px 16px 40px; }
+    main { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 48px 0 60px; }
 
-    .section-label {
-      font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
-      color: var(--muted); margin: 22px 0 10px;
+    .hello { text-align: center; margin-bottom: 26px; }
+    .hello img { width: 64px; height: 64px; border-radius: 18px; box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18), 0 0 0 1px var(--border); margin-bottom: 16px; }
+    .hello h2 { font-size: 26px; font-weight: 700; letter-spacing: -0.025em; }
+    .hello p { font-size: 14.5px; color: var(--muted); margin-top: 6px; }
+
+    .section-label { display: none; }
+
+    /* ── Profiles: one grouped list ── */
+    .profiles {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+      overflow: hidden;
     }
-    .section-label:first-child { margin-top: 0; }
-
-    /* ── Users grid ── */
-    #users-grid { display: flex; flex-direction: column; gap: 8px; }
+    #users-grid { display: flex; flex-direction: column; }
 
     .user-card {
-      display: flex; align-items: center; gap: 12px;
-      padding: 13px 14px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--surface);
+      display: flex; align-items: center; gap: 13px;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--border);
       cursor: pointer;
-      transition: border-color 0.15s, transform 0.1s;
+      transition: background 0.12s;
     }
-    .user-card:active { transform: scale(0.99); }
+    .user-card:hover { background: var(--surface-2); }
+    .user-card:active { background: var(--surface-3); }
     .user-avatar {
-      width: 34px; height: 34px; border-radius: 50%;
-      background: #1a1f10; border: 1px solid #2a3318; color: var(--accent);
+      width: 40px; height: 40px; border-radius: 50%;
+      background: var(--accent); color: var(--accent-ink);
       display: flex; align-items: center; justify-content: center;
-      font-family: var(--mono); font-weight: 600; font-size: 13px; flex-shrink: 0;
+      font-weight: 700; font-size: 14px; flex-shrink: 0;
     }
-    .user-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-    .user-name { font-size: 14px; font-weight: 600; }
-    .user-card .chevron { margin-left: auto; color: var(--muted); font-size: 12px; flex-shrink: 0; }
+    .user-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+    .user-name { font-size: 15px; font-weight: 600; }
+    .user-card .chevron { color: var(--muted); font-size: 18px; flex-shrink: 0; line-height: 1; }
     /* A sub-agent: working for one of the users above until it reports back. */
-    .user-card.subagent { border-style: dashed; }
-    .user-card.subagent .user-avatar { color: var(--muted); background: var(--surface); border-color: var(--border); }
-    .user-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .user-card.subagent .user-avatar { color: var(--text-2); background: var(--surface-3); }
+    .user-sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sub-tag {
-      display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; vertical-align: 1px;
-      font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: 0.06em;
-      text-transform: uppercase; color: var(--accent);
+      display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; vertical-align: 1px;
+      font-size: 11px; font-weight: 600; color: var(--accent-text);
+      padding: 1px 8px; border-radius: 999px; background: var(--accent-soft);
     }
-    .sub-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: sub-pulse 1.4s ease-in-out infinite; }
+    .sub-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-text); animation: sub-pulse 1.4s ease-in-out infinite; }
     @keyframes sub-pulse { 50% { opacity: 0.25; } }
     @media (prefers-reduced-motion: reduce) { .sub-dot { animation: none; } }
 
+    /* Out of the way until the row is pointed at — always there on touch. */
     .user-delete-btn {
       background: none;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 10px;
-      padding: 5px 8px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      color: var(--text-2);
+      font-family: var(--sans);
+      font-size: 12.5px;
+      font-weight: 550;
+      padding: 5px 10px;
       cursor: pointer;
       flex-shrink: 0;
-      transition: border-color 0.15s, color 0.15s;
+      opacity: 0;
+      transition: opacity 0.15s, border-color 0.15s, color 0.15s, background 0.15s;
     }
+    .user-card:hover .user-delete-btn, .user-delete-btn:focus-visible, .user-delete-btn.confirm { opacity: 1; }
+    @media (hover: none) { .user-delete-btn { opacity: 1; } }
+    .user-delete-btn:hover, .user-delete-btn.confirm { border-color: var(--err); color: var(--err); background: var(--err-soft); }
     .user-delete-btn:active { transform: scale(0.95); }
-    .user-delete-btn.confirm { border-color: rgba(224,85,85,0.5); color: #e05555; }
 
     #add-user-card {
-      display: flex; align-items: center; gap: 10px;
-      padding: 13px 14px;
-      border: 1px dashed var(--border);
-      border-radius: var(--radius);
-      color: var(--muted);
+      display: flex; align-items: center; gap: 13px;
+      padding: 13px 16px;
+      color: var(--accent-text);
       cursor: pointer;
-      font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em;
+      font-size: 14.5px; font-weight: 600;
+      transition: background 0.12s;
     }
-    #add-user-card:active { border-color: var(--accent-dim); color: var(--accent); }
+    #add-user-card::before {
+      content: '+';
+      width: 40px; height: 40px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--accent-soft); font-size: 22px; font-weight: 400;
+    }
+    #add-user-card:hover { background: var(--surface-2); }
 
     #add-user-form {
       display: none;
       gap: 8px;
-      margin-top: 8px;
+      padding: 12px 16px;
     }
     #add-user-form.visible { display: flex; }
     #add-user-input {
       flex: 1;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
+      min-width: 0;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
       color: var(--text);
       font-family: var(--sans);
-      font-size: 14px;
+      font-size: 15px;
       padding: 10px 12px;
       outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    #add-user-input:focus { border-color: var(--accent-dim); }
+    #add-user-input:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-soft); }
     #add-user-submit {
       background: var(--accent);
       border: none;
-      border-radius: var(--radius);
-      color: #0d0d0f;
-      font-weight: 700;
-      font-size: 12px;
-      padding: 0 16px;
+      border-radius: 10px;
+      color: var(--accent-ink);
+      font-family: var(--sans);
+      font-weight: 650;
+      font-size: 14px;
+      padding: 0 18px;
       cursor: pointer;
     }
-    #user-form-error { font-family: var(--mono); font-size: 11px; color: #e05555; margin-top: 6px; display: none; }
+    #add-user-submit:hover { background: var(--accent-dim); }
+    #user-form-error { font-size: 13px; color: var(--err); padding: 0 16px 12px; display: none; }
 
-    .empty-hint {
-      font-family: var(--mono); font-size: 11px; color: var(--muted);
-      text-align: center; padding: 20px 0;
-    }
+    .empty-hint { font-size: 13.5px; color: var(--muted); text-align: center; padding: 22px 16px; border-bottom: 1px solid var(--border); }
 
     /* ── Settings link ── */
     #settings-link {
-      display: flex; align-items: center; gap: 8px;
-      margin: 28px 0 0;
-      padding: 13px 14px;
+      display: flex; align-items: center; gap: 12px;
+      margin: 14px 0 0;
+      padding: 13px 16px;
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: 14px;
       background: var(--surface);
-      color: var(--muted);
-      font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em;
+      color: var(--text);
+      font-size: 14.5px; font-weight: 550;
       text-decoration: none;
-      transition: border-color 0.15s, color 0.15s;
+      transition: background 0.12s;
     }
-    #settings-link:hover, #settings-link:active { border-color: var(--accent-dim); color: var(--accent); }
-    #settings-link .gear { font-size: 14px; }
-    #settings-link .chevron { margin-left: auto; font-size: 12px; }
+    #settings-link:hover { background: var(--surface-2); }
+    #settings-link .gear { width: 20px; height: 20px; color: var(--muted); }
+    #settings-link small { display: block; font-size: 12.5px; font-weight: 400; color: var(--muted); }
+    #settings-link .chevron { margin-left: auto; font-size: 18px; color: var(--muted); line-height: 1; }
   </style>
 </head>
 <body>
@@ -237,23 +295,31 @@
     <button id="api-toggle-btn" type="button" title="Toggle OpenAI-compatible API">
       <span class="api-dot"></span>API
     </button>
-    <a id="logout-link" href="/logout">log out</a>
+    <a id="logout-link" href="/logout">Log out</a>
   </header>
 
   <main>
-    <div class="section-label">Users</div>
-    <div id="users-error" class="empty-hint" style="display:none; color:#e05555;"></div>
-    <div id="users-grid"></div>
-
-    <div id="add-user-card">+ Add a new user</div>
-    <div id="add-user-form">
-      <input id="add-user-input" placeholder="Name, e.g. Elliot" maxlength="40"/>
-      <button id="add-user-submit">Create</button>
+    <div class="hello">
+      <img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/>
+      <h2>Who's using FreeClaw?</h2>
+      <p>Everyone gets their own agent, chats and files.</p>
     </div>
-    <div id="user-form-error"></div>
+    <div class="section-label">Users</div>
+    <div class="profiles">
+      <div id="users-error" class="empty-hint" style="display:none; color:var(--err);"></div>
+      <div id="users-grid"></div>
+
+      <div id="add-user-card">Add a person</div>
+      <div id="add-user-form">
+        <input id="add-user-input" placeholder="Name, e.g. Elliot" maxlength="40"/>
+        <button id="add-user-submit">Create</button>
+      </div>
+      <div id="user-form-error"></div>
+    </div>
 
     <a id="settings-link" href="/settings">
-      <span class="gear">⚙</span> Settings — providers, MCP &amp; environment
+      <svg class="gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+      <span>Settings<small>Providers, apps and environment</small></span>
       <span class="chevron">›</span>
     </a>
   </main>
@@ -327,7 +393,7 @@
         <div class="user-info">
           <div class="user-name">${escapeHtml(u.name)}</div>
         </div>
-        <button class="user-delete-btn" type="button">delete</button>
+        <button class="user-delete-btn" type="button">Delete</button>
         <div class="chevron">›</div>`;
       card.addEventListener('click', () => openUser(u.name));
 
@@ -336,12 +402,12 @@
         e.stopPropagation(); // don't open the chat we're deleting
         if (!delBtn.classList.contains('confirm')) {
           delBtn.classList.add('confirm');
-          delBtn.textContent = 'confirm?';
+          delBtn.textContent = 'Confirm?';
           // Revert back to "delete" if they don't follow through
           setTimeout(() => {
             if (delBtn.classList.contains('confirm')) {
               delBtn.classList.remove('confirm');
-              delBtn.textContent = 'delete';
+              delBtn.textContent = 'Delete';
             }
           }, 3000);
           return;
