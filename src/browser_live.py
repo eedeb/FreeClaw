@@ -117,6 +117,14 @@ def publish(user, proc, kind, params):
             feed.asked = 0.0
             feed.handbacks += 1
             _add(feed, "control", dict(result))
+        elif kind == "logins":
+            # The agent's browser cleared a site's bot check by itself; its jar
+            # is saved the way a hand-back's is.
+            _lock.release()
+            try:
+                _file_logins(user, params)
+            finally:
+                _lock.acquire()
         elif kind == "control":
             feed.control = {"held": True, "error": str(params.get("error") or "")}
             # Said once, to whoever is watching: not part of the state.

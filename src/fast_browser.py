@@ -96,6 +96,17 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
     # The page around it changes (the suggestions), so the repeat check
     # above doesn't see it.
     typed = set()
+    # What the browser said along the way (a site's bot check it cleared):
+    # passed on, since only this summary reaches the agent.
+    notes = []
+    raw_step = step
+
+    def step(args):
+        page = raw_step(args)
+        if page.get("note") and page["note"] not in notes:
+            notes.append(page["note"])
+        return page
+
     try:
         page = step({"action": "observe"})
     except Exception as e:                                   # noqa: BLE001
@@ -190,6 +201,7 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
     lines = [_ENDINGS[ending]]
     if done_so_far:
         lines.append("Did: " + "; ".join(done_so_far) + ".")
+    lines.extend(notes)
     lines.append(f"Now on: {page.get('title') or '(untitled)'} | {page.get('url') or ''}")
     logger.info("browser_do %r: %s after %d steps in %.1fs", goal[:80], ending, len(done_so_far),
                 time.monotonic() - started)

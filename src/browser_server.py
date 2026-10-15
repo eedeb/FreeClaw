@@ -351,6 +351,28 @@ CHECK_COOKIE_PREFIXES = ("incap_ses_", "visid_incap_", "nlbi_")
 def is_check_cookie(name):
     return name in CHECK_COOKIES or name.startswith(CHECK_COOKIE_PREFIXES)
 
+
+# The page a site's bot protection shows once it has locked a browser out — a
+# refusal, not a puzzle for the person — after which the agent's browser
+# clears that site's check by itself (Tools._unlock), as the Browser app's
+# "Clear this site's bot check" does. ESPN's (AWS WAF) is the one seen for
+# real; the others are those services' standard block pages.
+LOCKOUT_PATTERNS = (
+    re.compile(r"max challenge attempts exceeded", re.I),                  # AWS WAF
+    re.compile(r"sorry, you have been blocked", re.I),                     # Cloudflare
+    re.compile(r"access denied.{0,400}reference\s*#\s*\d", re.I | re.S),   # Akamai
+    re.compile(r"request unsuccessful\.\s*incapsula incident id", re.I),   # Imperva
+)
+# Block pages are a line or two. A page with more text than this is real
+# content that merely mentions one of the phrases.
+LOCKOUT_TEXT_LIMIT = 3000
+LOCKOUT_JS = ("() => [document.title || '', (document.body ? document.body.innerText : '')"
+              f".slice(0, {LOCKOUT_TEXT_LIMIT + 1})]")
+# One automatic clear per site per this long. A lockout that's back sooner
+# isn't a stale check — most likely the site refusing the server's address —
+# and clearing on every step would only look more like a bot.
+AUTO_CLEAR_EVERY = 600
+
 # read_text hands back this much at a time, then says where to carry on.
 TEXT_CHUNK = 8000
 
@@ -1253,6 +1275,7 @@ class Tools:
     def __init__(self, browser, emit):
         self.b = browser
         self._emit = emit
+        self._auto_cleared = {}          # site -> when its check was last cleared here
 
     async def run(self, name, args):
         if name not in TOOL_NAMES:
@@ -1268,14 +1291,66 @@ class Tools:
         """What the viewer's status line says the agent is doing."""
         self._emit("live", {"action": action, "busy": busy, **extra})
 
+    async def _locked_out(self, page):
+        try:
+            title, body = await page.evaluate(LOCKOUT_JS)
+        except Exception:                                    # noqa: BLE001 — mid-navigation
+            return False
+        if len(body) > LOCKOUT_TEXT_LIMIT:
+            return False
+        return any(p.search(f"{title}\n{body}") for p in LOCKOUT_PATTERNS)
+
+    async def _unlock(self):
+        """If the page is a bot-protection lockout, clear the site's check and
+        reopen it, once per site per AUTO_CLEAR_EVERY. A note for the agent
+        saying what happened, or "" when the page is no lockout."""
+        page = self.b.current()
+        if page is None or not page.url.lower().startswith(_SCHEMES):
+            return ""
+        if not await self._locked_out(page):
+            return ""
+        site = _site(page.url)
+        last = self._auto_cleared.get(site)
+        if last is not None and time.monotonic() - last < AUTO_CLEAR_EVERY:
+            return (f"{site}'s bot protection is still refusing this browser, and its check "
+                    f"was already cleared {max(1, round((time.monotonic() - last) / 60))} min "
+                    "ago, so it's most likely refusing the server's address. Don't keep "
+                    "retrying: tell the person, and try again later.")
+        self._auto_cleared[site] = time.monotonic()
+        self._status(f"Clearing {site}'s bot check")
+        _, removed = await self.b.clear_checks()
+        await self.b.settle()
+        await self._save_logins()
+        _log(f"cleared a bot-check lockout ({removed} cookie(s))")
+        if await self._locked_out(self.b.current()):
+            return (f"{site}'s bot protection had locked this browser out. Its stale check "
+                    "was cleared and the page reopened, but it's still refusing, most likely "
+                    "the server's address. Don't keep retrying: tell the person, and try again later.")
+        return (f"{site}'s bot protection had locked this browser out; its stale check was "
+                "cleared and the page reopened. What follows is the page now.")
+
+    async def _save_logins(self):
+        """The jar as it now is, saved as the user's logins — so a check
+        cleared here stays cleared when the browser next starts. Same route
+        as a hand-back: a private temp file FreeClaw files and removes."""
+        try:
+            import src.browser_handoff as browser_handoff
+            state = await self.b.context.storage_state()
+            self._emit("logins", {"state_file": browser_handoff.write_state_file(state)})
+        except Exception as e:                               # noqa: BLE001 — the clear still stands
+            _log(f"couldn't save the logins after clearing a check: {e}")
+
     async def _reply(self, text="", image=True):
         """The page as it now is: where it is, any notes, and a screenshot."""
         await self.b.settle()
+        note = await self._unlock()
         where = await self.b.where()
         self._status("", busy=False, **where)
         lines = []
         if text:
             lines.append(text)
+        if note:
+            lines.append(note)
         if self.b.new_tab:
             self.b.new_tab = False
             lines.append("It opened in a new tab; you're on that tab now (back closes it).")
@@ -1621,6 +1696,9 @@ class Tools:
         budget = (4.0 if (action == "type" and enter) else 5.0 if (clicked and link)
                   else 5.0 if action == "select" else 1.5 if clicked else 0.0)
         page = await self._await_change(page, url_before, budget)
+        note = await self._unlock()
+        if note:
+            page = await self.b.ensure()                     # reopened in a fresh tab
         try:
             state = await page.evaluate(_ELEMENTS_JS)
         except Exception as e:                               # noqa: BLE001 — mid-navigation
@@ -1637,6 +1715,8 @@ class Tools:
             state["new_tab"] = True
         if stale:
             state["stale"] = True
+        if note:
+            state["note"] = note
         return [{"type": "text", "text": json.dumps(state)}]
 
     # ── handing over ──
