@@ -265,6 +265,24 @@ def _active_providers():
 # reasoning-model endpoint may need this raised.
 _PROVIDER_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
+# The read timeout above only catches a provider that goes quiet. One that
+# never stops talking slips past it: a model can get stuck emitting a tool
+# call's arguments — confirmed on a phone call, where the agent sat on one
+# browser step for five minutes, streaming the whole time, until the user hung
+# up. Both limits below end such a request and ask again (see
+# RunawayStreamError). The time limit is per request, not per turn, and is
+# generous because a slow self-hosted model writing a long file legitimately
+# takes a while; raise it with FC_STREAM_TIME_LIMIT if yours needs more.
+STREAM_TIME_LIMIT = float(os.environ.get("FC_STREAM_TIME_LIMIT") or 180)
+# A run of this much whitespace at the end of a tool call's arguments. JSON
+# needs none between tokens, and text inside a string escapes its newlines, so
+# no real call gets anywhere near it — it is the model padding forever.
+RUNAWAY_WHITESPACE = 1000
+
+
+class RunawayStreamError(RuntimeError):
+    """A provider's response that kept streaming past any sensible end."""
+
 # One OpenAI client per provider, built once and reused so switching
 # providers doesn't pay a fresh TCP/TLS handshake every time.
 _provider_clients = {}
@@ -4784,6 +4802,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     dead_streams = []
     # Providers this request has already waited out a rate limit for (below).
     waited_out = set()
+    # Providers this request has already re-asked after a runaway stream.
+    runaways = set()
 
     while True:
         # Tell the frontend which provider is about to answer. This fires once
@@ -4804,6 +4824,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         tool_calls_acc = {}
         usage_seen = None
         stream_error = None
+        started = time.monotonic()
         try:
             for chunk in stream:
                 # Stop pressed: abandon the rest of the provider's response. What
@@ -4812,6 +4833,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 if cancellation.is_stopped():
                     logger.info("Stop requested — abandoning the stream from '%s'", provider)
                     break
+                if time.monotonic() - started > STREAM_TIME_LIMIT:
+                    raise RunawayStreamError(
+                        f"still streaming after {STREAM_TIME_LIMIT:.0f}s")
                 # The usage block arrives on its own final chunk (only when
                 # stream_options.include_usage was sent — see _create_completion),
                 # and that chunk has an empty choices list, so it has to be read
@@ -4855,6 +4879,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                                 tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
                             if tc_delta.function.arguments:
                                 tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+                                args = tool_calls_acc[idx]["function"]["arguments"]
+                                if len(args) - len(args.rstrip()) >= RUNAWAY_WHITESPACE:
+                                    raise RunawayStreamError(
+                                        "a tool call's arguments trailed off into whitespace")
         except Exception as e:
             # A provider's own stream can break mid-response — confirmed on
             # NVIDIA: a malformed SSE event with no JSON body, which the
@@ -4866,10 +4894,26 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # bottom of the loop decide between keeping what already streamed
             # and re-asking the next provider.
             stream_error = e
-            logger.exception(
-                "Stream from provider '%s' broke mid-response: %d chars buffered, %d tool call(s) in progress",
-                provider, len(buffer), len(tool_calls_acc),
-            )
+            if isinstance(e, RunawayStreamError):
+                # Close it, or the provider goes on generating (and billing)
+                # for a reader that has left. A tool call still streaming can't
+                # be run — its arguments never finished — so it goes too, which
+                # lets the request be asked again below.
+                logger.warning("Ending the stream from '%s': %s (%d chars buffered, "
+                               "%d tool call(s) dropped)", provider, e, len(buffer),
+                               len(tool_calls_acc))
+                tool_calls_acc = {}
+                close = getattr(stream, "close", None)
+                if close:
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug("Closing a runaway stream failed", exc_info=True)
+            else:
+                logger.exception(
+                    "Stream from provider '%s' broke mid-response: %d chars buffered, %d tool call(s) in progress",
+                    provider, len(buffer), len(tool_calls_acc),
+                )
 
         # Whatever already reached the user is kept rather than thrown away:
         # partial text is on screen, and a tool call that finished streaming
@@ -4883,9 +4927,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         # _create_completion counted this provider a success the moment the
         # request came back, before a single chunk of the body arrived — put
         # that right, so its backoff reflects what actually happened.
-        dead_streams.append(provider)
-        _note_provider_failure(provider, stream_error,
-                               {"messages": eco_messages, "tools": check_tools})
+        if isinstance(stream_error, RunawayStreamError) and provider not in runaways:
+            # A model stuck in a loop is a bad draw, not a broken provider:
+            # the same request usually goes through on the next try. So the
+            # first time, ask the same provider again, without a cooldown.
+            runaways.add(provider)
+        else:
+            dead_streams.append(provider)
+            _note_provider_failure(provider, stream_error,
+                                   {"messages": eco_messages, "tools": check_tools})
         # Any thinking that streamed belonged to an answer that never came —
         # have the frontend drop it before the replacement provider starts, and
         # drop it here too so it can't be saved onto whatever answers instead.
@@ -4973,7 +5023,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                       "provider could take over. Please try again.)")
             break
         logger.info("Retrying this request on '%s' after '%s' broke mid-stream",
-                    provider, dead_streams[-1])
+                    provider, (dead_streams or [provider])[-1])
 
     if usage_seen:
         # The provider's own count of what this request cost — the only exact
