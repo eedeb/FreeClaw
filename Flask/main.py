@@ -1200,7 +1200,7 @@ def api_browser_agent_stream():
 
 
 _INPUT_KINDS =('click', 'down', 'move', 'up', 'text', 'key', 'scroll', 'nav', 'back',
-                'forward', 'reload')
+                'forward', 'reload', 'clear_checks')
 # A generous burst — a long paste arrives as one 'text', not a command per key.
 _INPUT_BATCH_LIMIT = 200
 
