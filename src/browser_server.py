@@ -334,7 +334,22 @@ MAX_CONTROL_LEASE = 30.0
 CONTROL_WAIT = 40.0
 # What a person driving the browser can send (Flask/main.py checks the same).
 INPUT_KINDS = frozenset(("click", "down", "move", "up", "text", "key", "scroll",
-                         "nav", "back", "forward", "reload"))
+                         "nav", "back", "forward", "reload", "clear_checks"))
+
+# Cookies a site's bot protection leaves to say "this browser passed": AWS WAF,
+# Cloudflare, Akamai, Imperva, DataDome, HUMAN (PerimeterX) and Kasada. One
+# that has gone bad keeps the browser locked out — ESPN's "Max challenge
+# attempts exceeded" — and only a fresh check clears it, which a stale cookie
+# prevents. None of them is a login, so dropping them signs nobody out.
+CHECK_COOKIES = frozenset(("aws-waf-token", "cf_clearance", "__cf_bm", "_cfuvid", "_abck",
+                           "bm_sz", "bm_sv", "bm_mi", "bm_so", "bm_ss", "bm_s", "bm_lso",
+                           "ak_bmsc", "reese84", "datadome", "_px", "_px2", "_px3",
+                           "_pxhd", "_pxvid", "_pxde", "pxcts", "KP_UIDz", "KP_UIDz-ssn"))
+CHECK_COOKIE_PREFIXES = ("incap_ses_", "visid_incap_", "nlbi_")
+
+
+def is_check_cookie(name):
+    return name in CHECK_COOKIES or name.startswith(CHECK_COOKIE_PREFIXES)
 
 # read_text hands back this much at a time, then says where to carry on.
 TEXT_CHUNK = 8000
@@ -854,6 +869,42 @@ class Browser:
         `recent` seconds (older ones are long polls, not loading)."""
         now = time.monotonic()
         return any(now - t < recent for t in list(self._pending.get(page, {}).values()))
+
+    async def clear_checks(self):
+        """Clear the bot check of the site on screen: its check cookies out of
+        the jar, and the page reopened in a fresh tab, which also leaves
+        behind whatever the check kept in the old tab's session storage — a
+        new browser is what got ESPN to check afresh, and this is the part of
+        one that mattered. (site, cookies removed); the site is "" when
+        there's no web page to clear."""
+        page = await self.ensure()
+        url = page.url
+        if not url.lower().startswith(_SCHEMES):
+            return "", 0
+        site = _site(url)
+        stale = [c for c in await self.context.cookies()
+                 if is_check_cookie(c.get("name", ""))
+                 and (c.get("domain", "").lstrip(".").lower() == site
+                      or c.get("domain", "").lower().endswith("." + site))]
+        for c in stale:
+            try:
+                await self.context.clear_cookies(name=c["name"], domain=c["domain"],
+                                                 path=c.get("path") or "/")
+            except TypeError:
+                # A Playwright before 1.43 clears only everything: do that and
+                # put the rest back.
+                keep = [k for k in await self.context.cookies() if k not in stale]
+                await self.context.clear_cookies()
+                await self.context.add_cookies(keep)
+                break
+        fresh = await self.context.new_page()
+        self.page, self.new_tab = fresh, False       # ours, not one the site opened
+        try:
+            await page.close()
+        except Exception:                                    # noqa: BLE001 — already gone
+            pass
+        await fresh.goto(url, wait_until="commit", timeout=30000)
+        return site, len(stale)
 
     async def _trim_tabs(self, keep):
         """Close the oldest tabs past MAX_TABS — never `keep`, the one just
@@ -1879,6 +1930,16 @@ class Server:
             await page.go_forward(wait_until="commit", timeout=30000)
         elif kind == "reload":
             await page.reload(wait_until="commit", timeout=30000)
+        elif kind == "clear_checks":
+            site, removed = await self.browser.clear_checks()
+            if not site:
+                notice = "Open the site that's stuck on its check first."
+            elif removed:
+                notice = (f"Cleared {site}'s bot check and reopened the page. "
+                          "Hand back to keep it cleared.")
+            else:
+                notice = f"{site} had no bot check saved. Reopened the page fresh anyway."
+            self.event("control", {"held": True, "notice": notice})
 
     def _stopped(self):
         """A tool failed: whatever the viewer was told the agent is doing,

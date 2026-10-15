@@ -296,6 +296,11 @@
         <div class="chips" id="domains"></div>
       </div>
       <div class="menu-sec" style="padding:4px 0">
+        <button class="mi" id="checks" disabled
+                title="For a site stuck on &quot;verify you're human&quot; or &quot;too many attempts&quot;: forgets its bot check, keeps your login">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"/><path d="M20 12a8 8 0 0 1-.4 2.5"/><path d="M9.5 12.5 11 14l3.5-3.5"/></svg>
+          Clear this site's bot check
+        </button>
         <button class="mi danger" id="clear">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
           Forget all saved logins
@@ -474,6 +479,7 @@
   // What the toolbar offers follows whether the user has the browser.
   function syncControls() {
     ['back', 'forward', 'reload'].forEach((id) => { el(id).disabled = !controlling; });
+    el('checks').disabled = !(agentLive || controlling);
     screen.style.cursor = controlling ? 'default' : '';
     const take = el('take');
     take.hidden = !(agentLive || controlling);
@@ -785,6 +791,17 @@
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) setMenu(false); });
 
+  // A site whose bot protection has locked the agent out ("Max challenge
+  // attempts exceeded"). Clearing happens in the person's hands, so it takes
+  // control first; the hand-back then saves the jar without the stale check.
+  el('checks').addEventListener('click', async () => {
+    setMenu(false);
+    if (!controlling && !(await takeControl())) return;
+    say('Clearing the bot check…');
+    navState('Loading…');
+    send({ kind: 'clear_checks' });
+  });
+
   el('clear').addEventListener('click', async () => {
     if (!confirm('Forget every saved login? The agent will be signed out of all of them.')) return;
     try {
@@ -906,6 +923,7 @@
       moveCursor(ev);
     } else if (ev.t === 'control') {
       if (ev.error) { navState(''); say(ev.error, 'err'); }
+      else if (ev.notice) { navState(''); say(ev.notice, 'ok'); }
       // Handed back without this page asking: the lease ran out (a sleeping
       // laptop) or another tab handed it back.
       if (ev.held === false && controlling && !handingBack) {

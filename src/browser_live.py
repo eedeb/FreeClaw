@@ -119,7 +119,8 @@ def publish(user, proc, kind, params):
             _add(feed, "control", dict(result))
         elif kind == "control":
             feed.control = {"held": True, "error": str(params.get("error") or "")}
-            _add(feed, "control", dict(feed.control))
+            # Said once, to whoever is watching: not part of the state.
+            _add(feed, "control", {**feed.control, "notice": str(params.get("notice") or "")})
         if kind == "frame":
             data = params.get("data")
             if isinstance(data, str) and data:
