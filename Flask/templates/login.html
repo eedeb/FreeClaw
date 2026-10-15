@@ -6,235 +6,192 @@
   <title>FreeClaw — Login</title>
 
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
   <meta name="apple-mobile-web-app-title" content="FreeClaw"/>
-  <meta name="theme-color" content="#0d0d0f"/>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
 
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
 
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* ── Design tokens ──
+       One palette for every FreeClaw page, light or dark with the system.
+       The same block opens each template, so a framed page (Settings in its
+       window, say) always matches the desktop around it. */
     :root {
-      --bg: #0d0d0f;
-      --surface: #141416;
-      --border: #222228;
-      --border-bright: #2e2e38;
+      color-scheme: light dark;
+      --bg: #0f1011;
+      --sidebar: #141517;
+      --surface: #17181a;
+      --surface-2: #1d1f22;
+      --surface-3: #25272b;
+      --border: #26282c;
+      --border-strong: #34373c;
+      --text: #ececee;
+      --text-2: #b0b2b8;
+      --muted: #7c7f87;
       --accent: #c8f04a;
       --accent-dim: #a8cc38;
-      --text: #e8e8ec;
-      --muted: #666672;
-      --error: #e05555;
-      --mono: 'IBM Plex Mono', monospace;
-      --sans: 'Syne', sans-serif;
-      --safe-top: env(safe-area-inset-top, 0px);
-      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --accent-ink: #141a05;
+      --accent-text: #c8f04a;
+      --accent-soft: rgba(200, 240, 74, 0.12);
+      --accent-line: rgba(200, 240, 74, 0.32);
+      --user-bg: #2b3a10;
+      --user-text: #f1f8de;
+      --agent-bg: #1d1f22;
+      --code-bg: #0b0c0d;
+      --code-text: #d5e8b5;
+      --err: #ef5f5f;
+      --err-soft: rgba(239, 95, 95, 0.12);
+      --warn: #e6b445;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+      --radius: 10px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --sidebar: #f5f5f3;
+        --surface: #ffffff;
+        --surface-2: #f1f2ef;
+        --surface-3: #e7e8e4;
+        --border: #e5e6e1;
+        --border-strong: #d3d5ce;
+        --text: #18191b;
+        --text-2: #4b4f56;
+        --muted: #7d8189;
+        --accent-dim: #b4dc32;
+        --accent-ink: #1a2205;
+        --accent-text: #4b7a06;
+        --accent-soft: rgba(120, 170, 10, 0.12);
+        --accent-line: rgba(100, 150, 10, 0.35);
+        --user-bg: #e4f3bf;
+        --user-text: #1b2507;
+        --agent-bg: #f1f2ef;
+        --code-bg: #f6f7f4;
+        --code-text: #2d4a06;
+        --err: #d93f3f;
+        --err-soft: rgba(217, 63, 63, 0.09);
+        --warn: #b7800d;
+        --scrim: rgba(20, 22, 18, 0.28);
+        --shadow-sm: 0 1px 2px rgba(20, 22, 18, 0.08);
+        --shadow-lg: 0 24px 60px rgba(20, 22, 18, 0.16), 0 0 0 1px rgba(20, 22, 18, 0.07);
+      }
+    }
+
 
     html, body {
       height: 100%;
-      background: var(--bg);
+      background: var(--sidebar);
       color: var(--text);
       font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
       -webkit-tap-highlight-color: transparent;
     }
 
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background-image:
-        linear-gradient(var(--border) 1px, transparent 1px),
-        linear-gradient(90deg, var(--border) 1px, transparent 1px);
-      background-size: 40px 40px;
-      opacity: 0.35;
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    /* Subtle lime glow behind the card */
-    body::after {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background: radial-gradient(ellipse 60% 50% at 50% 60%, rgba(200,240,74,0.055) 0%, transparent 70%);
-      pointer-events: none;
-      z-index: 0;
-    }
-
     .wrap {
-      position: relative;
-      z-index: 1;
       min-height: 100svh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: calc(24px + var(--safe-top)) 24px calc(24px + var(--safe-bottom));
+      padding: calc(24px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
     }
 
     .card {
       width: 100%;
-      max-width: 360px;
+      max-width: 380px;
       background: var(--surface);
-      border: 1px solid var(--border-bright);
-      border-radius: 8px;
-      overflow: hidden;
-      animation: fadeUp 0.45s cubic-bezier(0.22,1,0.36,1) forwards;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+      padding: 34px 30px 30px;
+      text-align: center;
+      animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
       opacity: 0;
     }
-
     @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(20px) scale(0.98); }
-      to   { opacity: 1; transform: translateY(0) scale(1); }
-    }
-
-    /* Card top accent line */
-    .card-accent {
-      height: 2px;
-      background: linear-gradient(90deg, transparent, var(--accent), transparent);
-      opacity: 0.6;
-    }
-
-    .card-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 20px 24px 18px;
-      border-bottom: 1px solid var(--border);
+      from { opacity: 0; transform: translateY(14px) scale(0.985); }
+      to   { opacity: 1; transform: none; }
     }
 
     .header-icon {
-      width: 36px; height: 36px;
-      border-radius: 9px;
+      width: 60px; height: 60px;
+      margin: 0 auto 18px;
+      border-radius: 16px;
       overflow: hidden;
-      flex-shrink: 0;
-      border: 1px solid rgba(200,240,74,0.2);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18), 0 0 0 1px var(--border);
     }
     .header-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .header-title { display: block; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+    .header-sub { display: block; font-size: 14px; color: var(--muted); margin-top: 5px; }
 
-    .header-dot {
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 7px var(--accent);
-      animation: pulse 2.5s ease-in-out infinite;
-      flex-shrink: 0;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; box-shadow: 0 0 7px var(--accent); }
-      50%       { opacity: 0.4; box-shadow: 0 0 3px var(--accent); }
-    }
+    .prompt { font-size: 14px; color: var(--text-2); margin: 24px 0 14px; }
 
-    .header-text { display: flex; flex-direction: column; gap: 2px; }
-    .header-title {
-      font-family: var(--sans);
-      font-size: 13px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text);
-    }
-    .header-sub {
-      font-family: var(--mono);
-      font-size: 9px;
-      color: var(--muted);
-      letter-spacing: 0.04em;
-    }
-
-    .card-body {
-      padding: 28px 24px 26px;
-    }
-
-    .prompt {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-      margin-bottom: 22px;
-      line-height: 1.7;
-    }
-
-    .input-wrap {
-      position: relative;
-      margin-bottom: 14px;
-    }
-
+    .input-wrap { margin-bottom: 12px; }
     .input-wrap input {
       width: 100%;
       background: var(--bg);
-      border: 1px solid var(--border-bright);
-      border-radius: 5px;
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
       /* 16px to prevent iOS auto-zoom */
-      padding: 13px 14px;
-      font-family: var(--mono);
+      padding: 13px 15px;
+      font-family: var(--sans);
       font-size: 16px;
       color: var(--text);
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
-      letter-spacing: 0.08em;
       -webkit-appearance: none;
       appearance: none;
     }
-    .input-wrap input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(200,240,74,0.08);
-    }
-    .input-wrap input.error-input {
-      border-color: var(--error);
-      box-shadow: 0 0 0 3px rgba(224,85,85,0.08);
-    }
+    .input-wrap input::placeholder { color: var(--muted); }
+    .input-wrap input:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 4px var(--accent-soft); }
+    .input-wrap input.error-input { border-color: var(--err); box-shadow: 0 0 0 4px var(--err-soft); }
 
     .error-msg {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--error);
-      margin-bottom: 16px;
-      display: flex;
-      align-items: center;
-      gap: 7px;
+      font-size: 13px;
+      color: var(--err);
+      margin: -8px 0 16px;
     }
-    .error-msg::before { content: '✕'; font-size: 9px; }
 
     .submit-btn {
       width: 100%;
       background: var(--accent);
-      color: var(--bg);
+      color: var(--accent-ink);
       border: none;
-      border-radius: 5px;
+      border-radius: 12px;
       /* 48px tall — comfortable touch target */
       padding: 14px;
-      font-family: var(--mono);
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
+      font-family: var(--sans);
+      font-size: 15px;
+      font-weight: 650;
       cursor: pointer;
       transition: background 0.15s, transform 0.1s;
       -webkit-user-select: none;
       user-select: none;
     }
     .submit-btn:hover  { background: var(--accent-dim); }
-    .submit-btn:active { transform: scale(0.98); background: var(--accent-dim); }
+    .submit-btn:active { transform: scale(0.98); }
+    .foot { margin-top: 18px; font-size: 12px; color: var(--muted); }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <div class="card-accent"></div>
-      <div class="card-header">
-        <div class="header-icon">
-          <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
-        </div>
-        <div class="header-dot"></div>
-        <div class="header-text">
-          <span class="header-title">FreeClaw</span>
-          <span class="header-sub">an AI agent that doesn't burn your money</span>
-        </div>
+      <div class="header-icon">
+        <img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/>
       </div>
+      <span class="header-title">Welcome back</span>
+      <span class="header-sub">An AI agent that doesn't burn your money.</span>
       <div class="card-body">
-        <p class="prompt">Enter your password to continue.</p>
+        <p class="prompt">Enter your FreeClaw password to continue.</p>
 
         {% if error %}
         <div class="error-msg">Incorrect password. Try again.</div>
@@ -245,13 +202,13 @@
             <input
               type="password"
               name="password"
-              placeholder="password"
+              placeholder="Password"
               class="{{ 'error-input' if error else '' }}"
               autofocus
               autocomplete="current-password"
             />
           </div>
-          <button type="submit" class="submit-btn">Unlock →</button>
+          <button type="submit" class="submit-btn">Continue</button>
         </form>
       </div>
     </div>
