@@ -147,7 +147,7 @@ info "Pulling updates from origin/main..."
 # working tree — so the files would never land, and the next run would read
 # LOCAL == REMOTE and report "already up to date" forever while the server
 # crash-looped on the missing import.
-for path in src models mac Flask/main.py Flask/templates requirements.txt \
+for path in src models mac Flask/main.py Flask/templates Flask/assets requirements.txt \
             VERSION update-mac.sh uninstall-mac.sh; do
     git checkout origin/main -- "$path" 2>/dev/null || true
 done

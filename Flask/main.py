@@ -1338,6 +1338,21 @@ def upload():
     return jsonify({'path': rel_path, 'filename': file.filename})
 
 
+# The fonts and scripts every page loads, shipped with the app (Flask/assets)
+# rather than pulled from Google Fonts and jsDelivr: a third-party file in a
+# page's <head> blocks the page until it arrives, so a slow CDN froze FreeClaw
+# for seconds at a time. Public — the login page needs them — and immutable
+# for a given release, so browsers and any proxy in front can keep them.
+ASSETS_DIR = os.path.join(BASE_DIR, 'assets')
+
+
+@app.route('/assets/<path:name>')
+def app_asset(name):
+    resp = send_from_directory(ASSETS_DIR, name, max_age=7 * 24 * 60 * 60)
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
+
+
 @app.route('/static/<path:filename>')
 def serve_static(filename):
     token = request.args.get('token')

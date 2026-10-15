@@ -204,7 +204,7 @@ try {
         # the moment somebody talks to it - a plain `git checkout` would reset
         # their conversation. Same reasoning as update.sh on Linux.
         foreach ($path in @("src", "models", "windows", "Flask/main.py",
-                            "Flask/templates", "requirements.txt", "VERSION",
+                            "Flask/templates", "Flask/assets", "requirements.txt", "VERSION",
                             "uninstall.ps1")) {
             Native $git @("checkout", "origin/$Branch", "--", $path) | Out-Null
         }

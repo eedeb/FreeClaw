@@ -111,7 +111,7 @@ DEV_ONLY=(
 # somebody talks to it, so `git checkout .` would reset their conversation.
 # Same reasoning as update.sh on Linux and install.ps1 on Windows.
 UPGRADE_PATHS=(
-    "src" "models" "mac" "Flask/main.py" "Flask/templates"
+    "src" "models" "mac" "Flask/main.py" "Flask/templates" "Flask/assets"
     "requirements.txt" "VERSION" "update-mac.sh" "uninstall-mac.sh"
 )
 

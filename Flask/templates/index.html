@@ -16,9 +16,15 @@
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
   <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
 
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link rel="preload" href="assets/inter.woff2" as="font" type="font/woff2" crossorigin/>
 
   <style>
+    /* Served from this app (Flask/assets), not a font CDN: a slow third-party
+       stylesheet in <head> stalls the whole page before any script runs.
+       Relative URLs, so they work under a path prefix too. */
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 100 900; font-display: swap; src: url("assets/inter.woff2") format("woff2"); }
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 100 800; font-display: swap; src: url("assets/jetbrains-mono.woff2") format("woff2"); }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     /* ── Design tokens ──

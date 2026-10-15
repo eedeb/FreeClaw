@@ -267,6 +267,7 @@ section_gap
 info "Pulling updates from origin/main..."
 git checkout origin/main -- src/
 git checkout origin/main -- Flask/templates/
+git checkout origin/main -- Flask/assets/
 git checkout origin/main -- Flask/main.py
 git checkout origin/main -- requirements.txt 2>/dev/null || true
 # src/telemetry.py reports this, and the ff-only merge below is skipped when
