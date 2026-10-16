@@ -304,17 +304,17 @@
     <a class="nav-btn" href="/">Home</a>
   </header>
   {% if unknown %}
-    <div class="banner warn">No FreeClaw user called <strong>{{ unknown }}</strong>.</div>
+    <div class="banner warn">No agent called <strong>{{ unknown }}</strong>.</div>
   {% endif %}
   <div class="banner">
     This is your agent's own browser, on the machine FreeClaw runs on. Watch it work, or
-    take it over to sign in to a site — the agent stays signed in. Pick whose browser to open.
+    take it over to sign in to a site — the agent stays signed in. Pick which agent's browser to open.
   </div>
   <div class="picker">
     {% for name in users %}
       <a class="nav-btn" href="/browser?user={{ name }}">{{ name }}</a>
     {% else %}
-      <span class="empty">No users yet — create one from the home page.</span>
+      <span class="empty">No agents yet — add one from your agent list.</span>
     {% endfor %}
   </div>
 </div>
