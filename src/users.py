@@ -11,6 +11,7 @@ import tempfile
 import time
 
 import src.agent as agent
+import src.agent_names as agent_names
 import src.approvals as approvals
 import src.session as sessions
 from src.logging_setup import get_logger
@@ -152,13 +153,15 @@ def user_exists(name):
     return name in list_users()
 
 
-def create_user(name):
+def create_user(name, person=""):
+    """Make agent `name`. `person` is the name of whoever it works for, if
+    given; either way its context.md starts by telling it both (agent_names)."""
     ctx_path = user_context_path(name)  # creates static/<user>/files/ too
     if not os.path.exists(ctx_path):
         # Seeded with headings (agent.CONTEXT_TEMPLATE) rather than blank, so
         # the model has somewhere to file each new fact from the first turn.
         with open(ctx_path, "w", encoding="utf-8") as f:
-            f.write(agent.CONTEXT_TEMPLATE)
+            f.write(agent_names.with_names(agent.CONTEXT_TEMPLATE, name, person))
     ping_path = user_ping_path(name)
     if not os.path.exists(ping_path):
         with open(ping_path, "w", encoding="utf-8") as f:

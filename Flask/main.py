@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session, Response, stream_with_context
 from werkzeug.exceptions import HTTPException
 import src.agent as agent
+import src.agent_names as agent_names
 import src.approvals as approvals
 import src.browser_handoff as browser_handoff
 import src.browser_live as browser_live
@@ -262,7 +263,8 @@ def api_list_users():
     if not logged_in():
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        users = [{'name': name, 'subagent': subagents.info(name)} for name in list_users()]
+        users = [{'name': name, 'subagent': subagents.info(name), 'person': _person_of(name)}
+                 for name in list_users()]
         return jsonify({'users': users, 'static_dir': STATIC_DIR})
     except Exception as e:
         return _log_and_error(e)
@@ -274,15 +276,90 @@ def api_create_user():
         return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json(silent=True) or {}
     name = safe_username(data.get('name', ''))
+    # Who the agent is for: optional, and kept in its context.md (agent_names).
+    person = str(data.get('person') or '').strip()[:60]
     if not name:
         return jsonify({'error': 'Invalid name. Use 1-40 letters, numbers, spaces, - or _.'}), 400
     if user_exists(name):
-        return jsonify({'error': 'A user with that name already exists.'}), 409
+        return jsonify({'error': 'You already have an agent with that name.'}), 409
+    why = agent_names.clash(name, person, [_person_of(u) for u in list_users()])
+    if why:
+        return jsonify({'error': why}), 400
     try:
-        create_user(name)
+        create_user(name, person)
     except Exception as e:
         return _log_and_error(e)
-    return jsonify({'name': name})
+    return jsonify({'name': name, 'person': person})
+
+
+def _person_of(name):
+    """The person agent `name` works for, from its context.md, or ""."""
+    try:
+        return agent_names.person_in(read_user_context(name))
+    except Exception:
+        return ''
+
+
+@app.route('/api/users/<name>/rename', methods=['POST'])
+def api_rename_user(name):
+    """Give agent `name` a new name. Everything kept under the name moves with
+    it: its folder (chats, memory, scheduled pings, approvals, which apps are
+    on), its browser sign-ins, and the line in its context.md that tells it
+    what it's called. Refused while it's mid-turn or has a sub-agent working,
+    and for a sub-agent; a failed folder move changes nothing."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not user_exists(name):
+        return jsonify({'error': 'No such agent.'}), 404
+    new = safe_username((request.get_json(silent=True) or {}).get('to', ''))
+    if not new:
+        return jsonify({'error': 'Invalid name. Use 1-40 letters, numbers, spaces, - or _.'}), 400
+    if new == name:
+        return jsonify({'name': new})
+    if user_exists(new):
+        return jsonify({'error': 'You already have an agent with that name.'}), 409
+    why = agent_names.clash(new, _person_of(name),
+                            [_person_of(u) for u in list_users() if u != name])
+    if why:
+        return jsonify({'error': why}), 400
+    if subagents.info(name):
+        return jsonify({'error': "A sub-agent can't be renamed; it's deleted when it finishes."}), 409
+    if subagents.children(name):
+        return jsonify({'error': 'It has a sub-agent working for it. Try again once that is done.'}), 409
+    lock = _session_lock(name)
+    if not lock.acquire(blocking=False):
+        return jsonify({'error': "It's in the middle of something. Try again when it's finished."}), 409
+    note = ''
+    try:
+        try:
+            mcp_client.release_user_browser(name)
+        except Exception:
+            logger.exception("Couldn't stop the browser of renamed user %r", name)
+        try:
+            os.rename(user_dir(name).rstrip(os.sep), user_dir(new).rstrip(os.sep))
+        except OSError as e:
+            return _log_and_error(e)
+        # Browser sign-ins: kept under the new name, or cleared when the new
+        # name isn't one browser_profiles keeps logins for, so they never pass
+        # to a later agent of the old name.
+        old_state, new_state = browser_profiles.state_path(name), browser_profiles.state_path(new)
+        if old_state and os.path.isdir(os.path.dirname(old_state)):
+            if new_state and not os.path.exists(os.path.dirname(new_state)):
+                os.rename(os.path.dirname(old_state), os.path.dirname(new_state))
+            else:
+                shutil.rmtree(os.path.dirname(old_state), ignore_errors=True)
+                note = ("Its browser sign-ins couldn't move to a name with spaces, so it will "
+                        "need to sign in to websites again.")
+        try:
+            write_user_context(new, agent_names.renamed(read_user_context(new), name, new))
+        except OSError:
+            logger.exception("Couldn't tell %r its new name", new)
+    finally:
+        lock.release()
+    sessions.discard(name)
+    if session.get('current_user') == name:
+        session['current_user'] = new
+    return jsonify({'name': new, **({'note': note} if note else {})})
 
 
 @app.route('/api/users/<name>', methods=['DELETE'])
@@ -650,6 +727,8 @@ def api_get_conversation():
     data = load_conversation(name)
     return jsonify({
         'user': name,
+        # Who the agent works for, for the greeting: never the agent's own name.
+        'person': _person_of(name),
         'title': data.get('title'),
         'messages': data.get('messages', []),
         'updated_at': data.get('updated_at')

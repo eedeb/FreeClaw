@@ -385,8 +385,8 @@
       Connect external <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener" >Model Context Protocol</a> servers to give the agent new tools.
       <b>Remote (HTTP)</b> talks to a hosted server over a URL. <b>Local (stdio)</b> runs a command on this
       machine and speaks to it over its stdin/stdout — which is how most published MCP servers ship.
-      Adding and removing a server covers the whole install; <b>switching one on is per user</b>, so each
-      person's agent carries only the tools they actually want.
+      Adding and removing a server covers the whole install; <b>switching one on is per agent</b>, so each
+      agent carries only the tools it actually needs.
     </div>
     <div class="who">
       <span class="form-label">Enabled for</span>
@@ -427,8 +427,8 @@
     <div class="sec-desc">
       Every shell command the agent tries to run is put to you for approval first — the agent is never asked
       and can't approve itself. Commands you marked <b>always allow</b> are listed here and run without
-      prompting; remove one to go back to being asked. These are saved per user, for
-      <span id="ba-user" class="mono">the current user</span>.
+      prompting; remove one to go back to being asked. These are saved per agent, for
+      <span id="ba-user" class="mono">the current agent</span>.
     </div>
     <div id="ba-list" class="card-list"></div>
     <button id="ba-clear" class="ghost" style="display:none">Remove all rules</button>
@@ -917,7 +917,7 @@
     // user will start with), but there's nobody to switch anything on for.
     mcpUserSel.hidden = names.length === 0;
     mcpUserNote.textContent = names.length === 0
-      ? 'no users yet — start a chat to create one'
+      ? 'no agents yet — add one from your agent list'
       : '';
   }
 

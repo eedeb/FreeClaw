@@ -1466,9 +1466,9 @@
     </nav>
 
     <div class="sb-foot">
-      <button class="app-icon" id="icon-home" data-app="home" title="Switch user">
+      <button class="app-icon" id="icon-home" data-app="home" title="Switch agent">
         <span class="avatar" id="user-avatar">?</span>
-        <span class="who"><span id="chat-user-name">FreeClaw</span><small>Switch user</small></span>
+        <span class="who"><span id="chat-user-name">FreeClaw</span><small>Switch agent</small></span>
         <svg class="switch-ico"><use href="#i-switch"/></svg>
       </button>
     </div>
@@ -3043,7 +3043,7 @@
   function applyConversation(data) {
     if (data.user) currentUser = data.user;
     if (chatUserEl) chatUserEl.textContent = data.user || 'FreeClaw';
-    greet(data.user);
+    greet(data.user, data.person);
     if (data.user && !mcpAppsLoaded) refreshMcpApps();
     if (chatTitleEl) chatTitleEl.textContent = data.title || 'New chat';
     const msgs = data.messages || [];
@@ -3245,7 +3245,7 @@
     if (!user) {
       ctxListEmpty.hidden = false;
       ctxListEmpty.textContent = '';
-      ctxSetStatus('No conversation selected — pick a user first.', 'err');
+      ctxSetStatus('No conversation selected — pick an agent first.', 'err');
       return;
     }
     try {
@@ -3566,11 +3566,13 @@
     inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
   }));
 
-  function greet(name) {
+  // `name` is the agent's; the hello is for the person it works for, by their
+  // own name when its memory has one (src/agent_names.py) — never the agent's.
+  function greet(name, person) {
     const h = new Date().getHours();
     const part = h < 5 ? 'evening' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
     const el = document.getElementById('greeting');
-    el.textContent = name ? `Good ${part}, ${name}` : 'How can I help?';
+    el.textContent = person ? `Good ${part}, ${person}` : name ? `Good ${part}` : 'How can I help?';
     const av = document.getElementById('user-avatar');
     const initials = String(name || '?').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2);
     av.textContent = initials || '?';

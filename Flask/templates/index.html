@@ -193,6 +193,24 @@
     @keyframes sub-pulse { 50% { opacity: 0.25; } }
     @media (prefers-reduced-motion: reduce) { .sub-dot { animation: none; } }
 
+    .user-rename-btn {
+      background: none;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      color: var(--text-2);
+      font-family: var(--sans);
+      font-size: 12.5px;
+      font-weight: 550;
+      padding: 5px 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 0.15s, border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .user-card:hover .user-rename-btn, .user-rename-btn:focus-visible { opacity: 1; }
+    @media (hover: none) { .user-rename-btn { opacity: 1; } }
+    .user-rename-btn:hover { border-color: var(--accent-line); color: var(--text); background: var(--accent-soft); }
+    .user-rename-btn:active { transform: scale(0.95); }
     /* Out of the way until the row is pointed at — always there on touch. */
     .user-delete-btn {
       background: none;
@@ -234,7 +252,21 @@
       gap: 8px;
       padding: 12px 16px;
     }
-    #add-user-form.visible { display: flex; }
+    #add-user-form.visible { display: flex; flex-wrap: wrap; }
+    #add-user-input, #add-person-input { flex: 1 1 160px; }
+    #add-person-input {
+      min-width: 0;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 15px;
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    #add-person-input:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-soft); }
     #add-user-input {
       flex: 1;
       min-width: 0;
@@ -290,7 +322,7 @@
     <div class="header-icon"><img src="https://freeclaw.eedeb.dev/eagle.png" alt="FreeClaw"/></div>
     <div class="header-title">
       <h1>FreeClaw</h1>
-      <div class="header-tagline">pick a user</div>
+      <div class="header-tagline">pick an agent</div>
     </div>
     <button id="api-toggle-btn" type="button" title="Toggle OpenAI-compatible API">
       <span class="api-dot"></span>API
@@ -301,17 +333,18 @@
   <main>
     <div class="hello">
       <img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/>
-      <h2>Who's using FreeClaw?</h2>
-      <p>Everyone gets their own agent, chats and files.</p>
+      <h2>Your agents</h2>
+      <p>Each agent has its own name, chats, memory and files.</p>
     </div>
-    <div class="section-label">Users</div>
+    <div class="section-label">Agents</div>
     <div class="profiles">
       <div id="users-error" class="empty-hint" style="display:none; color:var(--err);"></div>
       <div id="users-grid"></div>
 
-      <div id="add-user-card">Add a person</div>
+      <div id="add-user-card">Add an agent</div>
       <div id="add-user-form">
-        <input id="add-user-input" placeholder="Name, e.g. Elliot" maxlength="40"/>
+        <input id="add-user-input" placeholder="Agent's name, e.g. Jarvis" maxlength="40" aria-label="Agent's name"/>
+        <input id="add-person-input" placeholder="Your name (what it calls you)" maxlength="60" aria-label="Your name"/>
         <button id="add-user-submit">Create</button>
       </div>
       <div id="user-form-error"></div>
@@ -355,7 +388,7 @@
       if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
     } catch (e) {
       if (quiet) return;  // a missed poll; the next one will do
-      usersError.textContent = `Couldn't load users: ${e.message}`;
+      usersError.textContent = `Couldn't load your agents: ${e.message}`;
       usersError.style.display = 'block';
       usersGrid.innerHTML = '';
       drawnUsers = null;
@@ -367,7 +400,7 @@
     usersError.style.display = 'none';
     usersGrid.innerHTML = '';
     if ((data.users || []).length === 0) {
-      usersGrid.innerHTML = `<div class="empty-hint">No users yet — add one below.${data.static_dir ? ' (looking in ' + escapeHtml(data.static_dir) + ')' : ''}</div>`;
+      usersGrid.innerHTML = `<div class="empty-hint">No agents yet — add one below.${data.static_dir ? ' (looking in ' + escapeHtml(data.static_dir) + ')' : ''}</div>`;
     }
     (data.users || []).forEach(u => {
       const card = document.createElement('div');
@@ -392,10 +425,18 @@
         <div class="user-avatar">${escapeHtml(initials(u.name))}</div>
         <div class="user-info">
           <div class="user-name">${escapeHtml(u.name)}</div>
+          ${u.person ? `<div class="user-sub">for ${escapeHtml(u.person)}</div>` : ''}
         </div>
+        <button class="user-rename-btn" type="button">Rename</button>
         <button class="user-delete-btn" type="button">Delete</button>
         <div class="chevron">›</div>`;
       card.addEventListener('click', () => openUser(u.name));
+
+      const renBtn = card.querySelector('.user-rename-btn');
+      renBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // don't open the chat
+        renameUser(u.name, renBtn);
+      });
 
       const delBtn = card.querySelector('.user-delete-btn');
       delBtn.addEventListener('click', (e) => {
@@ -417,6 +458,35 @@
 
       usersGrid.appendChild(card);
     });
+  }
+
+  async function renameUser(name, btn) {
+    const to = (window.prompt(`Rename ${name} to:`, name) || '').trim();
+    if (!to || to === name) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(name)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        usersError.textContent = data.error || `Couldn't rename ${name} (${res.status}).`;
+        usersError.style.display = 'block';
+        return;
+      }
+      await loadUsers(true);
+      if (data.note) {
+        usersError.textContent = data.note;
+        usersError.style.display = 'block';
+      }
+    } catch (e) {
+      usersError.textContent = e.message || 'Connection error.';
+      usersError.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   async function deleteUser(name, cardEl) {
@@ -446,7 +516,7 @@
       const res = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name, person: document.getElementById('add-person-input').value.trim() })
       });
       let data;
       try {
@@ -455,11 +525,12 @@
         throw new Error(`Server returned ${res.status} (non-JSON response)`);
       }
       if (!res.ok) {
-        userFormError.textContent = data.error || `Could not create user (${res.status}).`;
+        userFormError.textContent = data.error || `Could not create the agent (${res.status}).`;
         userFormError.style.display = 'block';
         return;
       }
       addUserInput.value = '';
+      document.getElementById('add-person-input').value = '';
       addUserForm.classList.remove('visible');
       addUserCard.style.display = 'flex';
       await loadUsers();
