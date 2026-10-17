@@ -310,7 +310,7 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 LIVE_PREFIX = "notifications/freeclaw/"
 
 # What the model is shown. JPEG because a screenshot rides along on every
-# request until the history prunes it (agent.py: _MAX_HISTORY_IMAGES), and a
+# request until the history prunes it (agent.py: _prune_history_images), and a
 # text-heavy 1280x800 page is ~100KB this way against ~600KB as PNG.
 SHOT_QUALITY = 70
 # The size the model sees the page at: the 1280x800 viewport scaled to this
