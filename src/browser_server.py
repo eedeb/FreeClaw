@@ -115,6 +115,37 @@ OFFSCREEN_ANIMATION_PAUSE_JS = r"""
 """
 
 
+# Run in every page too: this browser has no passkeys, so say so up front.
+#
+# A site that asks for one (Amazon does, right after the email) gets Chromium's
+# own "No passkeys available" dialog. That's browser UI, not page, so the live
+# view never shows it, the agent's screenshots don't either, and no click or
+# key sent to the page reaches it: the sign-in just looks frozen. Told there
+# are no passkeys, sites offer the password instead; a passkey request made
+# anyway is turned down at once, the way pressing Cancel would, rather than
+# opening the dialog. Other credential requests (saved passwords, federated
+# sign-in) are left alone.
+NO_PASSKEYS_JS = r"""(() => {
+  try {
+    const C = window.PublicKeyCredential;
+    if (C) {
+      C.isConditionalMediationAvailable = () => Promise.resolve(false);
+      C.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);
+      if (C.getClientCapabilities) C.getClientCapabilities = () => Promise.resolve({});
+    }
+    const creds = navigator.credentials;
+    if (creds) {
+      const no = () => Promise.reject(new DOMException(
+        'Passkeys are not available in this browser.', 'NotAllowedError'));
+      for (const name of ['get', 'create']) {
+        const upstream = creds[name] && creds[name].bind(creds);
+        if (upstream) creds[name] = (options) => options && options.publicKey ? no() : upstream(options);
+      }
+    }
+  } catch (e) {}
+})();"""
+
+
 def launch_kwargs(headless, channel=None):
     """The `chromium.launch()` arguments."""
     kwargs = {"headless": headless, "ignore_default_args": list(IGNORE_DEFAULT_ARGS),
@@ -835,6 +866,7 @@ class Browser:
             self.context = await self.browser.new_context(**context_kwargs(self.browser))
             state = None
         await self.context.add_init_script(OFFSCREEN_ANIMATION_PAUSE_JS)
+        await self.context.add_init_script(NO_PASSKEYS_JS)
         self.context.on("page", self._on_page)
         self.page = await self.context.new_page()
         self.new_tab = False
