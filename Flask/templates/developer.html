@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw · Developer</title>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <script>
+    // Opened as a window on the chat desktop: the desktop is the navigation
+    // there, so this page drops its own header.
+    if (window.self !== window.top) document.documentElement.classList.add('embedded');
+  </script>
+  <style>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design tokens ──
+       One palette for every FreeClaw page, light or dark with the system.
+       The same block opens each template, so a framed page (Settings in its
+       window, say) always matches the desktop around it. */
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1011;
+      --sidebar: #141517;
+      --surface: #17181a;
+      --surface-2: #1d1f22;
+      --surface-3: #25272b;
+      --border: #26282c;
+      --border-strong: #34373c;
+      --text: #ececee;
+      --text-2: #b0b2b8;
+      --muted: #7c7f87;
+      --accent: #c8f04a;
+      --accent-dim: #a8cc38;
+      --accent-ink: #141a05;
+      --accent-text: #c8f04a;
+      --accent-soft: rgba(200, 240, 74, 0.12);
+      --accent-line: rgba(200, 240, 74, 0.32);
+      --user-bg: #2b3a10;
+      --user-text: #f1f8de;
+      --agent-bg: #1d1f22;
+      --code-bg: #0b0c0d;
+      --code-text: #d5e8b5;
+      --err: #ef5f5f;
+      --err-soft: rgba(239, 95, 95, 0.12);
+      --warn: #e6b445;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+      --radius: 10px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --sidebar: #f5f5f3;
+        --surface: #ffffff;
+        --surface-2: #f1f2ef;
+        --surface-3: #e7e8e4;
+        --border: #e5e6e1;
+        --border-strong: #d3d5ce;
+        --text: #18191b;
+        --text-2: #4b4f56;
+        --muted: #7d8189;
+        --accent-dim: #b4dc32;
+        --accent-ink: #1a2205;
+        --accent-text: #4b7a06;
+        --accent-soft: rgba(120, 170, 10, 0.12);
+        --accent-line: rgba(100, 150, 10, 0.35);
+        --user-bg: #e4f3bf;
+        --user-text: #1b2507;
+        --agent-bg: #f1f2ef;
+        --code-bg: #f6f7f4;
+        --code-text: #2d4a06;
+        --err: #d93f3f;
+        --err-soft: rgba(217, 63, 63, 0.09);
+        --warn: #b7800d;
+        --scrim: rgba(20, 22, 18, 0.28);
+        --shadow-sm: 0 1px 2px rgba(20, 22, 18, 0.08);
+        --shadow-lg: 0 24px 60px rgba(20, 22, 18, 0.16), 0 0 0 1px rgba(20, 22, 18, 0.07);
+      }
+    }
+
+    /* ── Developer ──
+       Files on the left, the editor in the middle, the Run output under it.
+       A plain textarea with a line-number gutter: no editor library to load,
+       and nothing between the person's keystrokes and the file. */
+    html, body { height: 100%; }
+    body {
+      background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    header {
+      display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+      border-bottom: 1px solid var(--border); background: var(--sidebar);
+    }
+    header a { color: var(--text-2); text-decoration: none; }
+    header .title { font-weight: 600; }
+    html.embedded header { display: none; }
+
+    .dev { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+
+    /* Files */
+    .side { border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; min-height: 0; }
+    .side-head { display: flex; align-items: center; gap: 4px; padding: 8px 8px 6px 12px; }
+    .side-head .label { flex: 1; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+    .icon-btn {
+      border: 0; background: transparent; color: var(--text-2); border-radius: 6px;
+      padding: 3px 7px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+    .icon-btn:disabled { opacity: .4; cursor: default; }
+    #tree { flex: 1; overflow: auto; padding: 0 6px 10px; }
+    .node {
+      display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+      border: 0; background: transparent; color: var(--text-2); font: inherit;
+      padding: 4px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .node:hover { background: var(--surface-3); color: var(--text); }
+    .node.active { background: var(--accent-soft); color: var(--text); }
+    .node.dir { color: var(--muted); font-weight: 500; }
+    .node .caret { width: 10px; flex: none; font-size: 10px; }
+    .empty { color: var(--muted); padding: 10px 8px; line-height: 1.5; }
+
+    /* Editor */
+    .main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+    .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    #file-name { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #file-name.dirty::after { content: ' •'; color: var(--accent-text); }
+    .btn {
+      border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
+      border-radius: 7px; padding: 4px 12px; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+    }
+    .btn:hover:not(:disabled) { background: var(--surface-3); }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .btn.run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent-dim); }
+    .btn.run:hover:not(:disabled) { background: var(--accent-dim); }
+    .btn.stop { color: var(--err); }
+
+    .notice { display: none; align-items: center; gap: 8px; padding: 6px 12px; background: var(--accent-soft); border-bottom: 1px solid var(--accent-line); color: var(--text); }
+    .notice.show { display: flex; }
+    .notice span { flex: 1; }
+
+    .editor { flex: 1; min-height: 0; display: flex; overflow: hidden; background: var(--code-bg); }
+    #gutter {
+      flex: none; padding: 10px 8px 10px 12px; text-align: right; color: var(--muted);
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.6; user-select: none;
+      overflow: hidden; white-space: pre; border-right: 1px solid var(--border); min-width: 44px;
+    }
+    #code {
+      flex: 1; border: 0; outline: none; resize: none; padding: 10px 14px; margin: 0;
+      background: transparent; color: var(--text); font-family: var(--mono); font-size: 12.5px;
+      line-height: 1.6; tab-size: 4; white-space: pre; overflow: auto;
+    }
+    #code:disabled { color: var(--muted); }
+
+    /* Output */
+    .out { flex: none; height: 34%; min-height: 90px; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+    .out-head { display: flex; align-items: center; gap: 8px; padding: 5px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); }
+    .out-head .label { flex: 1; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #output {
+      flex: 1; overflow: auto; margin: 0; padding: 8px 12px; background: var(--code-bg); color: var(--code-text);
+      font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    }
+    #output .meta { color: var(--muted); }
+    #output .err { color: var(--err); }
+
+    @media (max-width: 640px) {
+      .dev { grid-template-columns: 1fr; grid-template-rows: 30% minmax(0, 1fr); }
+      .side { border-right: 0; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/chat?user={{ user|urlencode }}">← Chat</a>
+    <span class="title">Developer</span>
+  </header>
+
+  <div class="dev">
+    <aside class="side" aria-label="Project files">
+      <div class="side-head">
+        <span class="label">projects</span>
+        <button class="icon-btn" id="new-btn" title="New file">+ New</button>
+      </div>
+      <div id="tree"></div>
+    </aside>
+
+    <section class="main">
+      <div class="bar">
+        <span id="file-name">No file open</span>
+        <button class="icon-btn" id="rename-btn" title="Rename the open file" disabled>Rename</button>
+        <button class="icon-btn" id="delete-btn" title="Delete the open file" disabled>Delete</button>
+        <button class="btn" id="save-btn" title="Save (Ctrl/Cmd+S)" disabled>Save</button>
+        <button class="btn run" id="run-btn" title="Run .py with Python, .sh with bash" disabled>▶ Run</button>
+      </div>
+      <div class="notice" id="notice">
+        <span>The file changed on disk while you had edits here.</span>
+        <button class="btn" id="reload-btn">Load theirs</button>
+        <button class="btn" id="keep-btn">Keep mine</button>
+      </div>
+      <div class="editor">
+        <div id="gutter">1</div>
+        <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" disabled
+                  placeholder="Pick a file, or make one with + New."></textarea>
+      </div>
+      <div class="out">
+        <div class="out-head">
+          <span class="label" id="out-label">Output</span>
+          <button class="btn stop" id="stop-btn" hidden>■ Stop</button>
+          <button class="icon-btn" id="clear-btn">Clear</button>
+        </div>
+        <pre id="output"></pre>
+      </div>
+    </section>
+  </div>
+
+<script>
+(() => {
+  const USER = {{ user|tojson }};
+  const $ = id => document.getElementById(id);
+  const tree = $('tree'), code = $('code'), gutter = $('gutter'), output = $('output');
+  const fileName = $('file-name');
+
+  // The open file: its path, the modified time we last loaded or saved, and
+  // the text as it was then (dirty = the textarea differs from it).
+  const open = { path: null, modified: 0, saved: '' };
+  const collapsed = new Set();
+  let files = [], folders = [], running = null;
+
+  const q = params => new URLSearchParams({ user: USER, ...params }).toString();
+  async function api(method, url, body) {
+    const res = await fetch(url, {
+      method, headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify({ user: USER, ...body }) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+  const dirty = () => open.path !== null && code.value !== open.saved;
+  const runnable = p => /\.(py|sh|bash)$/i.test(p || '');
+
+  function syncBar() {
+    fileName.textContent = open.path || 'No file open';
+    fileName.classList.toggle('dirty', dirty());
+    $('save-btn').disabled = !open.path;
+    $('rename-btn').disabled = $('delete-btn').disabled = !open.path;
+    $('run-btn').disabled = !runnable(open.path) || !!running;
+    $('stop-btn').hidden = !running;
+  }
+
+  // ── Files ──
+  async function loadTree() {
+    try {
+      const data = await api('GET', '/api/dev/tree?' + q({}));
+      files = data.files; folders = data.folders;
+    } catch (e) { files = []; folders = []; }
+    renderTree();
+  }
+
+  function renderTree() {
+    tree.innerHTML = '';
+    if (!files.length && !folders.length) {
+      tree.innerHTML = '<p class="empty">Empty. Make a file with + New, or ask your agent to start a project here.</p>';
+      return;
+    }
+    // Folders and files in one sorted list, each under its parent, with a
+    // folder's contents left out while it's collapsed.
+    const rows = [...folders.map(p => ({ path: p, dir: true })), ...files.map(f => ({ path: f.path, dir: false }))]
+      .sort((a, b) => {
+        const pa = a.path.split('/'), pb = b.path.split('/');
+        for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+          if (pa[i] === pb[i]) continue;
+          const aDir = i < pa.length - 1 || a.dir, bDir = i < pb.length - 1 || b.dir;
+          if (aDir !== bDir) return aDir ? -1 : 1;
+          return pa[i].localeCompare(pb[i], undefined, { sensitivity: 'base' });
+        }
+        return pa.length - pb.length;
+      });
+    for (const row of rows) {
+      const parts = row.path.split('/');
+      const hidden = parts.slice(0, -1).some((_, i) => collapsed.has(parts.slice(0, i + 1).join('/')));
+      if (hidden) continue;
+      const el = document.createElement('button');
+      el.className = 'node' + (row.dir ? ' dir' : '') + (row.path === open.path ? ' active' : '');
+      el.style.paddingLeft = (8 + (parts.length - 1) * 14) + 'px';
+      el.title = row.path;
+      const caret = document.createElement('span');
+      caret.className = 'caret';
+      caret.textContent = row.dir ? (collapsed.has(row.path) ? '▸' : '▾') : '';
+      const label = document.createElement('span');
+      label.textContent = parts[parts.length - 1];
+      el.append(caret, label);
+      el.addEventListener('click', () => {
+        if (row.dir) {
+          collapsed.has(row.path) ? collapsed.delete(row.path) : collapsed.add(row.path);
+          renderTree();
+        } else {
+          openFile(row.path);
+        }
+      });
+      tree.appendChild(el);
+    }
+  }
+
+  async function openFile(path) {
+    if (path !== open.path && dirty() && !confirm(`Discard your changes to ${open.path}?`)) return;
+    try {
+      const data = await api('GET', '/api/dev/file?' + q({ path }));
+      setOpen(data.path, data.content, data.modified);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  function setOpen(path, content, modified) {
+    open.path = path; open.saved = content; open.modified = modified;
+    code.value = content;
+    code.disabled = path === null;
+    $('notice').classList.remove('show');
+    numberLines();
+    syncBar();
+    renderTree();
+  }
+
+  async function save() {
+    if (!open.path) return;
+    try {
+      const text = code.value;
+      const data = await api('PUT', '/api/dev/file', { path: open.path, content: text });
+      open.saved = text; open.modified = data.modified;
+      $('notice').classList.remove('show');
+      syncBar();
+    } catch (e) {
+      alert(`Couldn't save: ${e.message}`);
+    }
+  }
+
+  $('new-btn').addEventListener('click', async () => {
+    const path = (prompt('New file (folders with /, e.g. app/main.py):') || '').trim();
+    if (!path) return;
+    try {
+      await api('PUT', '/api/dev/file', { path, content: '', create: true });
+      await loadTree();
+      openFile(path);
+    } catch (e) { alert(e.message); }
+  });
+
+  $('rename-btn').addEventListener('click', async () => {
+    const to = (prompt('Rename to:', open.path) || '').trim();
+    if (!to || to === open.path) return;
+    try {
+      const data = await api('POST', '/api/dev/rename', { from: open.path, to });
+      open.path = data.path;
+      await loadTree();
+      syncBar();
+    } catch (e) { alert(e.message); }
+  });
+
+  $('delete-btn').addEventListener('click', async () => {
+    if (!confirm(`Delete ${open.path}? This can't be undone.`)) return;
+    try {
+      await api('DELETE', '/api/dev/file?' + q({ path: open.path }));
+      setOpen(null, '', 0);
+      loadTree();
+    } catch (e) { alert(e.message); }
+  });
+
+  // ── Editor ──
+  function numberLines() {
+    const n = code.value.split('\n').length;
+    if (gutter.dataset.n !== String(n)) {
+      gutter.dataset.n = n;
+      gutter.textContent = Array.from({ length: n }, (_, i) => i + 1).join('\n');
+    }
+    gutter.scrollTop = code.scrollTop;
+  }
+  code.addEventListener('input', () => { numberLines(); syncBar(); });
+  code.addEventListener('scroll', () => { gutter.scrollTop = code.scrollTop; });
+  code.addEventListener('keydown', e => {
+    // Tab indents rather than leaving the editor.
+    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      document.execCommand('insertText', false, '    ');
+    }
+  });
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+  });
+  $('save-btn').addEventListener('click', save);
+
+  // The agent edits these same files. Every couple of seconds, check whether
+  // the open one changed on disk: reload it if there's nothing unsaved here,
+  // otherwise ask. The file list is refreshed less often, for new files.
+  async function poll() {
+    if (open.path && !document.hidden) {
+      try {
+        const st = await api('GET', '/api/dev/file?' + q({ path: open.path, stat: 1 }));
+        if (st.modified > open.modified) {
+          if (!dirty()) {
+            const data = await api('GET', '/api/dev/file?' + q({ path: open.path }));
+            const at = code.selectionStart;
+            setOpen(data.path, data.content, data.modified);
+            code.selectionStart = code.selectionEnd = Math.min(at, code.value.length);
+          } else {
+            $('notice').classList.add('show');
+          }
+        }
+      } catch (e) {
+        // Gone — deleted or renamed by the agent. Keep what's in the editor.
+        if (/not found/i.test(e.message)) { open.modified = Infinity; loadTree(); }
+      }
+    }
+  }
+  setInterval(poll, 2000);
+  setInterval(() => { if (!document.hidden) loadTree(); }, 6000);
+  $('reload-btn').addEventListener('click', async () => {
+    const data = await api('GET', '/api/dev/file?' + q({ path: open.path }));
+    setOpen(data.path, data.content, data.modified);
+  });
+  $('keep-btn').addEventListener('click', async () => {
+    const st = await api('GET', '/api/dev/file?' + q({ path: open.path, stat: 1 }));
+    open.modified = st.modified;
+    $('notice').classList.remove('show');
+  });
+
+  // ── Run ──
+  function print(text, cls) {
+    const atEnd = output.scrollTop + output.clientHeight >= output.scrollHeight - 4;
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    output.appendChild(span);
+    if (atEnd) output.scrollTop = output.scrollHeight;
+  }
+
+  async function run() {
+    if (!runnable(open.path) || running) return;
+    if (dirty()) await save();
+    output.textContent = '';
+    const ctrl = new AbortController();
+    running = ctrl;
+    syncBar();
+    try {
+      const res = await fetch('/api/dev/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: USER, path: open.path }), signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const line = buf.slice(0, i); buf = buf.slice(i + 2);
+          if (!line.startsWith('data: ')) continue;
+          const evt = JSON.parse(line.slice(6));
+          if (evt.type === 'start') {
+            $('out-label').textContent = '$ ' + evt.command;
+          } else if (evt.type === 'out') {
+            print(evt.text);
+          } else if (evt.type === 'end') {
+            if (evt.tail) print(evt.tail);
+            const how = evt.timed_out ? `stopped after ${evt.limit}s (time limit)`
+              : evt.code === 0 ? 'exit 0' : `exit ${evt.code}`;
+            print(`\n[${how} · ${evt.seconds}s]\n`, evt.code === 0 ? 'meta' : 'err');
+          }
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') print(`\n${e.message}\n`, 'err');
+    } finally {
+      running = null;
+      syncBar();
+    }
+  }
+  $('run-btn').addEventListener('click', run);
+  $('stop-btn').addEventListener('click', async () => {
+    try { await api('POST', '/api/dev/stop', {}); } catch (e) { /* ended already */ }
+  });
+  $('clear-btn').addEventListener('click', () => { output.textContent = ''; $('out-label').textContent = 'Output'; });
+
+  window.addEventListener('beforeunload', e => { if (dirty()) { e.preventDefault(); e.returnValue = ''; } });
+
+  syncBar();
+  loadTree();
+})();
+</script>
+</body>
+</html>

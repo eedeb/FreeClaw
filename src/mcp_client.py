@@ -42,6 +42,7 @@ import uuid
 
 import requests
 
+import src.dev_server as dev_server
 import src.shell as shell
 from src.logging_setup import get_logger
 
@@ -110,6 +111,24 @@ BUILTIN_SERVERS = [
         # Internal to FreeClaw's fast loop (agent.browser_do), never offered.
         "exclude_tools": ["fast_step"],
     },
+    {
+        "name": "developer",
+        "transport": STDIO,
+        # FreeClaw's own (src/dev_server.py): files, search and a run tool in
+        # each user's projects folder, the same one the Developer app edits.
+        "command": f'"{sys.executable}" -m src.dev_server',
+        "description": "Code in your projects folder: read, edit, search and run. Open it in the "
+                       "Developer app.",
+        # for_user() hands each user their own workspace.
+        "workspace": True,
+        "builtin": True,
+        # Unlike the browser, on unless someone switches it off: there's
+        # nothing to download, and `run` asks before anything runs, exactly
+        # like the bash tool. An install that doesn't want it at all sets
+        # FC_DISABLE_DEVELOPER (dev_server.disabled), which takes it out of
+        # the list entirely — see _merge_builtins.
+        "default_enabled": True,
+    },
 ]
 
 # Builtins that shipped under another name. A stored entry or a user's on/off
@@ -147,6 +166,8 @@ def for_user(server, user):
     logins, but then the first save changed the child's `_sig` — and the
     person who had just signed in, in the agent's own browser, had it torn
     down under them and a fresh one started on the next tool call."""
+    if server.get("workspace"):
+        return _with_workspace(server, user)
     if not server.get("needs_browser"):
         return server
     # Imported here rather than at module scope: browser_profiles imports the
@@ -164,6 +185,29 @@ def for_user(server, user):
     env = {**(server.get("env") or {}), "FC_BROWSER_USER": user.strip(),
            "FC_BROWSER_STORAGE_STATE": path}
     return {**server, "env": env}
+
+
+def _with_workspace(server, user):
+    """The Developer server bound to `user`'s projects folder,
+    static/<user>/files/projects/. A child per user for the same reason as the
+    browser's (`_sig` keys on the environment): one shared child would let
+    one user's agent read and run another's code. No user, or a name that
+    isn't a single path segment, gets no workspace, and its tools say so."""
+    user = (user or "").strip()
+    if not prefs_path(user):
+        return server
+    path = os.path.join(STATIC_ROOT, user, "files", "projects")
+    return {**server, "env": {**(server.get("env") or {}), "FC_DEV_WORKSPACE": path}}
+
+
+def developer_workspace(user):
+    """`user`'s Developer workspace, or None for a bad name. Created on the
+    way, so the app's file list never comes up without it."""
+    server = _with_workspace({"workspace": True}, user)
+    path = (server.get("env") or {}).get("FC_DEV_WORKSPACE")
+    if path:
+        os.makedirs(path, exist_ok=True)
+    return path
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "FreeClaw", "version": "1.0"}
@@ -493,11 +537,17 @@ def _merge_builtins(servers):
     servers = [s for s in servers if s.get("name") not in LEGACY_BUILTIN_NAMES]
     out = []
     for spec in BUILTIN_SERVERS:
+        # Switched off for the whole install: not in the list at all, so it's
+        # neither offered to the agent nor shown in Settings. The name stays
+        # reserved (is_builtin), so nobody can add a server called it either.
+        if spec.get("workspace") and dev_server.disabled():
+            continue
         entry = dict(spec)
         prior = stored.get(spec["name"])
         entry["url"] = ""
         entry["token"] = ""
-        entry["enabled"] = bool(prior.get("enabled")) if prior else False
+        entry["enabled"] = (bool(prior.get("enabled")) if prior
+                            else bool(spec.get("default_enabled")))
         out.append(entry)
     out.extend(s for s in servers if s.get("name") not in BUILTIN_NAMES)
     return out

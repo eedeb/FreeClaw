@@ -8,6 +8,7 @@ import src.browser_live as browser_live
 import src.browser_profiles as browser_profiles
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
+import src.dev_server as dev_server
 import src.jev as jev
 import src.live_turns as live_turns
 import src.mcp_client as mcp_client
@@ -802,7 +803,7 @@ def open_chat():
     elif not current_user():
         return redirect(url_for('index'))
 
-    return render_template('chat.html')
+    return render_template('chat.html', developer=not dev_server.disabled())
 
 
 @app.route('/chat', methods=['POST'])
@@ -1376,6 +1377,274 @@ def api_browser_clear():
     mcp_client.clear_cache()
     agent.refresh_tools()
     return jsonify({'ok': True, 'saved_domains': []})
+
+
+# ── DEVELOPER APP ────────────────────────────────────────────
+#
+# An editor over each user's projects folder (static/<user>/files/projects/),
+# the same workspace the agent's Developer tools work in (src/dev_server.py).
+# Paths are checked by dev_server.resolve, the agent's own fence, so the page
+# and the agent can't disagree about what's inside it.
+#
+# The Run button is the person's own action, so it runs here, directly, with
+# no approval card — under the same time ceiling and output cap as the agent's
+# run tool. It never goes through the agent's server, which only ever runs
+# what the agent's approval gate let through.
+#
+# Off (dev_server.disabled — FC_DISABLE_DEVELOPER, or bash switched off) means
+# gone: the page and every route here answer 404, as if they didn't exist.
+
+# The largest file the editor opens; anything bigger isn't hand-edited.
+DEV_EDIT_MAX_BYTES = 1_000_000
+# Entries the file list shows before it stops.
+DEV_TREE_MAX = 2000
+
+# One run per user at a time: {user: Popen}. A second Run stops the first.
+_dev_runs = {}
+_dev_runs_lock = threading.Lock()
+
+
+def _dev_user(name):
+    """(name, workspace, error_response) for a Developer route — the error is
+    a 404 when the app is switched off, whoever is asking."""
+    if dev_server.disabled():
+        return None, None, (jsonify({'error': 'Not found'}), 404)
+    name, err = _files_user(name or '')
+    if err:
+        return None, None, err
+    root = mcp_client.developer_workspace(name)
+    if not root:
+        return None, None, (jsonify({'error': 'No such user'}), 404)
+    return name, os.path.realpath(root), None
+
+
+def _dev_path(root, rel, must_exist=False):
+    """(absolute path, error_response) for `rel` inside the workspace."""
+    try:
+        return dev_server.resolve(root, rel, must_exist=must_exist), None
+    except dev_server.ToolError as e:
+        return None, (jsonify({'error': str(e)}), 400)
+
+
+def _dev_args():
+    """The request's arguments, from the query string or the JSON body."""
+    if request.method in ('GET', 'DELETE'):
+        return request.args
+    return request.get_json(silent=True) or {}
+
+
+@app.route('/developer')
+def developer_page():
+    if dev_server.disabled():
+        return 'Not found', 404
+    if not logged_in():
+        return redirect(url_for('login'))
+    name = safe_username(request.args.get('user', '')) or current_user()
+    if not name or not user_exists(name):
+        return redirect(url_for('index'))
+    mcp_client.developer_workspace(name)
+    return render_template('developer.html', user=name)
+
+
+@app.route('/api/dev/tree', methods=['GET'])
+def api_dev_tree():
+    """Every file in the workspace, as a flat sorted list the page folds into
+    folders. Skips what the agent's tools skip (dependencies, caches, builds)."""
+    name, root, err = _dev_user(request.args.get('user'))
+    if err:
+        return err
+    files, folders = [], []
+    for folder, dirs, names in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in dev_server.SKIP_DIRS
+                         and not os.path.islink(os.path.join(folder, d)))
+        rel_dir = os.path.relpath(folder, root).replace(os.sep, '/')
+        if rel_dir != '.':
+            folders.append(rel_dir)
+        for fname in sorted(names, key=str.lower):
+            full = os.path.join(folder, fname)
+            if '.tmp-' in fname or os.path.islink(full):
+                continue
+            if len(files) >= DEV_TREE_MAX:
+                break
+            rel = fname if rel_dir == '.' else f"{rel_dir}/{fname}"
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            files.append({'path': rel, 'size': st.st_size, 'modified': st.st_mtime})
+    return jsonify({'user': name, 'files': files, 'folders': folders,
+                    'truncated': len(files) >= DEV_TREE_MAX})
+
+
+@app.route('/api/dev/file', methods=['GET', 'PUT', 'DELETE'])
+def api_dev_file():
+    """Open (GET), save or create (PUT) and delete (DELETE) one file.
+
+    GET with ?stat=1 answers with just the modified time: what the editor
+    polls to notice the agent changing the file it has open."""
+    args = _dev_args()
+    name, root, err = _dev_user(args.get('user'))
+    if err:
+        return err
+    path, err = _dev_path(root, args.get('path'), must_exist=request.method != 'PUT')
+    if err:
+        return err
+    if path == root or os.path.isdir(path):
+        return jsonify({'error': 'That is a folder, not a file.'}), 400
+    rel = dev_server.rel_of(root, path)
+
+    if request.method == 'GET':
+        st = os.stat(path)
+        if args.get('stat'):
+            return jsonify({'path': rel, 'modified': st.st_mtime, 'size': st.st_size})
+        if st.st_size > DEV_EDIT_MAX_BYTES:
+            return jsonify({'error': f'{rel} is too big to edit here.'}), 400
+        if _file_kind(path) != 'text':
+            return jsonify({'error': f"{rel} isn't a text file."}), 400
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace', newline='') as f:
+                content = f.read()
+        except Exception as e:
+            return _log_and_error(e)
+        return jsonify({'path': rel, 'content': content, 'modified': st.st_mtime})
+
+    if request.method == 'DELETE':
+        try:
+            os.remove(path)
+        except Exception as e:
+            return _log_and_error(e)
+        return jsonify({'ok': True, 'path': rel})
+
+    # PUT. `create` refuses to overwrite: the New file box shouldn't be able
+    # to wipe out a file that's already there under that name.
+    content = args.get('content')
+    if not isinstance(content, str):
+        return jsonify({'error': "Send JSON with a 'content' string."}), 400
+    if len(content.encode('utf-8')) > DEV_EDIT_MAX_BYTES:
+        return jsonify({'error': 'Too big to save from the editor.'}), 400
+    if args.get('create') and os.path.exists(path):
+        return jsonify({'error': f'{rel} already exists.'}), 409
+    if os.path.exists(path) and _file_kind(path) != 'text':
+        return jsonify({'error': f"{rel} isn't a text file."}), 400
+    try:
+        dev_server._write_text(path, content)
+    except Exception as e:
+        return _log_and_error(e)
+    return jsonify({'ok': True, 'path': rel, 'modified': os.stat(path).st_mtime})
+
+
+@app.route('/api/dev/rename', methods=['POST'])
+def api_dev_rename():
+    args = _dev_args()
+    name, root, err = _dev_user(args.get('user'))
+    if err:
+        return err
+    src, err = _dev_path(root, args.get('from'), must_exist=True)
+    if err:
+        return err
+    dst, err = _dev_path(root, args.get('to'))
+    if err:
+        return err
+    if src == root or dst == root:
+        return jsonify({'error': "The workspace itself can't be renamed."}), 400
+    if os.path.exists(dst):
+        return jsonify({'error': f'{dev_server.rel_of(root, dst)} already exists.'}), 409
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        os.rename(src, dst)
+    except Exception as e:
+        return _log_and_error(e)
+    return jsonify({'ok': True, 'path': dev_server.rel_of(root, dst)})
+
+
+def _dev_stop(name):
+    with _dev_runs_lock:
+        proc = _dev_runs.pop(name, None)
+    if proc is not None:
+        dev_server.kill(proc)
+    return proc is not None
+
+
+@app.route('/api/dev/run', methods=['POST'])
+def api_dev_run():
+    """Run the open file — .py under Python, .sh under bash — from the
+    workspace, streaming its output as Server-Sent Events:
+
+        {"type": "start", "command": "python app.py"}
+        {"type": "out", "text": "..."}            while inside the output cap
+        {"type": "end", "code": 0, "seconds": 1.2, "timed_out": false,
+         "tail": "..."}                           the cut note and the tail
+
+    The cap is the agent's (dev_server.Trimmer): the head streams live and
+    the tail arrives at the end, so a runaway print loop can't fill the page
+    or the server's memory."""
+    args = _dev_args()
+    name, root, err = _dev_user(args.get('user'))
+    if err:
+        return err
+    run_args = {'file': args.get('path'), 'args': []}
+    shown, error = dev_server.command_line(run_args)
+    if error:
+        return jsonify({'error': error}), 400
+    try:
+        argv, popen_kwargs = dev_server.argv_for(root, run_args)
+        proc = dev_server.spawn(argv, root, popen_kwargs)
+    except dev_server.ToolError as e:
+        return jsonify({'error': str(e)}), 400
+    except OSError as e:
+        return jsonify({'error': f"Couldn't start it: {e}"}), 500
+    _dev_stop(name)
+    with _dev_runs_lock:
+        _dev_runs[name] = proc
+
+    timed_out = threading.Event()
+
+    def expire():
+        timed_out.set()
+        dev_server.kill(proc)
+
+    timer = threading.Timer(dev_server.MAX_TIMEOUT, expire)
+    timer.start()
+    started = time.monotonic()
+
+    def sse(event):
+        return f"data: {json.dumps(event)}\n\n"
+
+    def stream():
+        trim = dev_server.Trimmer()
+        try:
+            yield sse({'type': 'start', 'command': shown})
+            read = getattr(proc.stdout, 'read1', proc.stdout.read)
+            for chunk in iter(lambda: read(4096), b''):
+                live = trim.feed(chunk.decode('utf-8', 'replace'))
+                if live:
+                    yield sse({'type': 'out', 'text': live})
+            proc.wait()
+            yield sse({'type': 'end', 'code': proc.returncode,
+                       'seconds': round(time.monotonic() - started, 2),
+                       'timed_out': timed_out.is_set(), 'limit': dev_server.MAX_TIMEOUT,
+                       'tail': trim.tail()})
+        finally:
+            # However the stream ended — finished, stopped, or the page went
+            # away mid-run — nothing is left running behind it.
+            timer.cancel()
+            dev_server.kill(proc)
+            proc.stdout.close()
+            with _dev_runs_lock:
+                if _dev_runs.get(name) is proc:
+                    del _dev_runs[name]
+
+    return Response(stream(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/api/dev/stop', methods=['POST'])
+def api_dev_stop():
+    args = _dev_args()
+    name, root, err = _dev_user(args.get('user'))
+    if err:
+        return err
+    return jsonify({'ok': True, 'stopped': _dev_stop(name)})
 
 
 @app.route('/reset', methods=['GET', 'POST'])

@@ -103,6 +103,7 @@ DEV_ONLY=(
     "/bench/"
     "/telemetry/"
     "/assets/"
+    "/tests/"
 )
 
 # Refreshed from the repo on an upgrade, path by path — never a bare checkout.

@@ -241,10 +241,13 @@ def is_interactive():
 class Request:
     """One outstanding "may I run this?" question."""
 
-    def __init__(self, user, command):
+    def __init__(self, user, command, where=None):
         self.id = uuid.uuid4().hex
         self.user = user
         self.command = command
+        # Where it will run, when that isn't the bash tool's usual place: the
+        # Developer app's run tool says "projects/…", its workspace.
+        self.where = where
         self.program = program_of(command)
         self.decision = None
         self._answered = threading.Event()
@@ -256,6 +259,7 @@ class Request:
             "id": self.id,
             "command": self.command,
             "program": self.program,
+            "where": self.where,
             "timeout": APPROVAL_TIMEOUT,
         }
 
@@ -278,10 +282,10 @@ def check(command, user=None):
     return NEEDS_PROMPT
 
 
-def open_request(command, user=None):
+def open_request(command, user=None, where=None):
     """Register a prompt and return the Request. The caller is expected to
     show it (SSE event, terminal prompt) and then call wait()."""
-    req = Request(current_user() if user is None else user, (command or "").strip())
+    req = Request(current_user() if user is None else user, (command or "").strip(), where)
     with _pending_lock:
         _pending[req.id] = req
     return req

@@ -29,6 +29,7 @@ DEV_ONLY=(
     "/bench/"
     "/telemetry/"
     "/assets/"
+    "/tests/"
 )
 
 # Colors & styles
