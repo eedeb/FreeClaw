@@ -20,6 +20,7 @@ import src.approvals as approvals
 import src.browser_handoff as browser_handoff
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
+import src.dev_server as dev_server
 import src.fast_browser as fast_browser
 import src.jev as jev
 import src.mcp_catalog as mcp_catalog
@@ -1718,13 +1719,27 @@ FAST_BROWSER_INSTRUCTION = (
     "for what browser_do can't do (reading and comparing, a sign-in form), or when it stopped short.")
 
 
-def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False):
+# Added when the Developer server is in the user's tools (src/dev_server.py).
+# A coding task is mostly reading and editing, and a whole file read or written
+# back costs its full size again on every later step of the turn — the tools
+# are built to avoid that, and this is what gets the model to use them so.
+DEVELOPER_INSTRUCTION = (
+    "Coding: projects live in the Developer workspace (the mcp_developer_* tools; the user sees "
+    "it in the Developer app). Search before you read, read only the lines you need, and change "
+    "files with edit (exact replacement) rather than rewriting them with write. Run tests or the "
+    "program with run and fix from its output. For a web page, use preview, then open the URL "
+    "in your browser to check it.")
+
+
+def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False):
     """The instruction half of the stable prefix, for this kind of conversation."""
     prompt = _INSTRUCTIONS
     if browsing:
         prompt += "\n\n" + ACCOUNT_ACTIONS_INSTRUCTION
     if browsing and fast_browser:
         prompt += "\n\n" + FAST_BROWSER_INSTRUCTION
+    if coding:
+        prompt += "\n\n" + DEVELOPER_INSTRUCTION
     if tts:
         prompt += "\n\nYou are speaking through text-to-speech — write for clear, natural speech."
     if subagent:
@@ -1739,7 +1754,8 @@ def _session_instructions(sess):
     test _build_catalogue uses (a browser server in this user's registry)."""
     user = approvals.current_user() or sess.name
     return _instructions(tts=sess.tts, subagent=sess.depth > 0,
-                         browsing=_browser_on(user), fast_browser=_fast_browser_on(user))
+                         browsing=_browser_on(user), fast_browser=_fast_browser_on(user),
+                         coding=_developer_on(user))
 
 
 def _browser_on(user):
@@ -1747,6 +1763,14 @@ def _browser_on(user):
     turn: a catalogue that can't be read just leaves the rule out."""
     try:
         return any(e["server"].get("needs_browser") for e in registry_for(user).values())
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
+def _developer_on(user):
+    """Whether `user`'s catalogue has the Developer server in it."""
+    try:
+        return any(e["server"].get("workspace") for e in registry_for(user).values())
     except Exception:                                    # noqa: BLE001
         return False
 
@@ -2958,6 +2982,29 @@ def refresh_tools(user=None):
     return entry["tools"]
 
 
+def _is_developer_entry(entry):
+    """Whether a registry entry is the Developer server's `run` — the one MCP
+    tool that goes through the approval gate. By the server and tool behind
+    the name rather than the name itself: sanitising and de-duplicating can
+    rename what the model sees."""
+    server = entry.get("server") or {}
+    return bool(server.get("builtin") and server.get("workspace") and entry.get("tool") == "run")
+
+
+def _is_developer_run(command_name):
+    """Whether `command_name` is, for this turn's user, the Developer run
+    tool. Never what fails a turn — but a lookup that fails can't let a run
+    past the gate either: the dispatch in _run_tool checks again."""
+    if not command_name.startswith("mcp_"):
+        return False
+    try:
+        entry = registry_for(_tools_user()).get(command_name)
+    except Exception:                                    # noqa: BLE001
+        logger.warning("Couldn't look up '%s' for the approval gate", command_name, exc_info=True)
+        return False
+    return bool(entry) and _is_developer_entry(entry)
+
+
 def _tools_user():
     """The FreeClaw user whose MCP selection this thread's turn should see.
 
@@ -3666,6 +3713,12 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         # the server as configured for the install, while a browser server's
         # saved logins are per user. `for_user` is a no-op for everything else.
         server = mcp_client.for_user(entry["server"], approvals.current_user())
+        # Second line of defence for the Developer app's run tool, as for
+        # bash above: agent_stream has already run the gate, and a caller
+        # that skipped it can't run anything regardless.
+        if _is_developer_entry(entry) and not bash_approved:
+            logger.warning("Blocked an unapproved Developer run")
+            return approvals.denial_message(approvals.DECISION_DENY)
         try:
             result = mcp_client.call_tool(server, entry["tool"], args_dict)
             if (server.get("builtin") and server.get("needs_browser")
@@ -5190,21 +5243,38 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                                 command_name, TOOL_CALL_RUN_LIMIT, same)
                     yield {"type": "tool_throttled", "name": command_name,
                            "limit": TOOL_CALL_RUN_LIMIT, "reason": held}
-                elif command_name == 'run_bash_command':
+                elif command_name == 'run_bash_command' or _is_developer_run(command_name):
                     # The approval gate. Deliberately here rather than inside
                     # _run_tool: asking the user means emitting an event and
                     # then blocking, and only the generator can do the first
                     # half. The model has no say in any of this and isn't
                     # consulted — see src/approvals.py.
-                    verdict = approvals.check(args_dict.get('command'))
-                    if verdict == approvals.ALLOWED:
+                    #
+                    # The Developer app's run tool comes through here too: it
+                    # runs code just as surely as bash does. What's checked
+                    # and shown for it is the command line dev_server builds
+                    # from the same arguments it will run — `python app.py`
+                    # for a file — so the rules and the card mean the same
+                    # thing for both tools.
+                    where = None
+                    if command_name == 'run_bash_command':
+                        gated, invalid = args_dict.get('command'), None
+                    else:
+                        gated, invalid = dev_server.command_line(args_dict)
+                        where = "projects/"
+                    verdict = approvals.NO_COMMAND if invalid else approvals.check(gated)
+                    if invalid:
+                        # Malformed, so nothing to approve: the model is told
+                        # what's wrong and nobody is asked.
+                        result = "Error: " + invalid
+                    elif verdict == approvals.ALLOWED:
                         bash_approved = True
                     elif verdict == approvals.NO_COMMAND:
                         result = approvals.denial_message(approvals.NO_COMMAND)
                     elif not approvals.is_interactive():
                         result = approvals.denial_message("not_interactive")
                     else:
-                        req = approvals.open_request(args_dict.get('command'))
+                        req = approvals.open_request(gated, where=where)
                         yield {"type": "approval_request", **req.as_event()}
                         # Blocks this turn until the user answers, the request
                         # times out, or it's abandoned. In the web UI the answer

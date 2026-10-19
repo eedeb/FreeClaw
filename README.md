@@ -227,6 +227,7 @@ FreeClaw/
 │   └── templates/
 │       ├── index.html        # Home page — pick an agent, toggle the API
 │       ├── chat.html         # Chat UI (dark theme, markdown rendering, token counter, file upload)
+│       ├── developer.html    # Developer app — file list, editor and Run for static/<user>/files/projects/
 │       ├── settings.html     # Settings — providers, MCP servers, .env, restart
 │       └── login.html        # Password login screen
 ├── src/
@@ -236,7 +237,9 @@ FreeClaw/
 │   ├── users.py              # User/conversation storage, shared by the web app and CLI
 │   ├── scraper.py            # DuckDuckGo search + page scraping + text cleaning
 │   ├── mcp_client.py         # MCP client — external MCP servers over HTTP or local stdio processes
+│   ├── dev_server.py         # The Developer app's coding tools (ls, read, write, edit, search, run, preview), a builtin stdio MCP server
 │   └── logging_setup.py      # Central logger — full tracebacks go to logs/freeclaw.log
+├── tests/                    # Not installed — `python -m unittest discover -s tests`
 ├── models/
 │   └── data.pth              # Classy intent classifier weights
 ├── logs/
@@ -327,6 +330,32 @@ Review and revoke under **Settings → Bash Approvals**. There's no field to typ
 A ping firing at 3am has nobody to ask. Those turns still honour saved rules — that's what always-allow is for — but anything needing a prompt is refused rather than left hanging.
 
 The gate stops commands running unasked. It is **not a sandbox**: an approved command has whatever access the FreeClaw process does, including rewriting the rule file, so approving one arbitrary command is in practice approving all of them. Running FreeClaw as a user that can't touch anything you care about is still the real containment story. Rules live at `Flask/static/<user>/.bash_approvals.json`, outside the `files/` folder the agent's own file tools can reach.
+
+---
+
+## Developer App
+
+A small code editor and a set of coding tools for the agent, both working in the same folder: each user's `Flask/static/<user>/files/projects/`.
+
+**For you:** open **Developer** in the sidebar. Files are on the left (**+ New**, with `/` for folders), the editor in the middle (**Ctrl/Cmd+S** saves), and **▶ Run** runs the open file — `.py` with the `python3` on your PATH, `.sh` with bash — from the projects folder, streaming its output below with a **Stop** button. Running your own file asks nothing. When the agent changes the file you have open, the editor reloads it (or asks, if you have unsaved edits).
+
+**For the agent:** a builtin MCP server, `developer` (`src/dev_server.py`), on by default and switchable per user like any other server. Its tools reach the model as `mcp_developer_<tool>`:
+
+| Tool | What it returns |
+|---|---|
+| `ls` | A tree to a small depth, capped, skipping `.git`, `node_modules`, virtualenvs, caches and build folders |
+| `read` | A numbered slice of a file (200 lines by default, 500 at most) and the file's total line count |
+| `write` | Creates or overwrites a file, making folders; answers in one line |
+| `edit` | Replaces an exact string; fails if it isn't found, or matches more than once without `all: true` |
+| `search` | Regex across the workspace (optional glob): `path:line: text`, 50 hits at most |
+| `run` | Runs a bash command, or `python <file> <args>`; exit code plus the head and tail of the output (3 KB each), saying how much was cut. 45 s by default, 580 s at most |
+| `preview` | Serves a folder on `127.0.0.1` and returns the URL, to open with the browser tools and screenshot |
+
+They're built to keep coding cheap: nothing returns a whole file or a whole log, and the agent is told to search first, read slices and edit by exact replacement. Every path must stay inside the workspace — absolute paths, `..` and symlinks leading out are refused.
+
+**`run` goes through [Bash Approvals](#bash-approvals).** The card shows exactly what will run (`python app.py --port 8000`), your saved always-allow rules apply to it, and background turns (pings, the API) are refused unless a rule allows it. Like bash it is not a sandbox: an approved command has the FreeClaw process's access.
+
+**Switching it off.** `FC_DISABLE_DEVELOPER=1` (or `FC_DISABLE_BASH=1`) removes it entirely — the tools aren't offered, `/developer` and `/api/dev/*` answer 404, and the sidebar entry is gone. Self-hosted installs leave it unset.
 
 ---
 
@@ -426,6 +455,7 @@ Settings live in a `.env` file in the project root, created for you during insta
 | `VISION_PROVIDER` | No | Name of the configured provider (from **Settings → Providers**) used to describe uploaded images — pick it in **Settings → Vision Model** |
 | `MCP_NAMES` / `MCP_URLS` / `MCP_TOKENS` / `MCP_ENABLED` / `MCP_TRANSPORTS` / `MCP_COMMANDS` | No | Connected MCP servers — managed from **Settings → MCP Servers**. `MCP_TRANSPORTS` is `http` or `stdio` per entry (missing = `http`); `MCP_COMMANDS` holds the command line for stdio ones. `MCP_ENABLED` is the default a user inherits until they switch a server on or off for themselves |
 | `CUSTOM_DOMAIN` | No | Overrides the auto-detected local IP for file/page links the agent returns. Set it from **Settings → Custom Domain** if you reach FreeClaw through a name rather than an address |
+| `FC_DISABLE_DEVELOPER` | No | `1` switches the [Developer app](#developer-app) off entirely: no sidebar entry, no routes, no coding tools for the agent. Also off whenever `FC_DISABLE_BASH` is set. Read from the process environment, so set it where FreeClaw is started |
 | `FC_DEBUG` | No | `0` turns off Werkzeug's reloader and interactive debugger. Defaults to on when you run `python -m Flask.main` yourself; every supervisor sets it to `0`, because the reloader forks a second process and would leave the supervisor watching the wrong one |
 | `FC_TELEMETRY` | No | `1` sends the one-off anonymous install ping described under [Telemetry](#telemetry). Off unless you opted in during install |
 | `FC_INSTALL_ID` | No | Random UUID written here after that ping is sent, so it's only ever sent once. Delete the line to reset |
