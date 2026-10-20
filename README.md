@@ -237,7 +237,8 @@ FreeClaw/
 │   ├── users.py              # User/conversation storage, shared by the web app and CLI
 │   ├── scraper.py            # DuckDuckGo search + page scraping + text cleaning
 │   ├── mcp_client.py         # MCP client — external MCP servers over HTTP or local stdio processes
-│   ├── dev_server.py         # The Developer app's coding tools (ls, read, write, edit, search, run, preview), a builtin stdio MCP server
+│   ├── dev_server.py         # The Developer app's coding tools (ls, read, write, edit, search, run, git_*, preview), a builtin stdio MCP server
+│   ├── dev_git.py            # Git for the Developer app: clone/status/diff/commit/push/pull/branch for GitHub repos
 │   └── logging_setup.py      # Central logger — full tracebacks go to logs/freeclaw.log
 ├── tests/                    # Not installed — `python -m unittest discover -s tests`
 ├── models/
@@ -354,6 +355,8 @@ A small code editor and a set of coding tools for the agent, both working in the
 They're built to keep coding cheap: nothing returns a whole file or a whole log, and the agent is told to search first, read slices and edit by exact replacement. Every path must stay inside the workspace — absolute paths, `..` and symlinks leading out are refused.
 
 **`run` goes through [Bash Approvals](#bash-approvals).** The card shows exactly what will run (`python app.py --port 8000`), your saved always-allow rules apply to it, and background turns (pings, the API) are refused unless a rule allows it. Like bash it is not a sandbox: an approved command has the FreeClaw process's access.
+
+**GitHub.** Connect GitHub in the App Store (a personal access token that can read and write your repos), and the Developer app can work on your repositories. The agent gets `git_clone`, `git_status`, `git_diff`, `git_commit`, `git_push`, `git_pull` and `git_branch` (`src/dev_git.py`), and the app gets a **Source control** panel under the file list with the same actions: paste a repo URL and **Clone**, then **Status**, **Diff**, **Commit**, **Push** and **Pull**. Only `https://github.com/` repos, and push and pull only go to a repo's GitHub `origin`. The agent's `git_push` asks you first, like `run`. The token reaches git as a header for github.com only, never a command line, a file or code you run, and a repo's own config can't make git run commands (hooks, fsmonitor, pagers and the like are forced off). Commits use your GitHub name and its private noreply address. Opening a pull request is the GitHub connector's job.
 
 **Switching it off.** `FC_DISABLE_DEVELOPER=1` (or `FC_DISABLE_BASH=1`) removes it entirely — the tools aren't offered, `/developer` and `/api/dev/*` answer 404, and the sidebar entry is gone. Self-hosted installs leave it unset.
 

@@ -1728,7 +1728,9 @@ DEVELOPER_INSTRUCTION = (
     "it in the Developer app). Search before you read, read only the lines you need, and change "
     "files with edit (exact replacement) rather than rewriting them with write. Run tests or the "
     "program with run and fix from its output. For a web page, use preview, then open the URL "
-    "in your browser to check it.")
+    "in your browser to check it. A GitHub repo: git_clone it, change it, then git_diff, "
+    "git_commit and git_push (on a branch of its own unless they said otherwise); open the pull "
+    "request with the GitHub tools if they have them.")
 
 
 def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False):
@@ -2988,7 +2990,13 @@ def _is_developer_entry(entry):
     the name rather than the name itself: sanitising and de-duplicating can
     rename what the model sees."""
     server = entry.get("server") or {}
-    return bool(server.get("builtin") and server.get("workspace") and entry.get("tool") == "run")
+    return bool(server.get("builtin") and server.get("workspace")
+                and entry.get("tool") in DEVELOPER_GATED)
+
+
+# The Developer server's tools that ask first: running code, and pushing to
+# someone's GitHub repo.
+DEVELOPER_GATED = ("run", "git_push")
 
 
 def _is_developer_run(command_name):
@@ -3003,6 +3011,14 @@ def _is_developer_run(command_name):
         logger.warning("Couldn't look up '%s' for the approval gate", command_name, exc_info=True)
         return False
     return bool(entry) and _is_developer_entry(entry)
+
+
+def _developer_tool(command_name):
+    """The Developer server's own name for `command_name` ("run", "git_push")."""
+    try:
+        return (registry_for(_tools_user()).get(command_name) or {}).get("tool") or ""
+    except Exception:                                    # noqa: BLE001
+        return ""
 
 
 def _tools_user():
@@ -5259,6 +5275,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     where = None
                     if command_name == 'run_bash_command':
                         gated, invalid = args_dict.get('command'), None
+                    elif _developer_tool(command_name) == "git_push":
+                        repo = str(args_dict.get("repo") or "").strip()
+                        branch = str(args_dict.get("branch") or "").strip() or "its current branch"
+                        gated = f"git push {repo} to {branch}" if repo else None
+                        invalid = None if repo else "git_push needs repo."
+                        where = "GitHub"
                     else:
                         gated, invalid = dev_server.command_line(args_dict)
                         where = "projects/"

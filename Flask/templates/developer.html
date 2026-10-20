@@ -116,6 +116,16 @@
     .icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
     .icon-btn:disabled { opacity: .4; cursor: default; }
     #tree { flex: 1; overflow: auto; padding: 0 6px 10px; }
+    /* Source control (src/dev_git.py through /api/dev/git) */
+    .git { border-top: 1px solid var(--border); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+    .git input, .git select, .git textarea { width: 100%; box-sizing: border-box; font: 12px var(--mono);
+      background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; }
+    .git textarea { resize: vertical; min-height: 44px; font-family: inherit; }
+    .git .row { display: flex; gap: 4px; }
+    .git .row > * { flex: 1; }
+    .git pre { margin: 0; max-height: 140px; overflow: auto; font: 11px/1.4 var(--mono); color: var(--muted);
+      white-space: pre-wrap; }
+    .git .hint { font-size: 11.5px; color: var(--muted); }
     .node {
       display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
       border: 0; background: transparent; color: var(--text-2); font: inherit;
@@ -190,6 +200,17 @@
         <button class="icon-btn" id="new-btn" title="New file">+ New</button>
       </div>
       <div id="tree"></div>
+      <div class="git" id="git">
+        <div class="side-head" style="padding:0"><span class="label">Source control</span></div>
+        <div class="hint" id="git-connect" hidden>Connect GitHub to clone and push: App Store → GitHub.</div>
+        <div class="row"><input id="git-url" placeholder="https://github.com/you/repo"><button class="icon-btn" id="git-clone">Clone</button></div>
+        <select id="git-repo" aria-label="Repo"></select>
+        <div class="row"><button class="icon-btn" id="git-status">Status</button><button class="icon-btn" id="git-diff">Diff</button><button class="icon-btn" id="git-pull">Pull</button></div>
+        <textarea id="git-msg" placeholder="Commit message"></textarea>
+        <div class="row"><input id="git-branch" placeholder="branch (default: current)"></div>
+        <div class="row"><button class="icon-btn" id="git-commit">Commit</button><button class="btn" id="git-push">Push</button></div>
+        <pre id="git-out"></pre>
+      </div>
     </aside>
 
     <section class="main">
@@ -255,6 +276,41 @@
     $('run-btn').disabled = !runnable(open.path) || !!running;
     $('stop-btn').hidden = !running;
   }
+
+  // ── Source control ──
+  const gitOut = $('git-out');
+  async function gitInfo() {
+    try {
+      const d = await api('GET', '/api/dev/git?' + q({}));
+      $('git-connect').hidden = d.connected;
+      const sel = $('git-repo'), keep = sel.value;
+      sel.innerHTML = '';
+      if (!d.repos.length) sel.add(new Option('No repos yet: clone one', ''));
+      d.repos.forEach(r => sel.add(new Option(r, r)));
+      if (d.repos.includes(keep)) sel.value = keep;
+    } catch (e) { gitOut.textContent = e.message; }
+  }
+  async function git(op, body, busy) {
+    const repo = $('git-repo').value;
+    if (op !== 'clone' && !repo) { gitOut.textContent = 'Clone a repo first.'; return; }
+    busy.disabled = true;
+    gitOut.textContent = op + '…';
+    try {
+      const d = await api('POST', '/api/dev/git/' + op, { repo, ...body });
+      gitOut.textContent = d.text || 'Done.';
+      if (op === 'clone') { $('git-url').value = ''; await gitInfo(); }
+      if (op === 'commit') $('git-msg').value = '';
+      if (op === 'clone' || op === 'pull') await loadTree();
+    } catch (e) { gitOut.textContent = e.message; }
+    busy.disabled = false;
+  }
+  $('git-clone').onclick = e => git('clone', { url: $('git-url').value.trim() }, e.target);
+  $('git-status').onclick = e => git('status', {}, e.target);
+  $('git-diff').onclick = e => git('diff', {}, e.target);
+  $('git-pull').onclick = e => git('pull', {}, e.target);
+  $('git-commit').onclick = e => git('commit', { message: $('git-msg').value }, e.target);
+  $('git-push').onclick = e => git('push', { branch: $('git-branch').value.trim() }, e.target);
+  gitInfo();
 
   // ── Files ──
   async function loadTree() {

@@ -46,6 +46,8 @@ import sys
 import threading
 import time
 
+import src.dev_git as dev_git
+
 # ── limits ───────────────────────────────────────────────────
 #
 # Each is a cap on what one tool result can cost, not on what the agent can
@@ -358,8 +360,10 @@ def spawn(argv, cwd, popen_kwargs=None):
     else:
         kwargs["start_new_session"] = True
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    # The workspace is this process's business, not the program's.
+    # The workspace is this process's business, not the program's; the GitHub
+    # token is git's (src/dev_git.py), never the program's.
     env.pop("FC_DEV_WORKSPACE", None)
+    env.pop("FC_DEV_GITHUB_TOKEN", None)
     return subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, env=env, **kwargs)
 
@@ -525,6 +529,53 @@ TOOLS = [
             "args": {"type": "array", "items": {"type": "string"}},
             "timeout": {"type": "integer", "description": f"Seconds; default {DEFAULT_TIMEOUT}, max {MAX_TIMEOUT}."},
         }},
+    },
+    # Git, for a GitHub repo cloned into the workspace (src/dev_git.py).
+    # `repo` is the repo's folder in the workspace.
+    {
+        "name": "git_clone",
+        "description": "Clone a GitHub repo (https URL) into the workspace.",
+        "inputSchema": {"type": "object", "properties": {
+            "url": {"type": "string"}, "folder": {"type": "string", "description": "Default: the repo's name."},
+        }, "required": ["url"]},
+    },
+    {
+        "name": "git_status",
+        "description": "Branch and changed files of a repo.",
+        "inputSchema": {"type": "object", "properties": {"repo": _PATH}, "required": ["repo"]},
+    },
+    {
+        "name": "git_diff",
+        "description": "Changes in a repo: a stat, then hunks with 1 line of context.",
+        "inputSchema": {"type": "object", "properties": {
+            "repo": _PATH, "file": {"type": "string"}, "staged": {"type": "boolean"},
+        }, "required": ["repo"]},
+    },
+    {
+        "name": "git_commit",
+        "description": "Commit all changes in a repo (or just files).",
+        "inputSchema": {"type": "object", "properties": {
+            "repo": _PATH, "message": {"type": "string"},
+            "files": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["repo", "message"]},
+    },
+    {
+        "name": "git_push",
+        "description": "Push a repo's current commit to a branch on GitHub (default: the current one).",
+        "inputSchema": {"type": "object", "properties": {"repo": _PATH, "branch": {"type": "string"}},
+                        "required": ["repo"]},
+    },
+    {
+        "name": "git_pull",
+        "description": "Fast-forward a repo from GitHub.",
+        "inputSchema": {"type": "object", "properties": {"repo": _PATH}, "required": ["repo"]},
+    },
+    {
+        "name": "git_branch",
+        "description": "List branches, or create one (switch: true to move onto it).",
+        "inputSchema": {"type": "object", "properties": {
+            "repo": _PATH, "name": {"type": "string"}, "switch": {"type": "boolean"},
+        }, "required": ["repo"]},
     },
     {
         "name": "preview",
@@ -713,6 +764,38 @@ class Tools:
 
     def t_run(self, root, args):
         return run(root, args)
+
+    # git
+
+    def _repo(self, root, args):
+        return resolve(root, args.get("repo"), must_exist=True)
+
+    def _git(self, fn, *a, **kw):
+        try:
+            return fn(*a, **kw)
+        except dev_git.GitError as e:
+            raise ToolError(str(e))
+
+    def t_git_clone(self, root, args):
+        return self._git(dev_git.clone, root, args.get("url"), args.get("folder"))
+
+    def t_git_status(self, root, args):
+        return self._git(dev_git.status, self._repo(root, args))
+
+    def t_git_diff(self, root, args):
+        return self._git(dev_git.diff, self._repo(root, args), args.get("file"), bool(args.get("staged")))
+
+    def t_git_commit(self, root, args):
+        return self._git(dev_git.commit, self._repo(root, args), args.get("message"), args.get("files"))
+
+    def t_git_push(self, root, args):
+        return self._git(dev_git.push, self._repo(root, args), args.get("branch"))
+
+    def t_git_pull(self, root, args):
+        return self._git(dev_git.pull, self._repo(root, args))
+
+    def t_git_branch(self, root, args):
+        return self._git(dev_git.branch, self._repo(root, args), args.get("name"), bool(args.get("switch")))
 
     # preview
 
