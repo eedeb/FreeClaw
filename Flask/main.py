@@ -8,6 +8,7 @@ import src.browser_live as browser_live
 import src.browser_profiles as browser_profiles
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
+import src.dev_git as dev_git
 import src.dev_server as dev_server
 import src.jev as jev
 import src.live_turns as live_turns
@@ -1645,6 +1646,59 @@ def api_dev_stop():
     if err:
         return err
     return jsonify({'ok': True, 'stopped': _dev_stop(name)})
+
+
+# The Developer app's Source control panel: the same git the agent's tools use
+# (src/dev_git.py), with the token from this user's GitHub connection. The
+# person pressing a button is the approval, as with Run.
+_DEV_GIT_OPS = ('status', 'diff', 'commit', 'push', 'pull', 'branch', 'clone')
+
+
+@app.route('/api/dev/git/<op>', methods=['GET', 'POST'])
+def api_dev_git(op):
+    if op not in _DEV_GIT_OPS:
+        return jsonify({'error': 'Not found'}), 404
+    args = _dev_args()
+    name, root, err = _dev_user(args.get('user'))
+    if err:
+        return err
+    repo = None
+    if op != 'clone':
+        repo, err = _dev_path(root, args.get('repo'), must_exist=True)
+        if err:
+            return err
+    try:
+        with dev_git.using_token(mcp_client.github_token(name)):
+            if op == 'clone':
+                text = dev_git.clone(root, args.get('url'), args.get('folder') or None)
+            elif op == 'status':
+                text = dev_git.status(repo)
+            elif op == 'diff':
+                text = dev_git.diff(repo, args.get('file') or None, bool(args.get('staged')))
+            elif op == 'commit':
+                text = dev_git.commit(repo, args.get('message'), args.get('files') or None)
+            elif op == 'push':
+                text = dev_git.push(repo, args.get('branch') or None)
+            elif op == 'pull':
+                text = dev_git.pull(repo)
+            else:
+                text = dev_git.branch(repo, args.get('name') or None, bool(args.get('switch')))
+    except dev_git.GitError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'ok': True, 'text': text})
+
+
+@app.route('/api/dev/git', methods=['GET'])
+def api_dev_git_info():
+    """For the panel: whether GitHub is connected, and which top-level
+    folders in the workspace are repos."""
+    name, root, err = _dev_user(request.args.get('user'))
+    if err:
+        return err
+    repos = sorted(d for d in os.listdir(root)
+                   if os.path.isdir(os.path.join(root, d)) and not os.path.islink(os.path.join(root, d))
+                   and dev_git.is_repo(os.path.join(root, d)))
+    return jsonify({'connected': bool(mcp_client.github_token(name)), 'repos': repos})
 
 
 @app.route('/reset', methods=['GET', 'POST'])

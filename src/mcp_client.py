@@ -197,7 +197,32 @@ def _with_workspace(server, user):
     if not prefs_path(user):
         return server
     path = os.path.join(STATIC_ROOT, user, "files", "projects")
-    return {**server, "env": {**(server.get("env") or {}), "FC_DEV_WORKSPACE": path}}
+    env = {**(server.get("env") or {}), "FC_DEV_WORKSPACE": path}
+    token = github_token(user)
+    if token:
+        # For the Developer server's git tools only (src/dev_git.py); it
+        # never reaches code the user runs (dev_server.spawn drops it).
+        env["FC_DEV_GITHUB_TOKEN"] = token
+    return {**server, "env": env}
+
+
+GITHUB_MCP_HOST = "api.githubcopilot.com"
+
+
+def github_token(user):
+    """The token from `user`'s GitHub connection (App Store → GitHub), or "".
+    Off or on, it's the token they gave FreeClaw for their repos."""
+    try:
+        servers = read_servers(user)
+    except Exception:                                    # noqa: BLE001 — no git, then
+        return ""
+    for s in servers:
+        url = (s.get("url") or "").lower()
+        if s.get("catalog") == "github" or GITHUB_MCP_HOST in url:
+            token = (s.get("token") or "").strip()
+            if token:
+                return token
+    return ""
 
 
 def developer_workspace(user):

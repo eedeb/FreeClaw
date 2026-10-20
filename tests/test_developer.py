@@ -298,7 +298,7 @@ class TestProtocol(Workspace):
         self.assertEqual([r["id"] for r in replies], [1, 2, 3, 4])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-06-18")
         names = [t["name"] for t in replies[1]["result"]["tools"]]
-        self.assertEqual(names, ["ls", "read", "write", "edit", "search", "run", "preview"])
+        self.assertEqual(names, ["ls", "read", "write", "edit", "search", "run", "git_clone", "git_status", "git_diff", "git_commit", "git_push", "git_pull", "git_branch", "preview"])
         self.assertIn("1\tx", replies[2]["result"]["content"][0]["text"])
         self.assertTrue(replies[3]["result"]["isError"])
 
