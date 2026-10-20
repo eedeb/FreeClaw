@@ -86,6 +86,21 @@ class GitTests(unittest.TestCase):
         dev_git.commit(self.repo, "first")
         self.assertFalse(os.path.exists(marker), "something from the repo's config ran")
 
+    def test_execute_bit_stripped_is_not_a_change(self):
+        """What FreeClaw's own harden_tree does to a cloned repo's scripts."""
+        script = os.path.join(self.repo, "run.sh")
+        with open(script, "w") as f:
+            f.write("echo hi\n")
+        os.chmod(script, 0o755)
+        sh("git", "add", "run.sh", cwd=self.repo)
+        sh("git", "-c", "core.fileMode=true", "-c", "user.name=x", "-c", "user.email=x@x",
+           "commit", "-q", "-m", "script", cwd=self.repo)
+        os.chmod(script, 0o644)
+        self.assertEqual([c for c in dev_git.changes(self.repo) if c["path"] == "run.sh"], [])
+        dev_git.commit(self.repo, "other", files=["a.py"])
+        _, mode = dev_git.git(["ls-files", "-s", "run.sh"], self.repo)
+        self.assertTrue(mode.startswith("100755"), mode)
+
     def test_status_diff_commit_branch(self):
         self.assertIn("a.py", dev_git.status(self.repo))
         self.assertIn("first", dev_git.commit(self.repo, "first"))

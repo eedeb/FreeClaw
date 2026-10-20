@@ -43,6 +43,12 @@ SAFE_CONFIG = [
     "-c", "protocol.https.allow=always",
     "-c", "submodule.recurse=false",
     "-c", "safe.directory=*",
+    # FreeClaw takes the execute bit off every file under Flask/static, the
+    # projects folder included, at startup and as it runs (uploads.harden_tree).
+    # Without this, every restart would show a repo's scripts as changed
+    # (100755 -> 100644, nothing else). Ignored, a file keeps the mode it has on
+    # GitHub; scripts still run, as `bash file.sh` doesn't need the bit.
+    "-c", "core.fileMode=false",
 ]
 
 
