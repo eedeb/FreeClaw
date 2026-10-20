@@ -1725,7 +1725,9 @@ FAST_BROWSER_INSTRUCTION = (
 # are built to avoid that, and this is what gets the model to use them so.
 DEVELOPER_INSTRUCTION = (
     "Coding: projects live in the Developer workspace (the mcp_developer_* tools; the user sees "
-    "it in the Developer app). Search before you read, read only the lines you need, and change "
+    "it in the Developer app). To understand a project, start with overview, then outline the "
+    "folder or file you need and find the names you're after; search text after that. Never read "
+    "whole files to get your bearings: read only the lines you need, and change "
     "files with edit (exact replacement) rather than rewriting them with write. Run tests or the "
     "program with run and fix from its output. For a web page, use preview, then open the URL "
     "in your browser to check it. A GitHub repo: git_clone it, change it, then git_diff, "

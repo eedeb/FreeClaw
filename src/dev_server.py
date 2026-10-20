@@ -47,6 +47,7 @@ import threading
 import time
 
 import src.dev_git as dev_git
+import src.dev_map as dev_map
 
 # ── limits ───────────────────────────────────────────────────
 #
@@ -509,6 +510,28 @@ TOOLS = [
             "all": {"type": "boolean"},
         }, "required": ["path", "old", "new"]},
     },
+    # The project map (src/dev_map.py): understand before reading.
+    {
+        "name": "overview",
+        "description": "One-screen summary of a project or folder: languages, folders, README, "
+                       "manifests, entry points. Start here.",
+        "inputSchema": {"type": "object", "properties": {"path": _PATH}},
+    },
+    {
+        "name": "outline",
+        "description": "Classes, functions and headings of a file or folder with line numbers, no bodies.",
+        "inputSchema": {"type": "object", "properties": {
+            "path": _PATH, "glob": {"type": "string", "description": "Only files matching, e.g. *.py."},
+        }},
+    },
+    {
+        "name": "find",
+        "description": "Where a function, class or other name is defined: path:line and signature.",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string"}, "path": _PATH,
+            "partial": {"type": "boolean", "description": "Match names containing it."},
+        }, "required": ["name"]},
+    },
     {
         "name": "search",
         "description": f"Regex search of the workspace: path:line: text per hit, up to {SEARCH_MAX_HITS}.",
@@ -517,6 +540,7 @@ TOOLS = [
             "glob": {"type": "string", "description": "Only files matching, e.g. *.py."},
             "path": _PATH,
             "ignore_case": {"type": "boolean"},
+            "files_only": {"type": "boolean", "description": "Just the files that match, with hit counts."},
         }, "required": ["pattern"]},
     },
     {
@@ -728,11 +752,12 @@ class Tools:
             raise ToolError(f"Bad regex: {e}")
         glob = args.get("glob") or ""
         top = resolve(root, args.get("path"), must_exist=True)
-        hits, more = [], 0
-        files = [top] if os.path.isfile(top) else self._files(top)
+        files_only = bool(args.get("files_only"))
+        hits, more, counts = [], 0, {}
+        files = [top] if os.path.isfile(top) else self._files(top, root)
         for path in files:
             rel = rel_of(root, path)
-            if glob and not (fnmatch.fnmatch(os.path.basename(path), glob) or fnmatch.fnmatch(rel, glob)):
+            if not dev_map.match_glob(path, rel, glob):
                 continue
             try:
                 if os.path.getsize(path) > SEARCH_MAX_FILE_BYTES or not _is_text(path):
@@ -740,6 +765,9 @@ class Tools:
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
                     for n, line in enumerate(f, 1):
                         if regex.search(line):
+                            if files_only:
+                                counts[rel] = counts.get(rel, 0) + 1
+                                continue
                             if len(hits) >= SEARCH_MAX_HITS:
                                 more += 1
                                 continue
@@ -749,21 +777,47 @@ class Tools:
                             hits.append(f"{rel}:{n}: {line}")
             except OSError:
                 continue
+        if files_only:
+            if not counts:
+                return "No matches."
+            ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+            lines = [f"{rel} ({n})" for rel, n in ranked[:SEARCH_MAX_HITS]]
+            if len(ranked) > SEARCH_MAX_HITS:
+                lines.append(f"[… {len(ranked) - SEARCH_MAX_HITS} more files]")
+            return "\n".join(lines)
         if not hits:
             return "No matches."
         if more:
             hits.append(f"[… {more} more hits; narrow the pattern, glob or path]")
         return "\n".join(hits)
 
-    def _files(self, top):
-        """Every file under `top`, minus SKIP_DIRS, not following links."""
-        for folder, dirs, names in os.walk(top):
-            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS
-                             and not os.path.islink(os.path.join(folder, d)))
-            for name in sorted(names):
-                full = os.path.join(folder, name)
-                if not os.path.islink(full):
-                    yield full
+    def _files(self, top, root=None):
+        """Every file under `top` as git sees it inside a repo (ignored files
+        left out), else minus SKIP_DIRS; never following links."""
+        return dev_map.files_under(root or top, top, SKIP_DIRS, git=dev_git.git)
+
+    # the project map
+
+    def _map_files(self, root, args):
+        top = resolve(root, args.get("path"), must_exist=True)
+        files = [top] if os.path.isfile(top) else self._files(top, root)
+        glob = args.get("glob") or ""
+        return top, [p for p in files if dev_map.match_glob(p, rel_of(root, p), glob)]
+
+    def t_overview(self, root, args):
+        top, files = self._map_files(root, args)
+        if os.path.isfile(top):
+            top = os.path.dirname(top)
+            files = self._files(top, root)
+        return dev_map.overview(root, top, rel_of, files)
+
+    def t_outline(self, root, args):
+        top, files = self._map_files(root, args)
+        return dev_map.outline(root, top, rel_of, files)
+
+    def t_find(self, root, args):
+        _, files = self._map_files(root, args)
+        return dev_map.find(root, args.get("name"), rel_of, files, bool(args.get("partial")))
 
     # run
 

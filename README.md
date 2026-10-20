@@ -237,7 +237,8 @@ FreeClaw/
 │   ├── users.py              # User/conversation storage, shared by the web app and CLI
 │   ├── scraper.py            # DuckDuckGo search + page scraping + text cleaning
 │   ├── mcp_client.py         # MCP client — external MCP servers over HTTP or local stdio processes
-│   ├── dev_server.py         # The Developer app's coding tools (ls, read, write, edit, search, run, git_*, preview), a builtin stdio MCP server
+│   ├── dev_server.py         # The Developer app's coding tools (ls, read, write, edit, overview, outline, find, search, run, git_*, preview), a builtin stdio MCP server
+│   ├── dev_map.py            # The project map behind overview/outline/find: symbols per file (Python parsed, other languages by pattern), cached
 │   ├── dev_git.py            # Git for the Developer app: clone/status/diff/commit/push/pull/branch for GitHub repos
 │   └── logging_setup.py      # Central logger — full tracebacks go to logs/freeclaw.log
 ├── tests/                    # Not installed — `python -m unittest discover -s tests`
@@ -348,7 +349,10 @@ A small code editor and a set of coding tools for the agent, both working in the
 | `read` | A numbered slice of a file (200 lines by default, 500 at most) and the file's total line count |
 | `write` | Creates or overwrites a file, making folders; answers in one line |
 | `edit` | Replaces an exact string; fails if it isn't found, or matches more than once without `all: true` |
-| `search` | Regex across the workspace (optional glob): `path:line: text`, 50 hits at most |
+| `overview` | A one-screen summary of a project or folder: languages, the main folders, what the README and manifests (`package.json`, `pyproject.toml`…) say, likely entry points. About 1 KB however big the project |
+| `outline` | The classes, functions and headings of a file (methods under their class) or of a folder (top level), with line numbers and signatures and no bodies |
+| `find` | Where a name is defined: `path:line  signature`; `partial: true` for names containing it |
+| `search` | Regex across the workspace (optional glob): `path:line: text`, 50 hits at most, or with `files_only: true` just the matching files and their hit counts |
 | `run` | Runs a bash command, or `python <file> <args>`; exit code plus the head and tail of the output (3 KB each), saying how much was cut. 45 s by default, 580 s at most |
 | `preview` | Serves a folder on `127.0.0.1` and returns the URL, to open with the browser tools and screenshot |
 
