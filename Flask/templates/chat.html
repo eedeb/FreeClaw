@@ -1192,6 +1192,9 @@
       transition: background 0.12s;
     }
     .ctx-row:hover { background: var(--surface-2); }
+    /* Drag a row onto a folder (or the back button) to move it there. */
+    .ctx-row.ctx-drop, #ctx-back.ctx-drop { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
+    .ctx-row.ctx-dragging { opacity: .45; }
     .ctx-row-icon {
       flex-shrink: 0;
       width: 30px; height: 30px;
@@ -3323,10 +3326,59 @@
       row.append(icon, name, meta);
       row.addEventListener('click', () =>
         isDir ? ctxShowList(undefined, f.name) : ctxOpenFileView(f));
+      // Drag to move: anything the panel would let you delete can be dragged,
+      // onto a folder to go inside it. The server has the final say.
+      if (!f.protected && !f.readonly && !f.name.startsWith('history')) {
+        row.draggable = true;
+        row.addEventListener('dragstart', e => {
+          ctxDragging = f.name;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', f.name);
+          row.classList.add('ctx-dragging');
+        });
+        row.addEventListener('dragend', () => { ctxDragging = null; row.classList.remove('ctx-dragging'); });
+      }
+      if (isDir && f.name !== 'history') ctxDropTarget(row, f.name);
       li.appendChild(row);
       ctxListEl.appendChild(li);
     }
   }
+
+  // ── moving by drag ──
+  let ctxDragging = null;
+  async function ctxMove(from, toDir) {
+    if (!from || from === toDir || parentDir(from) === toDir) return;
+    try {
+      const res = await fetch('/api/users/' + encodeURIComponent(currentUser) + '/move', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from, to_dir: toDir }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      ctxShowList('Moved ' + baseName(from) + ' to /' + toDir + '.');
+    } catch (e) {
+      ctxSetStatus("Couldn't move it — " + e.message, 'err');
+    }
+  }
+  function ctxDropTarget(el, dir) {
+    el.addEventListener('dragover', e => {
+      if (!ctxDragging || ctxDragging === dir || (dir + '/').startsWith(ctxDragging + '/')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      el.classList.add('ctx-drop');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('ctx-drop'));
+    el.addEventListener('drop', e => {
+      e.preventDefault();
+      el.classList.remove('ctx-drop');
+      const from = ctxDragging;
+      ctxDragging = null;
+      // The back button means "up a level": its target is worked out when
+      // dropped, from the folder being shown.
+      ctxMove(from, el === ctxBack ? parentDir(ctxDir) : dir);
+    });
+  }
+  ctxDropTarget(ctxBack, null);
 
   // ── one file ──
   async function ctxOpenFileView(f) {

@@ -27,6 +27,16 @@ def sh(*args, cwd):
                    env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
 
 
+def _without(config, setting):
+    """SAFE_CONFIG with one -c pair taken out (a local repo stands in for
+    GitHub, over file://, which the real config forbids)."""
+    out = []
+    for i in range(0, len(config), 2):
+        if config[i + 1] != setting:
+            out += config[i:i + 2]
+    return out
+
+
 class GitTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="fc-git-")
@@ -127,6 +137,62 @@ class GitTests(unittest.TestCase):
         with self.assertRaises(dev_server.ToolError):
             dev_server.Tools().call("git_status", {"repo": "../outside"})
         self.assertIn("a.py", dev_server.Tools().call("git_status", {"repo": "proj"}))
+
+
+    def _remote_ahead(self):
+        """A second clone that's pushed one commit to a local "GitHub", with
+        this repo's origin-tracking refs fetched from it."""
+        dev_git.commit(self.repo, "first")
+        bare = os.path.join(self.root, "gh.git")
+        sh("git", "init", "-q", "--bare", "-b", "main", bare, cwd=self.root)
+        sh("git", "push", "-q", bare, "main", cwd=self.repo)
+        other = os.path.join(self.root, "other")
+        sh("git", "clone", "-q", bare, other, cwd=self.root)
+        with open(os.path.join(other, "b.py"), "w") as f:
+            f.write("print(3)\n")
+        sh("git", "add", "-A", cwd=other)
+        sh("git", "-c", "user.name=x", "-c", "user.email=x@x", "commit", "-q", "-m", "from github", cwd=other)
+        sh("git", "push", "-q", "origin", "main", cwd=other)
+        return bare
+
+    def test_check_origin_then_pull(self):
+        bare = self._remote_ahead()
+        real = dev_git.git_process
+
+        def via_bare(argv, cwd, env):
+            # The checked GitHub URL stands for the local bare repo here.
+            argv = [bare if a == "https://github.com/someone/proj.git" else a for a in argv]
+            return real(argv, cwd, {**env, "GIT_ALLOW_PROTOCOL": "file"}) if "fetch" in argv or "pull" in argv \
+                else real(argv, cwd, env)
+        with mock.patch.object(dev_git, "git_process", via_bare), \
+                mock.patch.object(dev_git, "SAFE_CONFIG", _without(dev_git.SAFE_CONFIG, "protocol.allow=never")):
+            text = dev_git.fetch(self.repo)
+            info = dev_git.origin(self.repo)
+            self.assertEqual((info["behind"], info["ahead"]), (1, 0), info)
+            self.assertIn("from github", info["incoming"][0])
+            self.assertIn("1 new on GitHub", text)
+            dev_git.pull(self.repo)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "b.py")))
+        self.assertEqual(dev_git.origin(self.repo)["behind"], 0)
+
+    def test_origin_before_any_fetch(self):
+        dev_git.commit(self.repo, "first")
+        info = dev_git.origin(self.repo)
+        self.assertIsNone(info["behind"])
+        self.assertEqual(info["url"], "https://github.com/someone/proj.git")
+        self.assertIn("isn't on GitHub yet", dev_git.origin_text(info))
+
+    def test_changes_list(self):
+        dev_git.commit(self.repo, "first")
+        with open(os.path.join(self.repo, "a.py"), "a") as f:
+            f.write("x\n")
+        with open(os.path.join(self.repo, "new.txt"), "w") as f:
+            f.write("n\n")
+        got = {c["path"]: c["state"] for c in dev_git.changes(self.repo)}
+        self.assertEqual(got, {"a.py": "modified", "new.txt": "untracked"})
+
+    def test_fetch_tool_listed(self):
+        self.assertIn("git_fetch", dev_server.TOOL_NAMES)
 
 
 class GateTests(unittest.TestCase):

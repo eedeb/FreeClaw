@@ -15,7 +15,6 @@
     if (window.self !== window.top) document.documentElement.classList.add('embedded');
   </script>
   <style>
-  <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     /* ── Design tokens ──
@@ -87,14 +86,18 @@
     }
 
     /* ── Developer ──
-       Files on the left, the editor in the middle, the Run output under it.
-       A plain textarea with a line-number gutter: no editor library to load,
-       and nothing between the person's keystrokes and the file. */
+       A sidebar (Files, Source control) on the left, the editor in the middle
+       and the output under it. A plain textarea with a line-number gutter:
+       no editor library to load, and nothing between the person's keystrokes
+       and the file. */
     html, body { height: 100%; }
+    [hidden] { display: none !important; }
     body {
       background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px;
       display: flex; flex-direction: column; overflow: hidden;
     }
+    button { font: inherit; color: inherit; }
+    input, textarea, select { font: inherit; color: var(--text); }
     header {
       display: flex; align-items: center; gap: 10px; padding: 10px 16px;
       border-bottom: 1px solid var(--border); background: var(--sidebar);
@@ -103,76 +106,124 @@
     header .title { font-weight: 600; }
     html.embedded header { display: none; }
 
-    .dev { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+    .dev { flex: 1; min-height: 0; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
 
-    /* Files */
+    /* Sidebar */
     .side { border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; min-height: 0; }
-    .side-head { display: flex; align-items: center; gap: 4px; padding: 8px 8px 6px 12px; }
-    .side-head .label { flex: 1; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+    .tabs { display: flex; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--border); }
+    .tab {
+      flex: 1; border: 0; background: transparent; color: var(--muted); padding: 7px 6px 8px;
+      font-size: 12px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .tab:hover { color: var(--text-2); }
+    .tab.on { color: var(--text); border-bottom-color: var(--accent); }
+    .tab .badge { min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--accent-soft);
+      color: var(--accent-text); font-size: 10.5px; line-height: 16px; }
+    .pane { flex: 1; min-height: 0; display: none; flex-direction: column; }
+    .pane.on { display: flex; }
+    .pane-head { display: flex; align-items: center; gap: 2px; padding: 8px 8px 4px 12px; }
+    .pane-head .label { flex: 1; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
     .icon-btn {
       border: 0; background: transparent; color: var(--text-2); border-radius: 6px;
-      padding: 3px 7px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+      padding: 4px 7px; font-size: 12px; cursor: pointer; white-space: nowrap; line-height: 1;
     }
     .icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
     .icon-btn:disabled { opacity: .4; cursor: default; }
-    #tree { flex: 1; overflow: auto; padding: 0 6px 10px; }
-    /* Source control (src/dev_git.py through /api/dev/git) */
-    .git { border-top: 1px solid var(--border); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
-    .git input, .git select, .git textarea { width: 100%; box-sizing: border-box; font: 12px var(--mono);
-      background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; }
-    .git textarea { resize: vertical; min-height: 44px; font-family: inherit; }
-    .git .row { display: flex; gap: 4px; }
-    .git .row > * { flex: 1; }
-    .git pre { margin: 0; max-height: 140px; overflow: auto; font: 11px/1.4 var(--mono); color: var(--muted);
-      white-space: pre-wrap; }
-    .git .hint { font-size: 11.5px; color: var(--muted); }
+    .icon-btn svg { width: 14px; height: 14px; vertical-align: -2px; }
+
+    /* The file tree */
+    #tree { flex: 1; overflow: auto; padding: 2px 6px 12px; }
+    #tree.drop-root { outline: 1px dashed var(--accent-line); outline-offset: -4px; border-radius: 8px; }
     .node {
-      display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
-      border: 0; background: transparent; color: var(--text-2); font: inherit;
-      padding: 4px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap;
-      overflow: hidden; text-overflow: ellipsis;
+      position: relative; display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+      border: 0; background: transparent; color: var(--text-2);
+      padding: 4px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; min-height: 26px;
     }
     .node:hover { background: var(--surface-3); color: var(--text); }
     .node.active { background: var(--accent-soft); color: var(--text); }
-    .node.dir { color: var(--muted); font-weight: 500; }
-    .node .caret { width: 10px; flex: none; font-size: 10px; }
-    .empty { color: var(--muted); padding: 10px 8px; line-height: 1.5; }
+    .node.drop { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
+    .node.dragging { opacity: .45; }
+    .node .caret { width: 10px; flex: none; font-size: 9px; color: var(--muted); }
+    .node .ico { width: 14px; height: 14px; flex: none; color: var(--muted); }
+    .node.dir .ico { color: var(--accent-text); }
+    .node .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+    .node .acts { display: none; gap: 1px; }
+    .node:hover .acts, .node:focus-within .acts { display: flex; }
+    .node .acts span { padding: 2px 4px; border-radius: 4px; color: var(--muted); font-size: 11px; }
+    .node .acts span:hover { background: var(--surface-2); color: var(--text); }
+    .empty { color: var(--muted); padding: 12px 8px; line-height: 1.55; }
+
+    /* Source control */
+    .scm { flex: 1; overflow: auto; padding: 4px 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+    .field { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font-size: 12px; }
+    .field:focus { outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+    textarea.field { resize: vertical; min-height: 54px; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .row > .grow { flex: 1; min-width: 0; }
+    .card { border: 1px solid var(--border); border-radius: 9px; background: var(--surface); padding: 9px 10px; display: flex; flex-direction: column; gap: 7px; }
+    .card h4 { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+    .hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .hint a { color: var(--accent-text); }
+    .mono { font-family: var(--mono); font-size: 11.5px; }
+    .origin-url { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; background: var(--surface-3); font-size: 11px; color: var(--text-2); }
+    .pill.in { background: var(--accent-soft); color: var(--accent-text); }
+    .commits { list-style: none; display: flex; flex-direction: column; gap: 3px; max-height: 140px; overflow: auto; }
+    .commits li { font-family: var(--mono); font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .changes { list-style: none; display: flex; flex-direction: column; }
+    .changes li { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 5px; cursor: pointer; font-size: 12px; color: var(--text-2); }
+    .changes li:hover { background: var(--surface-3); color: var(--text); }
+    .changes .st { width: 14px; font-family: var(--mono); font-size: 11px; font-weight: 600; text-align: center; flex: none; }
+    .st.modified { color: var(--warn); } .st.added, .st.untracked { color: var(--accent-text); }
+    .st.deleted, .st.conflict { color: var(--err); } .st.renamed { color: var(--text-2); }
+    .changes .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #git-out { margin: 0; max-height: 160px; overflow: auto; font: 11px/1.45 var(--mono); color: var(--text-2);
+      white-space: pre-wrap; word-break: break-word; }
+    #git-out:empty { display: none; }
+    #git-out.err { color: var(--err); }
 
     /* Editor */
     .main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-    .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    .bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); min-height: 41px; }
     #file-name { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #file-name.dirty::after { content: ' •'; color: var(--accent-text); }
+    #file-name .dir { color: var(--muted); }
+    #file-name.dirty::after { content: ' ●'; color: var(--accent-text); font-size: 10px; }
     .btn {
       border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
-      border-radius: 7px; padding: 4px 12px; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+      border-radius: 7px; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap;
     }
     .btn:hover:not(:disabled) { background: var(--surface-3); }
     .btn:disabled { opacity: .45; cursor: default; }
-    .btn.run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent-dim); }
-    .btn.run:hover:not(:disabled) { background: var(--accent-dim); }
+    .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent-dim); }
+    .btn.primary:hover:not(:disabled) { background: var(--accent-dim); }
     .btn.stop { color: var(--err); }
+    .btn.sm { padding: 4px 9px; }
 
     .notice { display: none; align-items: center; gap: 8px; padding: 6px 12px; background: var(--accent-soft); border-bottom: 1px solid var(--accent-line); color: var(--text); }
     .notice.show { display: flex; }
     .notice span { flex: 1; }
 
-    .editor { flex: 1; min-height: 0; display: flex; overflow: hidden; background: var(--code-bg); }
+    .editor { flex: 1; min-height: 0; display: flex; overflow: hidden; background: var(--code-bg); position: relative; }
     #gutter {
       flex: none; padding: 10px 8px 10px 12px; text-align: right; color: var(--muted);
       font-family: var(--mono); font-size: 12.5px; line-height: 1.6; user-select: none;
-      overflow: hidden; white-space: pre; border-right: 1px solid var(--border); min-width: 44px;
+      overflow: hidden; white-space: pre; border-right: 1px solid var(--border); min-width: 44px; opacity: .8;
     }
     #code {
       flex: 1; border: 0; outline: none; resize: none; padding: 10px 14px; margin: 0;
       background: transparent; color: var(--text); font-family: var(--mono); font-size: 12.5px;
       line-height: 1.6; tab-size: 4; white-space: pre; overflow: auto;
     }
-    #code:disabled { color: var(--muted); }
+    .welcome { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 24px; pointer-events: none; }
+    .welcome b { color: var(--text-2); font-size: 14px; font-weight: 600; }
 
-    /* Output */
-    .out { flex: none; height: 34%; min-height: 90px; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
-    .out-head { display: flex; align-items: center; gap: 8px; padding: 5px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); }
+    /* Output, resizable from its top edge */
+    .split { flex: none; height: 6px; cursor: row-resize; border-top: 1px solid var(--border); background: var(--sidebar); }
+    .split:hover, .split.drag { background: var(--accent-soft); }
+    .out { flex: none; height: 32%; min-height: 70px; display: flex; flex-direction: column; }
+    .out-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); background: var(--sidebar); }
     .out-head .label { flex: 1; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #output {
       flex: 1; overflow: auto; margin: 0; padding: 8px 12px; background: var(--code-bg); color: var(--code-text);
@@ -181,9 +232,10 @@
     #output .meta { color: var(--muted); }
     #output .err { color: var(--err); }
 
-    @media (max-width: 640px) {
-      .dev { grid-template-columns: 1fr; grid-template-rows: 30% minmax(0, 1fr); }
+    @media (max-width: 680px) {
+      .dev { grid-template-columns: 1fr; grid-template-rows: 38% minmax(0, 1fr); }
       .side { border-right: 0; border-bottom: 1px solid var(--border); }
+      .bar .wide { display: none; }
     }
   </style>
 </head>
@@ -193,48 +245,106 @@
     <span class="title">Developer</span>
   </header>
 
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-new-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></symbol>
+    <symbol id="i-new-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-12 7"/></symbol>
+  </svg>
+
   <div class="dev">
-    <aside class="side" aria-label="Project files">
-      <div class="side-head">
-        <span class="label">projects</span>
-        <button class="icon-btn" id="new-btn" title="New file">+ New</button>
+    <aside class="side">
+      <div class="tabs" role="tablist">
+        <button class="tab on" id="tab-files" role="tab" data-pane="files">Files</button>
+        <button class="tab" id="tab-scm" role="tab" data-pane="scm">Git <span class="badge" id="scm-badge" hidden></span></button>
       </div>
-      <div id="tree"></div>
-      <div class="git" id="git">
-        <div class="side-head" style="padding:0"><span class="label">Source control</span></div>
-        <div class="hint" id="git-connect" hidden>Connect GitHub to clone and push: App Store → GitHub.</div>
-        <div class="row"><input id="git-url" placeholder="https://github.com/you/repo"><button class="icon-btn" id="git-clone">Clone</button></div>
-        <select id="git-repo" aria-label="Repo"></select>
-        <div class="row"><button class="icon-btn" id="git-status">Status</button><button class="icon-btn" id="git-diff">Diff</button><button class="icon-btn" id="git-pull">Pull</button></div>
-        <textarea id="git-msg" placeholder="Commit message"></textarea>
-        <div class="row"><input id="git-branch" placeholder="branch (default: current)"></div>
-        <div class="row"><button class="icon-btn" id="git-commit">Commit</button><button class="btn" id="git-push">Push</button></div>
-        <pre id="git-out"></pre>
+
+      <div class="pane on" id="pane-files" role="tabpanel">
+        <div class="pane-head">
+          <span class="label">projects</span>
+          <button class="icon-btn" id="new-btn" title="New file"><svg><use href="#i-new-file"/></svg></button>
+          <button class="icon-btn" id="new-dir-btn" title="New folder"><svg><use href="#i-new-folder"/></svg></button>
+          <button class="icon-btn" id="refresh-btn" title="Refresh"><svg><use href="#i-refresh"/></svg></button>
+        </div>
+        <div id="tree" aria-label="Project files"></div>
+      </div>
+
+      <div class="pane" id="pane-scm" role="tabpanel">
+        <div class="scm">
+          <div class="hint" id="git-connect" hidden>
+            To clone and push your repos, connect GitHub first:
+            <a href="/appstore" target="_top">App Store → GitHub</a>, with a token that can read and write them.
+          </div>
+
+          <div class="card">
+            <h4>Repo</h4>
+            <select class="field" id="git-repo" aria-label="Repo"></select>
+            <div id="origin-box" hidden>
+              <div class="origin-url mono" id="origin-url"></div>
+              <div class="row" style="margin-top:6px">
+                <span class="pill" id="origin-branch"><svg width="11" height="11" style="vertical-align:-1px"><use href="#i-branch"/></svg> <span></span></span>
+                <span class="pill" id="origin-counts"></span>
+              </div>
+              <ul class="commits" id="incoming" style="margin-top:6px"></ul>
+              <div class="row" style="margin-top:8px">
+                <button class="btn sm grow" id="git-fetch" title="Fetch from GitHub and see what's new there">Check origin</button>
+                <button class="btn sm grow" id="git-pull" title="Bring the new commits in (fast-forward only)">Pull</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="changes-card" hidden>
+            <h4>Changes <span id="changes-count"></span></h4>
+            <ul class="changes" id="changes"></ul>
+            <textarea class="field" id="git-msg" placeholder="Commit message"></textarea>
+            <input class="field mono" id="git-branch" placeholder="Branch (default: current)">
+            <div class="row">
+              <button class="btn sm grow" id="git-commit">Commit</button>
+              <button class="btn sm primary grow" id="git-push">Push</button>
+            </div>
+            <button class="icon-btn" id="git-diff" style="align-self:flex-start">Show diff</button>
+          </div>
+
+          <div class="card">
+            <h4>Clone a repo</h4>
+            <select class="field" id="my-repos" aria-label="Your GitHub repos"><option value="">Your GitHub repos…</option></select>
+            <div class="row">
+              <input class="field grow mono" id="git-url" placeholder="https://github.com/you/repo">
+              <button class="btn sm" id="git-clone">Clone</button>
+            </div>
+          </div>
+
+          <pre id="git-out"></pre>
+        </div>
       </div>
     </aside>
 
     <section class="main">
       <div class="bar">
         <span id="file-name">No file open</span>
-        <button class="icon-btn" id="rename-btn" title="Rename the open file" disabled>Rename</button>
-        <button class="icon-btn" id="delete-btn" title="Delete the open file" disabled>Delete</button>
         <button class="btn" id="save-btn" title="Save (Ctrl/Cmd+S)" disabled>Save</button>
-        <button class="btn run" id="run-btn" title="Run .py with Python, .sh with bash" disabled>▶ Run</button>
+        <button class="btn primary" id="run-btn" title="Run .py with Python, .sh with bash" disabled>▶ Run</button>
       </div>
       <div class="notice" id="notice">
         <span>The file changed on disk while you had edits here.</span>
-        <button class="btn" id="reload-btn">Load theirs</button>
-        <button class="btn" id="keep-btn">Keep mine</button>
+        <button class="btn sm" id="reload-btn">Load theirs</button>
+        <button class="btn sm" id="keep-btn">Keep mine</button>
       </div>
       <div class="editor">
         <div id="gutter">1</div>
-        <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" disabled
-                  placeholder="Pick a file, or make one with + New."></textarea>
+        <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" disabled aria-label="Editor"></textarea>
+        <div class="welcome" id="welcome">
+          <b>Nothing open</b>
+          <span>Pick a file on the left, make one with the new-file button,<br>or clone a repo from the Git tab.</span>
+        </div>
       </div>
-      <div class="out">
+      <div class="split" id="split" title="Drag to resize"></div>
+      <div class="out" id="out">
         <div class="out-head">
           <span class="label" id="out-label">Output</span>
-          <button class="btn stop" id="stop-btn" hidden>■ Stop</button>
+          <button class="btn stop sm" id="stop-btn" hidden>■ Stop</button>
           <button class="icon-btn" id="clear-btn">Clear</button>
         </div>
         <pre id="output"></pre>
@@ -267,50 +377,41 @@
   }
   const dirty = () => open.path !== null && code.value !== open.saved;
   const runnable = p => /\.(py|sh|bash)$/i.test(p || '');
+  const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+  const baseOf = p => p.slice(p.lastIndexOf('/') + 1);
+  const svg = id => `<svg class="ico"><use href="#${id}"/></svg>`;
 
   function syncBar() {
-    fileName.textContent = open.path || 'No file open';
+    fileName.textContent = '';
+    if (open.path) {
+      const dir = parentOf(open.path);
+      if (dir) {
+        const d = document.createElement('span');
+        d.className = 'dir';
+        d.textContent = dir + '/';
+        fileName.appendChild(d);
+      }
+      fileName.appendChild(document.createTextNode(baseOf(open.path)));
+    } else {
+      fileName.textContent = 'No file open';
+    }
     fileName.classList.toggle('dirty', dirty());
     $('save-btn').disabled = !open.path;
-    $('rename-btn').disabled = $('delete-btn').disabled = !open.path;
     $('run-btn').disabled = !runnable(open.path) || !!running;
+    $('run-btn').title = open.path && !runnable(open.path)
+      ? 'Only .py and .sh files run' : 'Run .py with Python, .sh with bash';
     $('stop-btn').hidden = !running;
+    $('welcome').hidden = !!open.path;
   }
 
-  // ── Source control ──
-  const gitOut = $('git-out');
-  async function gitInfo() {
-    try {
-      const d = await api('GET', '/api/dev/git?' + q({}));
-      $('git-connect').hidden = d.connected;
-      const sel = $('git-repo'), keep = sel.value;
-      sel.innerHTML = '';
-      if (!d.repos.length) sel.add(new Option('No repos yet: clone one', ''));
-      d.repos.forEach(r => sel.add(new Option(r, r)));
-      if (d.repos.includes(keep)) sel.value = keep;
-    } catch (e) { gitOut.textContent = e.message; }
+  // ── Tabs ──
+  function showPane(name) {
+    for (const t of document.querySelectorAll('.tab')) t.classList.toggle('on', t.dataset.pane === name);
+    $('pane-files').classList.toggle('on', name === 'files');
+    $('pane-scm').classList.toggle('on', name === 'scm');
+    if (name === 'scm') refreshScm();
   }
-  async function git(op, body, busy) {
-    const repo = $('git-repo').value;
-    if (op !== 'clone' && !repo) { gitOut.textContent = 'Clone a repo first.'; return; }
-    busy.disabled = true;
-    gitOut.textContent = op + '…';
-    try {
-      const d = await api('POST', '/api/dev/git/' + op, { repo, ...body });
-      gitOut.textContent = d.text || 'Done.';
-      if (op === 'clone') { $('git-url').value = ''; await gitInfo(); }
-      if (op === 'commit') $('git-msg').value = '';
-      if (op === 'clone' || op === 'pull') await loadTree();
-    } catch (e) { gitOut.textContent = e.message; }
-    busy.disabled = false;
-  }
-  $('git-clone').onclick = e => git('clone', { url: $('git-url').value.trim() }, e.target);
-  $('git-status').onclick = e => git('status', {}, e.target);
-  $('git-diff').onclick = e => git('diff', {}, e.target);
-  $('git-pull').onclick = e => git('pull', {}, e.target);
-  $('git-commit').onclick = e => git('commit', { message: $('git-msg').value }, e.target);
-  $('git-push').onclick = e => git('push', { branch: $('git-branch').value.trim() }, e.target);
-  gitInfo();
+  for (const t of document.querySelectorAll('.tab')) t.addEventListener('click', () => showPane(t.dataset.pane));
 
   // ── Files ──
   async function loadTree() {
@@ -321,14 +422,50 @@
     renderTree();
   }
 
+  // Moving by drag: a row onto a folder puts it inside, onto the empty space
+  // below the list puts it at the top. The same rename the agent's files go
+  // through, so the workspace fence applies.
+  let dragPath = null;
+  async function moveInto(path, folder) {
+    const to = (folder ? folder + '/' : '') + baseOf(path);
+    if (to === path || parentOf(path) === folder) return;
+    try {
+      const data = await api('POST', '/api/dev/rename', { from: path, to });
+      if (open.path === path) open.path = data.path;
+      else if (open.path && open.path.startsWith(path + '/')) open.path = data.path + open.path.slice(path.length);
+      collapsed.delete(folder);
+      await loadTree();
+      syncBar();
+    } catch (e) { alert(e.message); }
+  }
+  function dropTarget(el, folder) {
+    el.addEventListener('dragover', e => {
+      if (!dragPath || dragPath === folder || (folder + '/').startsWith(dragPath + '/')) return;
+      e.preventDefault(); e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      el.classList.add(el === tree ? 'drop-root' : 'drop');
+    });
+    el.addEventListener('dragleave', e => {
+      if (e.target === el) el.classList.remove('drop', 'drop-root');
+    });
+    el.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      el.classList.remove('drop', 'drop-root');
+      if (dragPath) moveInto(dragPath, folder);
+      dragPath = null;
+    });
+  }
+  dropTarget(tree, '');
+
   function renderTree() {
     tree.innerHTML = '';
     if (!files.length && !folders.length) {
-      tree.innerHTML = '<p class="empty">Empty. Make a file with + New, or ask your agent to start a project here.</p>';
+      tree.innerHTML = '<p class="empty">Empty. Make a file or folder above, clone a repo from '
+        + 'the Git tab, or ask your agent to start a project here.</p>';
       return;
     }
-    // Folders and files in one sorted list, each under its parent, with a
-    // folder's contents left out while it's collapsed.
+    // Folders and files in one sorted list, each under its parent, folders
+    // first, with a folder's contents left out while it's collapsed.
     const rows = [...folders.map(p => ({ path: p, dir: true })), ...files.map(f => ({ path: f.path, dir: false }))]
       .sort((a, b) => {
         const pa = a.path.split('/'), pb = b.path.split('/');
@@ -344,17 +481,21 @@
       const parts = row.path.split('/');
       const hidden = parts.slice(0, -1).some((_, i) => collapsed.has(parts.slice(0, i + 1).join('/')));
       if (hidden) continue;
-      const el = document.createElement('button');
+      const el = document.createElement('div');
       el.className = 'node' + (row.dir ? ' dir' : '') + (row.path === open.path ? ' active' : '');
-      el.style.paddingLeft = (8 + (parts.length - 1) * 14) + 'px';
+      el.tabIndex = 0;
+      el.draggable = true;
+      el.style.paddingLeft = (6 + (parts.length - 1) * 14) + 'px';
       el.title = row.path;
-      const caret = document.createElement('span');
-      caret.className = 'caret';
-      caret.textContent = row.dir ? (collapsed.has(row.path) ? '▸' : '▾') : '';
-      const label = document.createElement('span');
-      label.textContent = parts[parts.length - 1];
-      el.append(caret, label);
-      el.addEventListener('click', () => {
+      el.innerHTML = `<span class="caret">${row.dir ? (collapsed.has(row.path) ? '▸' : '▾') : ''}</span>`
+        + svg(row.dir ? 'i-folder' : 'i-file') + '<span class="name"></span>'
+        + '<span class="acts"><span data-act="rename" title="Rename">Rename</span>'
+        + '<span data-act="delete" title="Delete">Delete</span></span>';
+      el.querySelector('.name').textContent = parts[parts.length - 1];
+      el.addEventListener('click', e => {
+        const act = e.target.dataset && e.target.dataset.act;
+        if (act === 'rename') return renameItem(row.path, row.dir);
+        if (act === 'delete') return deleteItem(row.path, row.dir);
         if (row.dir) {
           collapsed.has(row.path) ? collapsed.delete(row.path) : collapsed.add(row.path);
           renderTree();
@@ -362,6 +503,15 @@
           openFile(row.path);
         }
       });
+      el.addEventListener('keydown', e => { if (e.key === 'Enter') el.click(); });
+      el.addEventListener('dragstart', e => {
+        dragPath = row.path;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', row.path);
+        el.classList.add('dragging');
+      });
+      el.addEventListener('dragend', () => { dragPath = null; el.classList.remove('dragging'); });
+      if (row.dir) dropTarget(el, row.path);
       tree.appendChild(el);
     }
   }
@@ -399,35 +549,60 @@
     }
   }
 
+  // New things go in the folder of the open file, which is usually where
+  // you're working; the prompt shows it and can be changed.
+  const here = () => open.path ? parentOf(open.path) : '';
   $('new-btn').addEventListener('click', async () => {
-    const path = (prompt('New file (folders with /, e.g. app/main.py):') || '').trim();
-    if (!path) return;
+    const dir = here();
+    const path = (prompt('New file (folders with /):', dir ? dir + '/' : '') || '').trim();
+    if (!path || path.endsWith('/')) return;
     try {
       await api('PUT', '/api/dev/file', { path, content: '', create: true });
       await loadTree();
       openFile(path);
     } catch (e) { alert(e.message); }
   });
-
-  $('rename-btn').addEventListener('click', async () => {
-    const to = (prompt('Rename to:', open.path) || '').trim();
-    if (!to || to === open.path) return;
+  $('new-dir-btn').addEventListener('click', async () => {
+    const dir = here();
+    const path = (prompt('New folder:', dir ? dir + '/' : '') || '').trim().replace(/\/+$/, '');
+    if (!path) return;
     try {
-      const data = await api('POST', '/api/dev/rename', { from: open.path, to });
-      open.path = data.path;
+      // A folder is made by the first file in it; .gitkeep is the usual name
+      // for "keep this empty folder" and git leaves it alone.
+      await api('PUT', '/api/dev/file', { path: path + '/.gitkeep', content: '', create: true });
+      collapsed.delete(path);
+      await loadTree();
+    } catch (e) { alert(e.message); }
+  });
+  $('refresh-btn').addEventListener('click', loadTree);
+
+  async function renameItem(path, isDir) {
+    const to = (prompt(`Rename ${isDir ? 'folder' : 'file'} to:`, path) || '').trim().replace(/\/+$/, '');
+    if (!to || to === path) return;
+    try {
+      const data = await api('POST', '/api/dev/rename', { from: path, to });
+      if (open.path === path) open.path = data.path;
+      else if (open.path && open.path.startsWith(path + '/')) open.path = data.path + open.path.slice(path.length);
       await loadTree();
       syncBar();
     } catch (e) { alert(e.message); }
-  });
+  }
 
-  $('delete-btn').addEventListener('click', async () => {
-    if (!confirm(`Delete ${open.path}? This can't be undone.`)) return;
+  async function deleteItem(path, isDir) {
+    const inside = isDir ? [...files.map(f => f.path), ...folders]
+      .filter(p => p.startsWith(path + '/') && p !== path + '/.gitkeep') : [];
+    if (isDir && inside.length) {
+      alert(`${path} isn't empty (${inside.length} item${inside.length === 1 ? '' : 's'}). `
+        + 'Delete or move what\'s in it first.');
+      return;
+    }
+    if (!confirm(`Delete ${path}? This can't be undone.`)) return;
     try {
-      await api('DELETE', '/api/dev/file?' + q({ path: open.path }));
-      setOpen(null, '', 0);
+      await api('DELETE', '/api/dev/file?' + q({ path }));
+      if (open.path === path) setOpen(null, '', 0);
       loadTree();
     } catch (e) { alert(e.message); }
-  });
+  }
 
   // ── Editor ──
   function numberLines() {
@@ -449,6 +624,7 @@
   });
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
   });
   $('save-btn').addEventListener('click', save);
 
@@ -476,7 +652,7 @@
     }
   }
   setInterval(poll, 2000);
-  setInterval(() => { if (!document.hidden) loadTree(); }, 6000);
+  setInterval(() => { if (!document.hidden && !dragPath) loadTree(); }, 6000);
   $('reload-btn').addEventListener('click', async () => {
     const data = await api('GET', '/api/dev/file?' + q({ path: open.path }));
     setOpen(data.path, data.content, data.modified);
@@ -486,6 +662,26 @@
     open.modified = st.modified;
     $('notice').classList.remove('show');
   });
+
+  // ── Output: drag its top edge to resize ──
+  (() => {
+    const split = $('split'), out = $('out');
+    try { const h = localStorage.getItem('fc-dev-out-h'); if (h) out.style.height = h; } catch (_) {}
+    split.addEventListener('pointerdown', e => {
+      split.setPointerCapture(e.pointerId);
+      split.classList.add('drag');
+      const startY = e.clientY, startH = out.getBoundingClientRect().height;
+      const max = out.parentElement.getBoundingClientRect().height - 120;
+      const move = ev => { out.style.height = Math.max(70, Math.min(max, startH - (ev.clientY - startY))) + 'px'; };
+      const up = () => {
+        split.classList.remove('drag');
+        split.removeEventListener('pointermove', move);
+        try { localStorage.setItem('fc-dev-out-h', out.style.height); } catch (_) {}
+      };
+      split.addEventListener('pointermove', move);
+      split.addEventListener('pointerup', up, { once: true });
+    });
+  })();
 
   // ── Run ──
   function print(text, cls) {
@@ -550,10 +746,144 @@
   });
   $('clear-btn').addEventListener('click', () => { output.textContent = ''; $('out-label').textContent = 'Output'; });
 
+  // ── Source control ──
+  const gitOut = $('git-out');
+  const say = (text, err) => { gitOut.textContent = text || ''; gitOut.classList.toggle('err', !!err); };
+  const repoSel = $('git-repo');
+  const repo = () => repoSel.value;
+  let myReposLoaded = false;
+
+  async function gitInfo() {
+    const d = await api('GET', '/api/dev/git?' + q({}));
+    $('git-connect').hidden = d.connected;
+    const keep = repo();
+    repoSel.innerHTML = '';
+    if (!d.repos.length) repoSel.add(new Option('No repos yet: clone one below', ''));
+    d.repos.forEach(r => repoSel.add(new Option(r, r)));
+    if (d.repos.includes(keep)) repoSel.value = keep;
+    if (d.connected && !myReposLoaded) loadMyRepos();
+    return d;
+  }
+
+  async function loadMyRepos() {
+    myReposLoaded = true;
+    try {
+      const d = await api('GET', '/api/dev/git/repos?' + q({}));
+      const sel = $('my-repos');
+      for (const r of d.repos) sel.add(new Option(r.name + (r.private ? ' (private)' : ''), r.url));
+    } catch (e) { /* the URL box still works */ }
+  }
+  $('my-repos').addEventListener('change', e => { $('git-url').value = e.target.value; });
+
+  function showOrigin(o) {
+    $('origin-box').hidden = false;
+    $('origin-url').textContent = o.url ? o.url.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')
+      : 'No GitHub origin';
+    $('origin-url').title = o.url || '';
+    $('origin-branch').querySelector('span').textContent = o.branch || '?';
+    const counts = $('origin-counts');
+    if (o.behind === null || o.behind === undefined) {
+      counts.textContent = 'not on GitHub yet';
+      counts.className = 'pill';
+    } else {
+      counts.textContent = `↓ ${o.behind}  ↑ ${o.ahead}`;
+      counts.className = 'pill' + (o.behind ? ' in' : '');
+      counts.title = `${o.behind} new on GitHub, ${o.ahead} here not pushed (as of the last check)`;
+    }
+    const inc = $('incoming');
+    inc.innerHTML = '';
+    for (const c of o.incoming || []) {
+      const li = document.createElement('li');
+      li.textContent = '↓ ' + c;
+      li.title = c;
+      inc.appendChild(li);
+    }
+    $('git-pull').disabled = !o.behind;
+  }
+
+  function showChanges(list) {
+    $('changes-card').hidden = false;
+    const ul = $('changes');
+    ul.innerHTML = '';
+    $('changes-count').textContent = list.length ? `(${list.length})` : '';
+    const badge = $('scm-badge');
+    badge.hidden = !list.length;
+    badge.textContent = list.length;
+    if (!list.length) {
+      ul.innerHTML = '<li style="cursor:default">No changes.</li>';
+    }
+    const letter = { modified: 'M', added: 'A', deleted: 'D', renamed: 'R', untracked: 'U', conflict: '!' };
+    for (const c of list) {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="st ${c.state}">${letter[c.state] || '?'}</span><span class="p"></span>`;
+      li.querySelector('.p').textContent = c.path;
+      li.title = `${c.state}: ${c.path}`;
+      if (c.state !== 'deleted') li.addEventListener('click', () => { openFile(repo() + '/' + c.path); });
+      ul.appendChild(li);
+    }
+    $('git-commit').disabled = !list.length;
+  }
+
+  async function refreshRepo() {
+    if (!repo()) { $('origin-box').hidden = true; $('changes-card').hidden = true; $('scm-badge').hidden = true; return; }
+    try {
+      const [o, c] = await Promise.all([
+        api('POST', '/api/dev/git/origin', { repo: repo() }),
+        api('POST', '/api/dev/git/changes', { repo: repo() }),
+      ]);
+      showOrigin(o.origin);
+      showChanges(c.changes);
+    } catch (e) { say(e.message, true); }
+  }
+
+  async function refreshScm() {
+    try { await gitInfo(); } catch (e) { say(e.message, true); return; }
+    await refreshRepo();
+  }
+  repoSel.addEventListener('change', () => { say(''); refreshRepo(); });
+
+  async function git(op, body, btn) {
+    if (op !== 'clone' && !repo()) { say('Clone a repo first.', true); return; }
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label + '…';
+    say('');
+    try {
+      const d = await api('POST', '/api/dev/git/' + op, { repo: repo(), ...body });
+      if (op === 'fetch') {
+        showOrigin(d.origin);
+        say(d.origin.behind ? `${d.origin.behind} new commit${d.origin.behind === 1 ? '' : 's'} on GitHub. Pull to bring them in.`
+          : 'Up to date with GitHub.');
+      } else {
+        say(d.text || 'Done.');
+      }
+      if (op === 'clone') {
+        $('git-url').value = ''; $('my-repos').value = '';
+        await gitInfo();
+        repoSel.value = d.text && /into (\S+)\./.test(d.text) ? d.text.match(/into (\S+)\./)[1] : repoSel.value;
+      }
+      if (op === 'commit') $('git-msg').value = '';
+      if (op === 'clone' || op === 'pull') await loadTree();
+      if (op !== 'diff' && op !== 'fetch') await refreshRepo();
+    } catch (e) { say(e.message, true); }
+    btn.textContent = label;
+    btn.disabled = false;
+  }
+  $('git-clone').onclick = e => git('clone', { url: $('git-url').value.trim() }, e.currentTarget);
+  $('git-fetch').onclick = e => git('fetch', {}, e.currentTarget);
+  $('git-pull').onclick = e => git('pull', {}, e.currentTarget);
+  $('git-diff').onclick = e => git('diff', {}, e.currentTarget);
+  $('git-commit').onclick = e => {
+    if (!$('git-msg').value.trim()) { say('Write a commit message first.', true); $('git-msg').focus(); return; }
+    git('commit', { message: $('git-msg').value }, e.currentTarget);
+  };
+  $('git-push').onclick = e => git('push', { branch: $('git-branch').value.trim() }, e.currentTarget);
+
   window.addEventListener('beforeunload', e => { if (dirty()) { e.preventDefault(); e.returnValue = ''; } });
 
   syncBar();
   loadTree();
+  gitInfo().then(d => { if (d.repos.length) refreshRepo(); }).catch(() => {});
 })();
 </script>
 </body>
