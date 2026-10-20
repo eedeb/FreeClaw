@@ -56,7 +56,7 @@ import src.dev_map as dev_map
 
 # read: lines per call when the agent doesn't say, and the most it may ask
 # for. A line is cut at READ_LINE_CHARS — a minified bundle is one line.
-READ_DEFAULT_LINES = 200
+READ_DEFAULT_LINES = 120
 READ_MAX_LINES = 500
 READ_LINE_CHARS = 400
 
@@ -275,6 +275,37 @@ def bash_exe():
     return shutil.which("bash")
 
 
+# The names a model reaches for when it doesn't recall the schema, mapped to
+# the ones the tools take: one wasted step each time otherwise. Only filled in
+# when the real name is absent; anything else unknown is still refused.
+_ALIASES = {
+    "path": ("filename", "file", "file_path", "filepath", "dir", "directory", "folder"),
+    "old": ("old_string", "old_str", "old_text", "find", "search"),
+    "new": ("new_string", "new_str", "new_text", "replace", "replacement"),
+    "start": ("offset", "line", "from", "start_line"),
+    "lines": ("limit", "count", "num_lines"),
+    "pattern": ("query", "regex"),
+}
+_GIT_ALIASES = {"repo": ("path", "folder", "dir", "repository")}
+_RUN_ALIASES = {"command": ("cmd", "bash", "shell"), "file": ("script",),
+                "where": ("path", "cwd", "dir", "directory", "folder", "workdir")}
+
+
+def normalize(name, args):
+    """`args` with the aliases above put under their real names."""
+    args = dict(args) if isinstance(args, dict) else {}
+    table = (_RUN_ALIASES if name == "run" else _GIT_ALIASES if name.startswith("git_")
+             else _ALIASES)
+    for real, others in table.items():
+        if real in args:
+            continue
+        for other in others:
+            if other in args:
+                args[real] = args.pop(other)
+                break
+    return args
+
+
 def command_line(args):
     """(command line, error) for a `run` call: the exact text the approval
     gate shows and saved rules are matched against, or the reason the call is
@@ -290,10 +321,22 @@ def command_line(args):
 
     Anything else in `args` is refused rather than ignored, for the same
     reason."""
-    args = args if isinstance(args, dict) else {}
-    unknown = set(args) - {"command", "file", "args", "timeout"}
+    args = normalize("run", args)
+    unknown = set(args) - {"command", "file", "args", "timeout", "where"}
     if unknown:
         return None, f"Unknown argument: {', '.join(sorted(unknown))}."
+    # A folder to run from (the model passes path or cwd): said in the command,
+    # `cd <folder> && …`, so the approval card and saved rules see it too.
+    where = args.get("where")
+    if where is not None:
+        if not isinstance(where, str):
+            return None, "path (the folder to run in) must be a folder name, like app."
+        where = where.strip()
+        if os.path.isabs(where) or ".." in re.split(r"[\\/]", where):
+            return None, "path (the folder to run in) must be a folder inside the workspace, like app."
+        where = where.strip("/")
+        if where in ("", "."):
+            where = None
     command = args.get("command")
     file = args.get("file")
     extra = args.get("args")
@@ -313,11 +356,12 @@ def command_line(args):
             runner = "bash"
         else:
             return None, f"{file}: only .py and .sh files run directly; use command for anything else."
-        return " ".join([runner] + [shlex.quote(a) for a in [file] + extra]), None
+        line = " ".join([runner] + [shlex.quote(a) for a in [file] + extra])
+        return (f"cd {shlex.quote(where)} && {line}" if where else line), None
     if isinstance(command, str) and command.strip():
         if extra:
             return None, "args go with file; put them in the command instead."
-        return command.strip(), None
+        return (f"cd {shlex.quote(where)} && {command.strip()}" if where else command.strip()), None
     return None, "Pass command (a bash command line) or file (a .py or .sh to run)."
 
 
@@ -327,7 +371,17 @@ def argv_for(root, args):
     shown, error = command_line(args)
     if error:
         raise ToolError(error)
+    args = normalize("run", args)
     file = args.get("file")
+    where = (args.get("where") or "").strip().strip("/")
+    if where and where != ".":
+        # Run exactly the line the approval showed: `cd <folder> && …`.
+        folder = resolve(root, where, must_exist=True)
+        if not os.path.isdir(folder):
+            raise ToolError(f"{where}: not a folder.")
+        if file:
+            resolve(folder, file, must_exist=True)
+        return shell_argv(shown)
     if file:
         path = resolve(root, file, must_exist=True)
         if not os.path.isfile(path):
@@ -550,6 +604,7 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {
             "command": {"type": "string"},
             "file": _PATH,
+            "path": {"type": "string", "description": "Folder to run in (default: the workspace)."},
             "args": {"type": "array", "items": {"type": "string"}},
             "timeout": {"type": "integer", "description": f"Seconds; default {DEFAULT_TIMEOUT}, max {MAX_TIMEOUT}."},
         }},
@@ -623,8 +678,9 @@ class Tools:
     def call(self, name, args):
         if name not in TOOL_NAMES:
             raise ToolError(f"Unknown tool: {name}")
-        args = args if isinstance(args, dict) else {}
-        return getattr(self, "t_" + name)(workspace(), args)
+        # `run` normalizes in command_line, where the approval gate reads it.
+        args = args if name == "run" else normalize(name, args)
+        return getattr(self, "t_" + name)(workspace(), args if isinstance(args, dict) else {})
 
     # ls
 

@@ -346,14 +346,14 @@ A small code editor and a set of coding tools for the agent, both working in the
 | Tool | What it returns |
 |---|---|
 | `ls` | A tree to a small depth, capped, skipping `.git`, `node_modules`, virtualenvs, caches and build folders |
-| `read` | A numbered slice of a file (200 lines by default, 500 at most) and the file's total line count |
+| `read` | A numbered slice of a file (120 lines by default, 500 at most) and the file's total line count |
 | `write` | Creates or overwrites a file, making folders; answers in one line |
 | `edit` | Replaces an exact string; fails if it isn't found, or matches more than once without `all: true` |
 | `overview` | A one-screen summary of a project or folder: languages, the main folders, what the README and manifests (`package.json`, `pyproject.toml`…) say, likely entry points. About 1 KB however big the project |
 | `outline` | The classes, functions and headings of a file (methods under their class) or of a folder (top level), with line numbers and signatures and no bodies |
 | `find` | Where a name is defined: `path:line  signature`; `partial: true` for names containing it |
 | `search` | Regex across the workspace (optional glob): `path:line: text`, 50 hits at most, or with `files_only: true` just the matching files and their hit counts |
-| `run` | Runs a bash command, or `python <file> <args>`; exit code plus the head and tail of the output (3 KB each), saying how much was cut. 45 s by default, 580 s at most |
+| `run` | Runs a bash command, or `python <file> <args>`, from the workspace or a folder in it (`path`, shown as `cd <folder> && …` so the approval and saved rules see it); exit code plus the head and tail of the output (3 KB each), saying how much was cut. 45 s by default, 580 s at most |
 | `preview` | Serves a folder on `127.0.0.1` and returns the URL, to open with the browser tools and screenshot |
 
 They're built to keep coding cheap: nothing returns a whole file or a whole log, and the agent is told to search first, read slices and edit by exact replacement. Every path must stay inside the workspace — absolute paths, `..` and symlinks leading out are refused.
@@ -361,6 +361,8 @@ They're built to keep coding cheap: nothing returns a whole file or a whole log,
 **`run` goes through [Bash Approvals](#bash-approvals).** The card shows exactly what will run (`python app.py --port 8000`), your saved always-allow rules apply to it, and background turns (pings, the API) are refused unless a rule allows it. Like bash it is not a sandbox: an approved command has the FreeClaw process's access.
 
 **GitHub.** Connect GitHub in the App Store (a personal access token that can read and write your repos), and the Developer app can work on your repositories. The agent gets `git_clone`, `git_status`, `git_diff`, `git_commit`, `git_push`, `git_pull` and `git_branch` (`src/dev_git.py`), and the app gets a **Git** tab beside its file list with the same actions: pick one of your GitHub repos (or paste a URL) and **Clone**; see the repo's origin, its branch and how far ahead or behind it is; **Check origin** fetches and lists the commits on GitHub that aren't here yet, and **Pull** brings them in; the changed files are listed (click one to open it), with **Commit** and **Push** under them. The agent's `git_fetch` does the same check. Only `https://github.com/` repos, and push and pull only go to a repo's GitHub `origin`. The agent's `git_push` asks you first, like `run`. The token reaches git as a header for github.com only, never a command line, a file or code you run, and a repo's own config can't make git run commands (hooks, fsmonitor, pagers and the like are forced off). Commits use your GitHub name and its private noreply address. Opening a pull request is the GitHub connector's job.
+
+Common other names for arguments are accepted (`filename` or `file_path` for `path`, `old_string`/`new_string` for `old`/`new`, `offset`/`limit` for `start`/`lines`, `cwd` for `run`'s `path`, `path` for a git tool's `repo`), so a model that misremembers the schema doesn't lose a step to it.
 
 **Switching it off.** `FC_DISABLE_DEVELOPER=1` (or `FC_DISABLE_BASH=1`) removes it entirely — the tools aren't offered, `/developer` and `/api/dev/*` answer 404, and the sidebar entry is gone. Self-hosted installs leave it unset.
 

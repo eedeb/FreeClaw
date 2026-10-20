@@ -220,9 +220,12 @@ class TestRun(Workspace):
         self.assertEqual(dev.command_line({"command": " ls -la "}), ("ls -la", None))
         for bad in ({}, {"command": "ls", "file": "a.py"}, {"file": "a.rb"},
                     {"file": "a.py", "args": "x"}, {"command": "ls", "args": ["x"]},
-                    {"file": "a.py", "cwd": "other"}):
+                    {"file": "a.py", "env": {"X": "1"}}):
             with self.subTest(args=bad):
                 self.assertIsNone(dev.command_line(bad)[0])
+        # A folder to run in is allowed only as part of the shown command, so
+        # what's approved (and what a saved rule matches) is what runs.
+        self.assertEqual(dev.command_line({"file": "a.py", "cwd": "other"}), ("cd other && python a.py", None))
 
     def test_python_file_with_args(self):
         self.put("hello.py", "import sys\nprint('hi', *sys.argv[1:])\n")
@@ -260,6 +263,45 @@ class TestRun(Workspace):
         short = dev.Trimmer(head=10, tail=10)
         short.feed("hello")
         self.assertEqual(short.text(), "hello")
+
+
+class TestArgumentNames(Workspace):
+    """The names a model reaches for when it doesn't recall the schema."""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.root, "app"), exist_ok=True)
+        with open(os.path.join(self.root, "app", "x.py"), "w") as f:
+            f.write("print('ok')\n" + "\n".join(f"# {i}" for i in range(300)) + "\n")
+
+    def test_edit_and_read_aliases(self):
+        self.call("edit", filename="app/x.py", old_string="print('ok')", new_string="print('yes')")
+        out = self.call("read", file_path="app/x.py", offset=1, limit=1)
+        self.assertIn("print('yes')", out)
+
+    def test_read_defaults_to_120_lines(self):
+        out = self.call("read", path="app/x.py")
+        self.assertIn("120", out)
+        self.assertNotIn("# 150", out)
+
+    def test_run_in_a_folder(self):
+        self.assertEqual(dev.command_line({"command": "python3 x.py", "path": "app"}),
+                         ("cd app && python3 x.py", None))
+        self.assertEqual(dev.command_line({"file": "x.py", "cwd": "app/"}), ("cd app && python x.py", None))
+        self.assertIn("ok", self.call("run", command="python3 x.py", path="app"))
+
+    def test_run_folder_stays_inside(self):
+        for bad in ("../", "/etc", "a/../../b"):
+            with self.subTest(where=bad):
+                shown, err = dev.command_line({"command": "ls", "path": bad})
+                self.assertIsNone(shown)
+                self.assertIn("inside the workspace", err)
+
+    def test_git_tools_take_path_for_repo(self):
+        self.assertEqual(dev.normalize("git_status", {"path": "app"}), {"repo": "app"})
+
+    def test_unknown_still_refused(self):
+        self.assertIn("Unknown argument", dev.command_line({"command": "ls", "bogus": 1})[1])
 
 
 class TestPreview(Workspace):
