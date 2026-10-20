@@ -195,6 +195,39 @@ class GitTests(unittest.TestCase):
         self.assertIn("git_fetch", dev_server.TOOL_NAMES)
 
 
+    def test_errors_in_plain_words(self):
+        cases = {
+            "remote: Permission to eedeb/Home-web.git denied to eedeb.\nfatal: unable to access "
+            "'https://github.com/eedeb/Home-web.git/': The requested URL returned error: 403": "can't write to it",
+            "fatal: Authentication failed for 'https://github.com/a/b.git/'": "didn't accept your token",
+            "remote: Repository not found.\nfatal: repository 'https://github.com/a/b.git/' not found": "can't find this repo",
+            " ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs": "Check origin and Pull first",
+            "remote: error: GH006: Protected branch update failed for refs/heads/main.": "main is protected",
+            "fatal: unable to access 'https://github.com/a/b.git/': CONNECT tunnel failed, response 403": "Couldn't reach GitHub",
+        }
+        for raw, want in cases.items():
+            msg = str(dev_git.explain(raw, "fallback", "main"))
+            self.assertIn(want, msg, raw)
+            self.assertIn("GitHub said:", msg)
+        self.assertEqual(str(dev_git.explain("something odd", "fallback")), "something odd")
+        self.assertEqual(str(dev_git.explain("", "fallback")), "fallback")
+
+    def test_push_refusal_is_explained(self):
+        dev_git.commit(self.repo, "first")
+        real = dev_git.git_process
+
+        def denied(argv, cwd, env):
+            if "push" in argv:
+                return subprocess.CompletedProcess(argv, 128, b"", b"remote: Permission to someone/proj.git denied to me.\n"
+                                                   b"fatal: unable to access 'https://github.com/someone/proj.git/': "
+                                                   b"The requested URL returned error: 403\n")
+            return real(argv, cwd, env)
+        with mock.patch.object(dev_git, "git_process", denied):
+            with self.assertRaises(dev_git.GitError) as e:
+                dev_git.push(self.repo)
+        self.assertIn("Contents: Read and write", str(e.exception))
+
+
 class GateTests(unittest.TestCase):
     def test_push_is_gated_like_run(self):
         import src.agent as agent
