@@ -123,6 +123,54 @@ def git(args, cwd, network=False, strip=True):
     return done.returncode, (out.strip() if strip else out)
 
 
+# ── what went wrong, in plain words ──
+
+_TOKEN_PAGE = "github.com/settings/personal-access-tokens"
+
+# (what git or GitHub said, lowercased → what to tell the person). First match
+# wins; the order runs from the most to the least specific.
+_EXPLAIN = [
+    (("gh006", "protected branch"),
+     "{branch} is protected on GitHub, so it only takes changes through a pull request. Push to "
+     "a new branch instead, then open a pull request."),
+    (("non-fast-forward", "fetch first", "[rejected]", "updates were rejected"),
+     "GitHub has commits this copy doesn't. Check origin and Pull first, then push again."),
+    (("not possible to fast-forward", "diverging branches", "divergent branches"),
+     "This copy and GitHub both have new commits, so Pull can't just catch up. Push your commits "
+     "to a new branch and merge them on GitHub."),
+    # Before the 403 below: a proxy refusing the tunnel says 403 too.
+    (("could not resolve host", "connect tunnel failed", "failed to connect", "connection timed out",
+      "operation timed out"),
+     "Couldn't reach GitHub just now. Try again in a minute."),
+    (("permission to", "403", "write access to repository not granted"),
+     "Your GitHub token can read this repo but can't write to it. On GitHub ({page}), give the "
+     "token access to this repo with Contents: Read and write (a classic token needs the repo "
+     "scope), then try again."),
+    (("authentication failed", "invalid username or token", "invalid username or password",
+      "401", "bad credentials"),
+     "GitHub didn't accept your token: it may have expired or been revoked. Make a new one "
+     "({page}) and paste it into App Store → GitHub."),
+    (("repository not found", "404"),
+     "GitHub can't find this repo with your token. Check the URL, and if it's private, give the "
+     "token access to it ({page})."),
+    (("unable to access",),
+     "Couldn't reach GitHub just now. Try again in a minute."),
+]
+
+
+def explain(out, fallback, branch=None):
+    """A GitError for a failed clone, fetch, pull or push: a plain sentence
+    for the cases people hit, with GitHub's own last line under it."""
+    text = (out or "").strip()
+    low = text.lower()
+    last = next((ln.strip() for ln in reversed(text.splitlines()) if ln.strip()), "")
+    for needles, message in _EXPLAIN:
+        if any(n in low for n in needles):
+            message = message.format(page=_TOKEN_PAGE, branch=branch or "That branch")
+            return GitError(message + (f"\n(GitHub said: {last})" if last else ""))
+    return GitError(text or fallback)
+
+
 # ── who commits ──────────────────────────────────────────────
 
 _identity = {}
@@ -180,7 +228,7 @@ def clone(root, url, folder=None):
     code, out = git(["clone", "--no-recurse-submodules", f"https://github.com/{owner}/{name}.git", target],
                     root, network=True)
     if code != 0:
-        raise GitError(out or "The clone failed.")
+        raise explain(out, "The clone failed.")
     return f"Cloned {owner}/{name} into {target}."
 
 
@@ -250,7 +298,7 @@ def push(repo, branch=None):
         raise GitError("Bad branch name.")
     code, out = git(["push", "--no-verify", origin, f"HEAD:refs/heads/{branch}"], repo, network=True)
     if code != 0:
-        raise GitError(out or "The push failed.")
+        raise explain(out, "The push failed.", branch)
     return f"Pushed to {branch}.\n{out}".strip()
 
 
@@ -261,7 +309,7 @@ def pull(repo):
     code, out = git(["pull", "--ff-only", "--no-recurse-submodules", origin, current_branch(repo)],
                     repo, network=True)
     if code != 0:
-        raise GitError(out or "The pull failed (it only fast-forwards; commit or stash local changes).")
+        raise explain(out, "The pull failed (it only fast-forwards; commit or stash local changes).")
     return out or "Up to date."
 
 
@@ -329,7 +377,7 @@ def fetch(repo):
     code, out = git(["fetch", "--no-recurse-submodules", "--prune", url,
                      f"+refs/heads/*:refs/remotes/origin/*"], repo, network=True)
     if code != 0:
-        raise GitError(out or "Couldn't reach GitHub.")
+        raise explain(out, "Couldn't reach GitHub.")
     return origin_text(origin(repo))
 
 
