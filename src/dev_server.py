@@ -566,6 +566,11 @@ TOOLS = [
                         "required": ["repo"]},
     },
     {
+        "name": "git_fetch",
+        "description": "Check origin: fetch from GitHub and list commits there that aren't here yet.",
+        "inputSchema": {"type": "object", "properties": {"repo": _PATH}, "required": ["repo"]},
+    },
+    {
         "name": "git_pull",
         "description": "Fast-forward a repo from GitHub.",
         "inputSchema": {"type": "object", "properties": {"repo": _PATH}, "required": ["repo"]},
@@ -790,6 +795,9 @@ class Tools:
 
     def t_git_push(self, root, args):
         return self._git(dev_git.push, self._repo(root, args), args.get("branch"))
+
+    def t_git_fetch(self, root, args):
+        return self._git(dev_git.fetch, self._repo(root, args))
 
     def t_git_pull(self, root, args):
         return self._git(dev_git.pull, self._repo(root, args))

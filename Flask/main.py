@@ -638,6 +638,46 @@ def api_list_user_files(name):
         return _log_and_error(e)
 
 
+@app.route('/api/users/<name>/move', methods=['POST'])
+def api_move_user_file(name):
+    """Move a file or folder into another folder ({"from", "to_dir"}): what
+    dragging a row onto a folder in the Files panel does. "" is the top.
+
+    Not the pinned folders, the files the panel won't delete, or anything in
+    or into the archive (read-only), and never on top of something that's
+    already there."""
+    name, err = _files_user(name)
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    src = _resolve_user_path(name, str(data.get('from') or ''))
+    dest_dir = _resolve_user_path(name, str(data.get('to_dir') or ''))
+    if src is None or dest_dir is None:
+        return jsonify({'error': 'Invalid path'}), 400
+    rel, dest_rel = _rel_to_user(name, src), _rel_to_user(name, dest_dir)
+    if not rel or not os.path.exists(src):
+        return jsonify({'error': 'Not found'}), 404
+    if rel in PROTECTED_FILES or rel in PINNED_DIRS or _is_readonly(rel):
+        return jsonify({'error': f"{rel} can't be moved."}), 403
+    if dest_rel == HISTORY_DIR or dest_rel.startswith(HISTORY_DIR + '/'):
+        return jsonify({'error': "The archive is read-only."}), 403
+    if not os.path.isdir(dest_dir):
+        return jsonify({'error': 'Drop it on a folder.'}), 400
+    if dest_dir == src or dest_dir.startswith(src.rstrip(os.sep) + os.sep):
+        return jsonify({'error': "A folder can't go inside itself."}), 400
+    target = os.path.join(dest_dir, os.path.basename(src))
+    if os.path.dirname(src) == dest_dir:
+        return jsonify({'ok': True, 'name': rel})
+    if os.path.exists(target):
+        return jsonify({'error': f"There's already a {os.path.basename(src)} there."}), 409
+    try:
+        with _session_lock(name):
+            os.rename(src, target)
+    except Exception as e:
+        return _log_and_error(e)
+    return jsonify({'ok': True, 'name': _rel_to_user(name, target)})
+
+
 @app.route('/api/users/<name>/files/<path:relpath>', methods=['GET', 'PUT', 'DELETE'])
 def api_user_file(name, relpath):
     """Open, save or delete one file in this user's folder.
@@ -1490,6 +1530,19 @@ def api_dev_file():
     path, err = _dev_path(root, args.get('path'), must_exist=request.method != 'PUT')
     if err:
         return err
+    if path != root and os.path.isdir(path) and request.method == 'DELETE':
+        # A folder only when it's empty, or holds nothing but its .gitkeep:
+        # nothing is ever deleted that the person didn't see in the list.
+        if any(n != '.gitkeep' for n in os.listdir(path)):
+            return jsonify({'error': "That folder isn't empty."}), 400
+        try:
+            keep = os.path.join(path, '.gitkeep')
+            if os.path.isfile(keep) and not os.path.islink(keep):
+                os.remove(keep)
+            os.rmdir(path)
+        except Exception as e:
+            return _log_and_error(e)
+        return jsonify({'ok': True, 'path': dev_server.rel_of(root, path)})
     if path == root or os.path.isdir(path):
         return jsonify({'error': 'That is a folder, not a file.'}), 400
     rel = dev_server.rel_of(root, path)
@@ -1548,6 +1601,8 @@ def api_dev_rename():
         return err
     if src == root or dst == root:
         return jsonify({'error': "The workspace itself can't be renamed."}), 400
+    if dst.startswith(src.rstrip(os.sep) + os.sep):
+        return jsonify({'error': "A folder can't go inside itself."}), 400
     if os.path.exists(dst):
         return jsonify({'error': f'{dev_server.rel_of(root, dst)} already exists.'}), 409
     try:
@@ -1651,7 +1706,8 @@ def api_dev_stop():
 # The Developer app's Source control panel: the same git the agent's tools use
 # (src/dev_git.py), with the token from this user's GitHub connection. The
 # person pressing a button is the approval, as with Run.
-_DEV_GIT_OPS = ('status', 'diff', 'commit', 'push', 'pull', 'branch', 'clone')
+_DEV_GIT_OPS = ('status', 'diff', 'commit', 'push', 'pull', 'branch', 'clone', 'fetch', 'origin',
+                'changes')
 
 
 @app.route('/api/dev/git/<op>', methods=['GET', 'POST'])
@@ -1681,11 +1737,31 @@ def api_dev_git(op):
                 text = dev_git.push(repo, args.get('branch') or None)
             elif op == 'pull':
                 text = dev_git.pull(repo)
+            elif op == 'fetch':
+                dev_git.fetch(repo)
+                return jsonify({'ok': True, 'origin': dev_git.origin(repo)})
+            elif op == 'origin':
+                return jsonify({'ok': True, 'origin': dev_git.origin(repo)})
+            elif op == 'changes':
+                return jsonify({'ok': True, 'changes': dev_git.changes(repo)})
             else:
                 text = dev_git.branch(repo, args.get('name') or None, bool(args.get('switch')))
     except dev_git.GitError as e:
         return jsonify({'error': str(e)}), 400
     return jsonify({'ok': True, 'text': text})
+
+
+@app.route('/api/dev/git/repos', methods=['GET'])
+def api_dev_git_repos():
+    """The person's own GitHub repos, for the Clone picker."""
+    name, root, err = _dev_user(request.args.get('user'))
+    if err:
+        return err
+    try:
+        with dev_git.using_token(mcp_client.github_token(name)):
+            return jsonify({'repos': dev_git.my_repos()})
+    except dev_git.GitError as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/dev/git', methods=['GET'])

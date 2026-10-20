@@ -104,8 +104,9 @@ def git_process(argv, cwd, env):
                           capture_output=True, timeout=TIMEOUT)
 
 
-def git(args, cwd, network=False):
-    """`git <args>` in `cwd`: (exit code, combined output, trimmed)."""
+def git(args, cwd, network=False, strip=True):
+    """`git <args>` in `cwd`: (exit code, combined output, trimmed unless
+    `strip` is False — porcelain output's leading space means something)."""
     argv = ["git", *SAFE_CONFIG, *args]
     try:
         done = git_process(argv, cwd, git_env())
@@ -119,7 +120,7 @@ def git(args, cwd, network=False):
         out = out.replace(t, "***")
     if len(out) > OUTPUT_MAX:
         out = out[:OUTPUT_MAX // 2] + "\n…\n" + out[-OUTPUT_MAX // 2:]
-    return done.returncode, out.strip()
+    return done.returncode, (out.strip() if strip else out)
 
 
 # ── who commits ──────────────────────────────────────────────
@@ -224,8 +225,10 @@ def commit(repo, message, files=None):
 
 
 def current_branch(repo):
-    _, out = git(["rev-parse", "--abbrev-ref", "HEAD"], repo)
-    return out.strip()
+    """The checked-out branch, including one with no commits yet (rev-parse
+    fails there and its error would read as a branch name)."""
+    code, out = git(["symbolic-ref", "--quiet", "--short", "HEAD"], repo)
+    return out.strip() if code == 0 else ""
 
 
 def _origin(repo):
@@ -241,6 +244,8 @@ def push(repo, branch=None):
     _need_token()
     origin = _origin(repo)
     branch = branch or current_branch(repo)
+    if not branch:
+        raise GitError("Not on a branch (a detached checkout). Say which branch to push to.")
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", branch or ""):
         raise GitError("Bad branch name.")
     code, out = git(["push", "--no-verify", origin, f"HEAD:refs/heads/{branch}"], repo, network=True)
@@ -277,3 +282,114 @@ def branch(repo, name=None, switch=False):
     if code != 0:
         raise GitError(out)
     return f"On {name}." if switch else f"Created {name}."
+
+
+# ── origin: what's there, and bringing it in ─────────────────
+
+def _counts(repo, branch):
+    """(ahead, behind) of HEAD against origin/<branch>, or (None, None) when
+    there's no such remote branch yet."""
+    code, out = git(["rev-list", "--left-right", "--count", f"HEAD...refs/remotes/origin/{branch}"], repo)
+    if code != 0:
+        return None, None
+    try:
+        ahead, behind = (int(x) for x in out.split())
+        return ahead, behind
+    except ValueError:
+        return None, None
+
+
+def origin(repo):
+    """The repo's origin as last fetched: {url, branch, ahead, behind,
+    incoming: [one-line commits on origin not here], outgoing: [the reverse]}.
+    No network; fetch() first for a fresh answer."""
+    _need_repo(repo)
+    _, url = git(["remote", "get-url", "origin"], repo)
+    branch = current_branch(repo)
+    ahead, behind = _counts(repo, branch) if branch else (None, None)
+    info = {"url": url if _REPO_URL.match(url or "") else "", "branch": branch,
+            "ahead": ahead, "behind": behind, "incoming": [], "outgoing": []}
+    if behind:
+        _, out = git(["log", "--no-color", "--format=%h %s (%an, %ar)", "-n", "20",
+                      f"HEAD..refs/remotes/origin/{branch}"], repo)
+        info["incoming"] = out.splitlines()
+    if ahead:
+        _, out = git(["log", "--no-color", "--format=%h %s", "-n", "20",
+                      f"refs/remotes/origin/{branch}..HEAD"], repo)
+        info["outgoing"] = out.splitlines()
+    return info
+
+
+def fetch(repo):
+    """Check origin: fetch from GitHub, then say what's new there."""
+    _need_repo(repo)
+    _need_token()
+    url = _origin(repo)
+    branch = current_branch(repo)
+    code, out = git(["fetch", "--no-recurse-submodules", "--prune", url,
+                     f"+refs/heads/*:refs/remotes/origin/*"], repo, network=True)
+    if code != 0:
+        raise GitError(out or "Couldn't reach GitHub.")
+    return origin_text(origin(repo))
+
+
+def origin_text(info):
+    """origin()'s answer as a few lines, for the agent."""
+    if info["behind"] is None:
+        return f"{info['branch']} isn't on GitHub yet; push it to create it."
+    lines = [f"{info['branch']}: {info['behind']} new on GitHub, {info['ahead']} here not pushed."]
+    if info["incoming"]:
+        lines += ["Incoming (git_pull to bring them in):"] + ["  " + c for c in info["incoming"]]
+    if info["outgoing"]:
+        lines += ["Not pushed yet:"] + ["  " + c for c in info["outgoing"]]
+    return "\n".join(lines)
+
+
+def changes(repo):
+    """Changed files as [{"path", "state"}]: state is one of modified, added,
+    deleted, renamed, untracked or conflict."""
+    _need_repo(repo)
+    code, out = git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], repo, strip=False)
+    if code != 0:
+        raise GitError(out)
+    items, parts = [], out.split("\0")
+    i = 0
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        x, y, path = entry[0], entry[1], entry[3:]
+        if x == "R":
+            i += 1                                   # the old name follows a rename
+        if x == "?":
+            state = "untracked"
+        elif "U" in (x, y) or (x, y) in (("A", "A"), ("D", "D")):
+            state = "conflict"
+        elif "D" in (x, y):
+            state = "deleted"
+        elif x == "A":
+            state = "added"
+        elif x == "R":
+            state = "renamed"
+        else:
+            state = "modified"
+        items.append({"path": path, "state": state})
+    return items
+
+
+def my_repos():
+    """The person's GitHub repos, most recently pushed first, as
+    [{"name": "owner/repo", "url", "private"}] (up to 100)."""
+    _need_token()
+    req = urllib.request.Request(
+        "https://api.github.com/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member",
+        headers={"Authorization": f"Bearer {token()}", "Accept": "application/vnd.github+json",
+                 "User-Agent": "FreeClaw"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.load(r)
+    except (OSError, ValueError) as e:
+        raise GitError(f"Couldn't list your GitHub repos: {e}")
+    return [{"name": d.get("full_name"), "url": d.get("clone_url"), "private": bool(d.get("private"))}
+            for d in data if isinstance(d, dict) and _REPO_URL.match(d.get("clone_url") or "")]
