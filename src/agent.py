@@ -1735,7 +1735,8 @@ DEVELOPER_INSTRUCTION = (
     "they said otherwise); open the pull request with the GitHub tools if they have them.")
 
 
-def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False):
+def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False,
+                  projects=()):
     """The instruction half of the stable prefix, for this kind of conversation."""
     prompt = _INSTRUCTIONS
     if browsing:
@@ -1744,6 +1745,11 @@ def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False,
         prompt += "\n\n" + FAST_BROWSER_INSTRUCTION
     if coding:
         prompt += "\n\n" + DEVELOPER_INSTRUCTION
+        if projects:
+            # Changes when a project is added or removed, which is rare; the
+            # cached prefix pays for it once.
+            prompt += (f" Their projects in the workspace: {', '.join(projects)}. When they talk "
+                       "about one of these (\"my game\", \"my site\"), they mean that code.")
     if tts:
         prompt += "\n\nYou are speaking through text-to-speech — write for clear, natural speech."
     if subagent:
@@ -1759,7 +1765,8 @@ def _session_instructions(sess):
     user = approvals.current_user() or sess.name
     return _instructions(tts=sess.tts, subagent=sess.depth > 0,
                          browsing=_browser_on(user), fast_browser=_fast_browser_on(user),
-                         coding=_developer_on(user))
+                         coding=_developer_on(user),
+                         projects=mcp_client.developer_projects(user) if _developer_on(user) else ())
 
 
 def _browser_on(user):
@@ -4206,7 +4213,14 @@ def _jev_server_about(server, server_tools, used_for):
                       or (c.get("name") or "").lower() == name.lower()), None)
         about = (entry or {}).get("description") or ""
     names = [_tool_name(t).removeprefix(f"mcp_{name}_") for t in server_tools]
-    line = f"{name}: {jev.one_line(about, 200)} Tools: {', '.join(names[:10])}"
+    line = f"{name}: {jev.one_line(about, 200)}"
+    if server.get("workspace"):
+        # The projects themselves, so "add X to my minecraft game" reaches the
+        # code rather than the browser (it went to the browser without this).
+        projects = mcp_client.developer_projects(_tools_user())
+        if projects:
+            line += f" The user's own projects here: {', '.join(projects)}."
+    line += f" Tools: {', '.join(names[:10])}"
     if len(names) > 10:
         line += " …"
     if used_for:
@@ -4362,6 +4376,15 @@ def _short_tool_name(t, gid):
     return name.removeprefix(f"mcp_{server}_") if gid.startswith("mcp:") else name
 
 
+def _projects_hint(gid):
+    """For the Developer group: the user's projects, so a request about one of
+    them isn't mistaken for a request about the real thing."""
+    if gid != "mcp:developer":
+        return ""
+    projects = mcp_client.developer_projects(_tools_user())
+    return f" [their projects: {', '.join(projects)}]" if projects else ""
+
+
 def _jev_notes(sess):
     """The routed turn's live-tail lines: what's withheld and how to get it,
     the user's skipped requests, and the opened memory sections."""
@@ -4376,6 +4399,7 @@ def _jev_notes(sess):
         note = ("\nStart with the tools you have — they were picked for this request. Only if "
                 "they turn out unable to do it, load_tools can add: "
                 + "; ".join(f"{gid} ({', '.join(_short_tool_name(t, gid) for t in ts)})"
+                            + _projects_hint(gid)
                             for gid, (_short, ts) in withheld.items())
                 + ".")
     return note + sess.turn_route_notes
