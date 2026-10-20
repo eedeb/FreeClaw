@@ -1725,14 +1725,14 @@ FAST_BROWSER_INSTRUCTION = (
 # are built to avoid that, and this is what gets the model to use them so.
 DEVELOPER_INSTRUCTION = (
     "Coding: projects live in the Developer workspace (the mcp_developer_* tools; the user sees "
-    "it in the Developer app). To understand a project, start with overview, then outline the "
-    "folder or file you need and find the names you're after; search text after that. Never read "
-    "whole files to get your bearings: read only the lines you need, and change "
-    "files with edit (exact replacement) rather than rewriting them with write. Run tests or the "
-    "program with run and fix from its output. For a web page, use preview, then open the URL "
-    "in your browser to check it. A GitHub repo: git_clone it, change it, then git_diff, "
-    "git_commit and git_push (on a branch of its own unless they said otherwise); open the pull "
-    "request with the GitHub tools if they have them.")
+    "it in the Developer app). To get your bearings, start with overview (it already sums up the "
+    "README and manifests, so don't read those after it), then outline the folder, and outline a "
+    "big file before reading any of it. Use find for a name you know and search for text, then "
+    "read only the lines those point to. Change files with edit (exact replacement), not write. "
+    "Check your work with run (path: the folder to run in) and with git_diff, not a printed diff. "
+    "For a web page, use preview, then open the URL in your browser to check it. A GitHub repo: "
+    "git_clone it, change it, then git_diff, git_commit and git_push (on a branch of its own unless "
+    "they said otherwise); open the pull request with the GitHub tools if they have them.")
 
 
 def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False):
