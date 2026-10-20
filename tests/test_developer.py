@@ -304,6 +304,43 @@ class TestArgumentNames(Workspace):
         self.assertIn("Unknown argument", dev.command_line({"command": "ls", "bogus": 1})[1])
 
 
+class TestProjectsKnown(unittest.TestCase):
+    """The agent (and Jev) are told which projects exist, so "my minecraft
+    game" means the code in the workspace, not the real game."""
+
+    def setUp(self):
+        import src.mcp_client as mc
+        self.mc = mc
+        self.static = tempfile.mkdtemp(prefix="fc-proj-")
+        ws = os.path.join(self.static, "alice", "files", "projects")
+        for d in ("minecraft", "Home-web", ".hidden"):
+            os.makedirs(os.path.join(ws, d))
+        open(os.path.join(ws, "notes.txt"), "w").close()
+        p = mock.patch.object(mc, "STATIC_ROOT", self.static)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.static, ignore_errors=True)
+
+    def test_project_list(self):
+        self.assertEqual(self.mc.developer_projects("alice"), ["Home-web", "minecraft"])
+        self.assertEqual(self.mc.developer_projects("nobody"), [])
+        self.assertEqual(self.mc.developer_projects("../x"), [])
+
+    def test_in_instructions_and_routing(self):
+        import src.agent as agent
+        text = agent._instructions(coding=True, projects=["Home-web", "minecraft"])
+        self.assertIn("Their projects in the workspace: Home-web, minecraft.", text)
+        self.assertNotIn("Their projects", agent._instructions(coding=False, projects=["x"]))
+        with mock.patch.object(agent, "_tools_user", lambda: "alice"):
+            self.assertIn("[their projects: Home-web, minecraft]", agent._projects_hint("mcp:developer"))
+            self.assertEqual(agent._projects_hint("mcp:browser"), "")
+            line = agent._jev_server_about({"name": "developer", "workspace": True, "description": "Code."},
+                                           [], None)
+            self.assertIn("The user's own projects here: Home-web, minecraft.", line)
+
+
 class TestPreview(Workspace):
     def test_serves_workspace_only(self):
         self.put("site/index.html", "<h1>hi</h1>")

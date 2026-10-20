@@ -225,6 +225,21 @@ def github_token(user):
     return ""
 
 
+def developer_projects(user, limit=20):
+    """The project folders in `user`'s Developer workspace (its top-level
+    folders), so a request that names one — "my minecraft game" — can be told
+    apart from one about the real thing. Doesn't create the workspace."""
+    server = _with_workspace({"workspace": True}, user)
+    path = (server.get("env") or {}).get("FC_DEV_WORKSPACE")
+    try:
+        names = sorted((n for n in os.listdir(path)
+                        if not n.startswith(".") and os.path.isdir(os.path.join(path, n))
+                        and not os.path.islink(os.path.join(path, n))), key=str.lower)
+    except (OSError, TypeError):
+        return []
+    return names[:limit]
+
+
 def developer_workspace(user):
     """`user`'s Developer workspace, or None for a bad name. Created on the
     way, so the app's file list never comes up without it."""
