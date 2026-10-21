@@ -302,18 +302,47 @@ def push(repo, branch=None):
         raise GitError("Not on a branch (a detached checkout). Say which branch to push to.")
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", branch or ""):
         raise GitError("Bad branch name.")
+    # A push sends commits, nothing else: changed files that aren't committed
+    # stay behind. Pushing past them read as "pushed" and wasn't.
+    pending = changes(repo)
+    tracked = [c["path"] for c in pending if c["state"] != "untracked"]
+    if tracked:
+        raise GitError(f"{_names(tracked)} {'has' if len(tracked) == 1 else 'have'} changes that aren't "
+                       "committed, so a push wouldn't include them. Commit first (git_commit), then push.")
     code, out = git(["push", "--no-verify", origin, f"HEAD:refs/heads/{branch}"], repo, network=True)
     if code != 0:
         raise explain(out, "The push failed.", branch)
-    return f"Pushed to {branch}.\n{out}".strip()
+    _track(repo, branch)
+    new = [c["path"] for c in pending if c["state"] == "untracked"]
+    left = f"\nNot included (never committed): {_names(new)}." if new else ""
+    if "everything up-to-date" in out.lower():
+        return f"Nothing new to push: GitHub's {branch} already has these commits.{left}"
+    return f"Pushed to {branch}.{left}\n{out}".strip()
+
+
+def _names(paths, most=5):
+    shown = ", ".join(paths[:most])
+    return shown + (f" and {len(paths) - most} more" if len(paths) > most else "")
+
+
+def _track(repo, branch, at="HEAD"):
+    """Record that origin's `branch` is now at HEAD, as a push or pull to a
+    named remote would: they go to the URL here, which leaves
+    refs/remotes/origin alone, and ahead/behind went stale ("ahead 1" after a
+    push that had sent it)."""
+    git(["update-ref", f"refs/remotes/origin/{branch}", at], repo)
 
 
 def pull(repo):
     _need_repo(repo)
     _need_token()
     origin = _origin(repo)
-    code, out = git(["pull", "--ff-only", "--no-recurse-submodules", origin, current_branch(repo)],
+    branch = current_branch(repo)
+    code, out = git(["pull", "--ff-only", "--no-recurse-submodules", origin, branch],
                     repo, network=True)
+    if code == 0 and branch:
+        # What GitHub has, not HEAD: commits here not yet pushed stay ahead.
+        _track(repo, branch, "FETCH_HEAD")
     if code != 0:
         raise explain(out, "The pull failed (it only fast-forwards; commit or stash local changes).")
     return out or "Up to date."
