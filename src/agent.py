@@ -1731,8 +1731,10 @@ DEVELOPER_INSTRUCTION = (
     "read only the lines those point to. Change files with edit (exact replacement), not write. "
     "Check your work with run (path: the folder to run in) and with git_diff, not a printed diff. "
     "For a web page, use preview, then open the URL in your browser to check it. A GitHub repo: "
-    "git_clone it, change it, then git_diff, git_commit and git_push (on a branch of its own unless "
-    "they said otherwise); open the pull request with the GitHub tools if they have them.")
+    "git_clone it, change it, then git_diff, git_commit and git_push, in that order: a push sends "
+    "only committed work (on a branch of its own unless they said otherwise); open the pull "
+    "request with the GitHub tools if they have them. Changing an existing feature: outline the "
+    "file first and read only around the lines it points to, not big slices.")
 
 
 def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False,

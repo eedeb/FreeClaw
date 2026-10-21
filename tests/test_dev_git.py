@@ -243,6 +243,63 @@ class GitTests(unittest.TestCase):
         self.assertIn("Contents: Read and write", str(e.exception))
 
 
+    def _bare_github(self):
+        """A local bare repo standing in for GitHub, and a git_process that
+        sends the checked GitHub URL there."""
+        bare = os.path.join(self.root, "gh-push.git")
+        sh("git", "init", "-q", "--bare", "-b", "main", bare, cwd=self.root)
+        real = dev_git.git_process
+
+        def via(argv, cwd, env):
+            argv = [bare if a == "https://github.com/someone/proj.git" else a for a in argv]
+            return real(argv, cwd, {**env, "GIT_ALLOW_PROTOCOL": "file"})
+        return bare, [mock.patch.object(dev_git, "git_process", via),
+                      mock.patch.object(dev_git, "SAFE_CONFIG", _without(dev_git.SAFE_CONFIG, "protocol.allow=never"))]
+
+    def test_push_refuses_uncommitted_changes(self):
+        dev_git.commit(self.repo, "first")
+        with open(os.path.join(self.repo, "a.py"), "a") as f:
+            f.write("changed\n")
+        bare, patches = self._bare_github()
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        with self.assertRaises(dev_git.GitError) as e:
+            dev_git.push(self.repo)
+        self.assertIn("a.py has changes that aren't committed", str(e.exception))
+        self.assertIn("git_commit", str(e.exception))
+        code, _ = dev_git.git(["--git-dir", bare, "rev-parse", "--verify", "-q", "refs/heads/main"], self.root)
+        self.assertNotEqual(code, 0, "something was pushed")
+
+    def test_push_then_counts_are_right_and_nothing_new_is_said(self):
+        dev_git.commit(self.repo, "first")
+        with open(os.path.join(self.repo, "scratch.txt"), "w") as f:
+            f.write("not committed\n")
+        bare, patches = self._bare_github()
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        out = dev_git.push(self.repo)
+        self.assertIn("Pushed to main.", out)
+        self.assertIn("Not included (never committed): scratch.txt", out)
+        info = dev_git.origin(self.repo)
+        self.assertEqual((info["ahead"], info["behind"]), (0, 0), "the push left ahead/behind stale")
+        self.assertIn("Nothing new to push", dev_git.push(self.repo))
+
+    def test_pull_keeps_unpushed_commits_ahead(self):
+        dev_git.commit(self.repo, "first")
+        bare, patches = self._bare_github()
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        dev_git.push(self.repo)
+        with open(os.path.join(self.repo, "b.py"), "w") as f:
+            f.write("x\n")
+        dev_git.commit(self.repo, "local only")
+        dev_git.pull(self.repo)
+        self.assertEqual(dev_git.origin(self.repo)["ahead"], 1, "a pull marked an unpushed commit as pushed")
+
+
 class GateTests(unittest.TestCase):
     def test_push_is_gated_like_run(self):
         import src.agent as agent
