@@ -3275,6 +3275,14 @@ def _hand_over_page(result, reason):
     user's Browser app (src/browser_handoff.py). The chat turns the call into a
     button that hands them this browser; the model gets told to stop, and never
     sees where the cookies went."""
+    if not approvals.is_interactive():
+        # A scheduled ping or background task: nobody is there to press the
+        # button, and ending the turn to wait for them meant the check simply
+        # never happened, every day. Say so instead, and let the run finish.
+        return ("Nobody can solve this check right now: this is a scheduled run or a background "
+                "task, with nobody watching. Don't ask them to press anything. Finish the task "
+                "without this page (another source, if one would do), and say in your report "
+                "that the site showed a human-verification check and you couldn't look.")
     url, error = browser_handoff.accept(approvals.current_user(), result, reason)
     if error:
         return error
