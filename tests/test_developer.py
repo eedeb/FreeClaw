@@ -518,6 +518,26 @@ class TestRoutes(unittest.TestCase):
             self.assertIn(b'id="icon-developer"', self.client.get("/chat").data)
             self.assertEqual(self.client.get("/developer").status_code, 200)
 
+    def test_delete_folder(self):
+        with mock.patch.dict(os.environ, {"FC_DISABLE_DEVELOPER": "", "FC_DISABLE_BASH": ""}):
+            for path in ("proj/a.py", "proj/sub/b.txt"):
+                self.client.put("/api/dev/file", json={"user": self.user, "path": path, "content": "x",
+                                                       "create": True})
+            outside = os.path.join(self.main.STATIC_DIR, self.user, "files", "keep.txt")
+            with open(outside, "w") as f:
+                f.write("keep")
+            root = self.main.mcp_client.developer_workspace(self.user)
+            os.symlink(outside, os.path.join(root, "proj", "link.txt"))
+            r = self.client.delete(f"/api/dev/file?user={self.user}&path=proj")
+            self.assertEqual(r.status_code, 400, "not without recursive")
+            r = self.client.delete(f"/api/dev/file?user={self.user}&path=proj&recursive=1")
+            self.assertEqual(r.status_code, 200, r.get_json())
+            self.assertFalse(os.path.exists(os.path.join(root, "proj")))
+            self.assertTrue(os.path.exists(outside), "a link inside is removed, not followed")
+            r = self.client.delete(f"/api/dev/file?user={self.user}&path=.&recursive=1")
+            self.assertNotEqual(r.status_code, 200, "never the workspace itself")
+            self.assertTrue(os.path.isdir(root))
+
     def test_off(self):
         with mock.patch.dict(os.environ, {"FC_DISABLE_DEVELOPER": "1"}):
             self.assertEqual(self.client.get("/developer").status_code, 404)

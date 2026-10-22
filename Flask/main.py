@@ -1522,7 +1522,9 @@ def api_dev_file():
     """Open (GET), save or create (PUT) and delete (DELETE) one file.
 
     GET with ?stat=1 answers with just the modified time: what the editor
-    polls to notice the agent changing the file it has open."""
+    polls to notice the agent changing the file it has open. DELETE on a
+    folder takes an empty one, or with ?recursive=1 the folder and everything
+    in it (the page asks first, saying how much)."""
     args = _dev_args()
     name, root, err = _dev_user(args.get('user'))
     if err:
@@ -1531,10 +1533,17 @@ def api_dev_file():
     if err:
         return err
     if path != root and os.path.isdir(path) and request.method == 'DELETE':
-        # A folder only when it's empty, or holds nothing but its .gitkeep:
-        # nothing is ever deleted that the person didn't see in the list.
+        # A folder with something in it only when asked for in so many words
+        # (recursive): the page says how much is in it and asks first.
         if any(n != '.gitkeep' for n in os.listdir(path)):
-            return jsonify({'error': "That folder isn't empty."}), 400
+            if args.get('recursive') not in ('1', 'true', True):
+                return jsonify({'error': "That folder isn't empty."}), 400
+            try:
+                # rmtree removes links inside it rather than following them.
+                shutil.rmtree(path)
+            except Exception as e:
+                return _log_and_error(e)
+            return jsonify({'ok': True, 'path': dev_server.rel_of(root, path)})
         try:
             keep = os.path.join(path, '.gitkeep')
             if os.path.isfile(keep) and not os.path.islink(keep):

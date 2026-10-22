@@ -591,16 +591,19 @@
   async function deleteItem(path, isDir) {
     const inside = isDir ? [...files.map(f => f.path), ...folders]
       .filter(p => p.startsWith(path + '/') && p !== path + '/.gitkeep') : [];
-    if (isDir && inside.length) {
-      alert(`${path} isn't empty (${inside.length} item${inside.length === 1 ? '' : 's'}). `
-        + 'Delete or move what\'s in it first.');
-      return;
-    }
-    if (!confirm(`Delete ${path}? This can't be undone.`)) return;
+    const nFiles = inside.filter(p => files.some(f => f.path === p)).length;
+    const repo = isDir && !path.includes('/') && gitRepos.includes(path);
+    const ask = !isDir || !inside.length ? `Delete ${path}? This can't be undone.`
+      : `Delete ${path} and everything in it (${nFiles} file${nFiles === 1 ? '' : 's'}`
+        + `${inside.length > nFiles ? ` in ${inside.length - nFiles} folder${inside.length - nFiles === 1 ? '' : 's'}` : ''})?`
+        + (repo ? ' It\'s a git repo: anything not pushed to GitHub is lost.' : '')
+        + ' This can\'t be undone.';
+    if (!confirm(ask)) return;
     try {
-      await api('DELETE', '/api/dev/file?' + q({ path }));
-      if (open.path === path) setOpen(null, '', 0);
+      await api('DELETE', '/api/dev/file?' + q(isDir && inside.length ? { path, recursive: 1 } : { path }));
+      if (open.path === path || (isDir && open.path && open.path.startsWith(path + '/'))) setOpen(null, '', 0);
       loadTree();
+      if (repo) refreshScm();
     } catch (e) { alert(e.message); }
   }
 
@@ -752,9 +755,12 @@
   const repoSel = $('git-repo');
   const repo = () => repoSel.value;
   let myReposLoaded = false;
+  // Top-level folders that are git repos, for the delete warning.
+  let gitRepos = [];
 
   async function gitInfo() {
     const d = await api('GET', '/api/dev/git?' + q({}));
+    gitRepos = d.repos;
     $('git-connect').hidden = d.connected;
     const keep = repo();
     repoSel.innerHTML = '';
