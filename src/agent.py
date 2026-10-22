@@ -2504,7 +2504,8 @@ def build_fast_browser_tools():
                     "conclude: it can't read or compare, so do that yourself from what it shows "
                     "you. It never buys, pays, sends or deletes. Open the site with navigate first. "
                     "Use it rather than click/type/scroll for anything more than one step: it does "
-                    "the run in one call where each of yours is a full turn with a screenshot."),
+                    "the run in one call where each of yours is a full turn with a screenshot. "
+                    "One click (open this link) is just click."),
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -50,6 +50,8 @@ _ENDINGS = {
     "error": "Handed back after a browser error.",
     "nojev": "The fast loop needs Jev and couldn't reach it. Use the browser tools directly.",
 }
+# Endings where the fast loop gives up but the task isn't over.
+_HANDBACKS = {"unsure", "repeat", "steps", "time", "error"}
 
 
 def _page_of(url):
@@ -202,6 +204,13 @@ def run(goal, step, type_text, cancelled, max_steps=DEFAULT_STEPS):
     if done_so_far:
         lines.append("Did: " + "; ".join(done_so_far) + ".")
     lines.extend(notes)
+    if ending in _HANDBACKS:
+        # A handback read as the end of the task: handed back before its
+        # first click on a school calendar, the agent answered "the event
+        # details wouldn't open" without clicking the link itself.
+        lines.append(("Nothing was done, so the page is as it was. " if not done_so_far else "")
+                     + "This isn't a dead end: carry on with the browser tools yourself (one "
+                       "click is a click, not a browser_do), then finish the task.")
     lines.append(f"Now on: {page.get('title') or '(untitled)'} | {page.get('url') or ''}")
     logger.info("browser_do %r: %s after %d steps in %.1fs", goal[:80], ending, len(done_so_far),
                 time.monotonic() - started)
