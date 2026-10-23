@@ -2133,6 +2133,44 @@ def next_ping_time(when, repeat, now=None):
     return nxt
 
 
+# One lock per ping.md, held only while a ping.md is read and rewritten. The
+# agent's add_ping and cancel_ping, the scheduler and the Scheduled tasks
+# window (Flask/main.py /api/schedule) all edit the same file, and the
+# window can't wait on the user's session lock: that is held for a whole
+# turn, minutes at a time. Without it an edit made from the window while a
+# ping fired could put back the line the scheduler had just taken out.
+_ping_file_locks = {}
+_ping_file_locks_guard = threading.Lock()
+
+
+def ping_file_lock(path):
+    """The lock for one ping.md (a threading.RLock, so a holder can nest)."""
+    key = os.path.realpath(path)
+    with _ping_file_locks_guard:
+        lock = _ping_file_locks.get(key)
+        if lock is None:
+            lock = _ping_file_locks[key] = threading.RLock()
+        return lock
+
+
+def read_ping_lines(path):
+    """ping.md's non-blank lines, in file order ([] when there's none)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return [ln for ln in f.read().splitlines() if ln.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def write_ping_lines(path, lines):
+    """Write ping.md sorted soonest-first. Sorted before the file is opened:
+    "w" truncates on open, so anything that threw after it would take every
+    ping with it."""
+    lines = sort_ping_lines(lines)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n" if lines else "")
+
+
 def sort_ping_lines(lines):
     """ping.md, soonest first, so the next scheduled event is always the first
     line. A line whose timestamp doesn't parse sorts to the bottom keeping its
@@ -3233,22 +3271,71 @@ def _remove_ping(static_dir, match):
     if not match:
         return "Error: say which ping to cancel."
     path = static_dir + "ping.md"
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = [ln for ln in f.read().splitlines() if ln.strip()]
-    except FileNotFoundError:
-        lines = []
-    found = [ln for ln in lines if match.lower() in ln.lower()]
-    if not found:
-        return f"No scheduled ping matches '{match}' — nothing was cancelled."
-    if len(found) > 1:
-        return ("Nothing was cancelled — more than one ping matches:\n"
-                + "\n".join(f"- {ln}" for ln in found)
-                + "\nCall again with more of the line.")
-    lines.remove(found[0])
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n" if lines else "")
+    with ping_file_lock(path):
+        lines = read_ping_lines(path)
+        found = [ln for ln in lines if match.lower() in ln.lower()]
+        if not found:
+            return f"No scheduled ping matches '{match}' — nothing was cancelled."
+        if len(found) > 1:
+            return ("Nothing was cancelled — more than one ping matches:\n"
+                    + "\n".join(f"- {ln}" for ln in found)
+                    + "\nCall again with more of the line.")
+        lines.remove(found[0])
+        write_ping_lines(path, lines)
     return f"Cancelled: {found[0]}"
+
+
+def schedule_ping(static_dir, date_time, action, repeat=None):
+    """add_ping: one line into this profile's ping.md, checked the way the
+    scheduler will read it. Returns the tool's answer, "Error: …" when
+    nothing was scheduled. The Scheduled tasks window adds through this too
+    (Flask/main.py /api/schedule), so a host that limits add_ping by
+    wrapping it limits both."""
+    date_time = (date_time or '').strip()
+    action = (action or '').strip()
+    repeat = (repeat or '').strip().lower() or None
+    if not action:
+        return "Error: an action is required — nothing was scheduled."
+    # Same reasoning as the timestamp check below: refuse an interval the
+    # scheduler doesn't know rather than writing a marker that would never
+    # recur, or that parse_ping_time would choke on for good.
+    if repeat is not None and repeat not in PING_REPEATS:
+        return (f"Error: '{repeat}' isn't a repeat interval — nothing was "
+                f"scheduled. Use {', '.join(PING_REPEATS)}, or omit it "
+                f"for a one-off.")
+    # Refuse a timestamp the scheduler can't parse, rather than writing a
+    # line that would sit in ping.md forever and never fire. parse_ping_time
+    # is the same parser the scheduler uses, so what's accepted here is
+    # exactly what will run.
+    when = parse_ping_time(date_time)
+    if when is None:
+        return (f"Error: couldn't parse '{date_time}' as a time — nothing was "
+                f"scheduled. Use 'YYYY-MM-DD HH:MM' (call get_time first for "
+                f"anything relative like 'in 20 minutes').")
+    now = datetime.now()
+    # A time already gone would fire on the scheduler's next pass — seconds
+    # from now, not when the user asked. Nearly always a wrong day or year
+    # rather than a real request, so refuse it and show the clock.
+    if when < now - PING_PAST_TOLERANCE:
+        return (f"Error: {when.strftime(PING_TIME_FORMAT)} is in the past (it's now "
+                f"{now.strftime('%A')} {now.strftime(PING_TIME_FORMAT)}) — nothing "
+                f"was scheduled. Work the date out again from the current time.")
+    line = format_ping_line(date_time, repeat, action)
+    path = static_dir + "ping.md"
+    with ping_file_lock(path):
+        existing = read_ping_lines(path)
+        if line.strip() in (ln.strip() for ln in existing):
+            return f"Already scheduled — nothing added: {line}"
+        # Re-sorted on every update so the next scheduled event is always
+        # the first line and the furthest-out event is the last. The
+        # scheduler sorts the same way when it rewrites a fired repeat, so
+        # the file stays ordered however it was last touched.
+        write_ping_lines(path, existing + [line])
+    # The resolved time, weekday and distance, so the confirmation the user
+    # gets is the time that will actually fire — and a wrong one shows up
+    # here, where the model can still fix it.
+    return (f"Scheduled for {_describe_when(when, now)}"
+            + (f", then repeating {repeat}" if repeat else "") + ".")
 
 
 def _describe_when(when, now=None):
@@ -3600,62 +3687,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             return "context.md edited. Your memory in the prompt updates from next turn."
         return "File edited successfully."
     if command_name == 'add_ping':
-        filename = "ping.md"
-        date_time = (args_dict.get('date_time') or '').strip()
-        action = (args_dict.get('action') or '').strip()
-        repeat = (args_dict.get('repeat') or '').strip().lower() or None
-        if not action:
-            return "Error: an action is required — nothing was scheduled."
-        # Same reasoning as the timestamp check below: refuse an interval the
-        # scheduler doesn't know rather than writing a marker that would never
-        # recur, or that parse_ping_time would choke on for good.
-        if repeat is not None and repeat not in PING_REPEATS:
-            return (f"Error: '{repeat}' isn't a repeat interval — nothing was "
-                    f"scheduled. Use {', '.join(PING_REPEATS)}, or omit it "
-                    f"for a one-off.")
-        # Refuse a timestamp the scheduler can't parse, rather than writing a
-        # line that would sit in ping.md forever and never fire. parse_ping_time
-        # is the same parser the scheduler uses, so what's accepted here is
-        # exactly what will run.
-        when = parse_ping_time(date_time)
-        if when is None:
-            return (f"Error: couldn't parse '{date_time}' as a time — nothing was "
-                    f"scheduled. Use 'YYYY-MM-DD HH:MM' (call get_time first for "
-                    f"anything relative like 'in 20 minutes').")
-        now = datetime.now()
-        # A time already gone would fire on the scheduler's next pass — seconds
-        # from now, not when the user asked. Nearly always a wrong day or year
-        # rather than a real request, so refuse it and show the clock.
-        if when < now - PING_PAST_TOLERANCE:
-            return (f"Error: {when.strftime(PING_TIME_FORMAT)} is in the past (it's now "
-                    f"{now.strftime('%A')} {now.strftime(PING_TIME_FORMAT)}) — nothing "
-                    f"was scheduled. Work the date out again from the current time.")
-        line = format_ping_line(date_time, repeat, action)
-        try:
-            with open(static_dir+filename, "r", encoding="utf-8") as f:
-                existing = [ln.strip() for ln in f.read().splitlines()]
-        except FileNotFoundError:
-            existing = []
-        if line.strip() in existing:
-            return f"Already scheduled — nothing added: {line}"
-        with open(static_dir+filename, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-
-        # Re-sort ping.md on every update so the next scheduled event is
-        # always the first line and the furthest-out event is the last. The
-        # scheduler sorts the same way when it rewrites a fired repeat, so
-        # the file stays ordered however it was last touched.
-        with open(static_dir+filename, "r", encoding="utf-8") as f:
-            entries = sort_ping_lines(
-                [line for line in f.read().splitlines() if line.strip()])
-
-        with open(static_dir+filename, "w", encoding="utf-8") as f:
-            f.write("\n".join(entries) + "\n" if entries else "")
-        # The resolved time, weekday and distance, so the confirmation the user
-        # gets is the time that will actually fire — and a wrong one shows up
-        # here, where the model can still fix it.
-        return (f"Scheduled for {_describe_when(when, now)}"
-                + (f", then repeating {repeat}" if repeat else "") + ".")
+        # Looked up at call time, so a wrapper installed over schedule_ping
+        # applies to the tool as well.
+        return schedule_ping(static_dir, args_dict.get('date_time'),
+                             args_dict.get('action'), args_dict.get('repeat'))
 
     if command_name == 'cancel_ping':
         return _remove_ping(static_dir, args_dict.get('match'))

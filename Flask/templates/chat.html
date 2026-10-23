@@ -1393,6 +1393,9 @@
   <symbol id="i-developer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5.5l-3 13"/>
   </symbol>
+  <symbol id="i-schedule" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12.5" r="8.5"/><path d="M12 8v4.5l3 2"/><path d="M4.5 4.5 7 2.5M19.5 4.5 17 2.5"/>
+  </symbol>
   <symbol id="i-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.2h7.5A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M3 10.5h18"/>
   </symbol>
@@ -1450,6 +1453,10 @@
       <button class="app-icon" id="icon-files" data-app="files" title="Files">
         <span class="app-tile"><svg><use href="#i-files"/></svg></span>
         <span class="app-label">Files</span>
+      </button>
+      <button class="app-icon" id="icon-schedule" data-app="schedule" title="Scheduled tasks">
+        <span class="app-tile"><svg><use href="#i-schedule"/></svg></span>
+        <span class="app-label">Scheduled tasks</span>
       </button>
       <button class="app-icon" id="icon-browser" data-app="browser" title="Browser" hidden>
         <span class="app-tile"><svg><use href="#i-browser"/></svg></span>
@@ -1581,6 +1588,19 @@
     <div class="win-resize"></div>
   </section>
   {% endif %}
+
+  <section class="win" id="win-schedule" data-app="schedule" hidden aria-label="Scheduled tasks">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-schedule"/></svg>Scheduled tasks</div>
+    </div>
+    <div class="win-body"></div>
+    <div class="win-resize"></div>
+  </section>
 
   <section class="win" id="win-settings" data-app="settings" hidden aria-label="Settings">
     <div class="win-bar">
@@ -3675,6 +3695,7 @@
     // unset): without its window, openApp finds nothing to open.
     developer: { w: 1040, h: 680, src: () => '/developer' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
     appstore: { w: 940,  h: 700, src: () => '/appstore' },
+    schedule: { w: 640,  h: 640, src: () => '/schedule' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
     mcp:      { w: 380,  h: 360 },
     // Up in the top-right corner, out of the thread's way.
     agent:    { w: 540,  h: 400, place: d => ({ w: 540, h: 400, x: d.width - 540 - 18, y: 14 }),
@@ -3836,7 +3857,7 @@
 
   // ── Menu bar task pills ──
   const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings', agent: 'Agent browser',
-                      appstore: 'App Store', developer: 'Developer' };
+                      appstore: 'App Store', developer: 'Developer', schedule: 'Scheduled tasks' };
   function renderTasks() {
     tasksEl.innerHTML = '';
     for (const app of wm.order) {

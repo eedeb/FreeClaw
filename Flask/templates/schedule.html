@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw · Scheduled tasks</title>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <script>
+    // Opened as a window on the chat desktop: the desktop is the navigation
+    // there, so this page drops its own header.
+    if (window.self !== window.top) document.documentElement.classList.add('embedded');
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design tokens ──
+       One palette for every FreeClaw page, light or dark with the system.
+       The same block opens each template, so a framed page (Settings in its
+       window, say) always matches the desktop around it. */
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1011;
+      --sidebar: #141517;
+      --surface: #17181a;
+      --surface-2: #1d1f22;
+      --surface-3: #25272b;
+      --border: #26282c;
+      --border-strong: #34373c;
+      --text: #ececee;
+      --text-2: #b0b2b8;
+      --muted: #7c7f87;
+      --accent: #c8f04a;
+      --accent-dim: #a8cc38;
+      --accent-ink: #141a05;
+      --accent-text: #c8f04a;
+      --accent-soft: rgba(200, 240, 74, 0.12);
+      --accent-line: rgba(200, 240, 74, 0.32);
+      --user-bg: #2b3a10;
+      --user-text: #f1f8de;
+      --agent-bg: #1d1f22;
+      --code-bg: #0b0c0d;
+      --code-text: #d5e8b5;
+      --err: #ef5f5f;
+      --err-soft: rgba(239, 95, 95, 0.12);
+      --warn: #e6b445;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+      --radius: 10px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --sidebar: #f5f5f3;
+        --surface: #ffffff;
+        --surface-2: #f1f2ef;
+        --surface-3: #e7e8e4;
+        --border: #e5e6e1;
+        --border-strong: #d3d5ce;
+        --text: #18191b;
+        --text-2: #4b4f56;
+        --muted: #7d8189;
+        --accent-dim: #b4dc32;
+        --accent-ink: #1a2205;
+        --accent-text: #4b7a06;
+        --accent-soft: rgba(120, 170, 10, 0.12);
+        --accent-line: rgba(100, 150, 10, 0.35);
+        --user-bg: #e4f3bf;
+        --user-text: #1b2507;
+        --agent-bg: #f1f2ef;
+        --code-bg: #f6f7f4;
+        --code-text: #2d4a06;
+        --err: #d93f3f;
+        --err-soft: rgba(217, 63, 63, 0.09);
+        --warn: #b7800d;
+        --scrim: rgba(20, 22, 18, 0.28);
+        --shadow-sm: 0 1px 2px rgba(20, 22, 18, 0.08);
+        --shadow-lg: 0 24px 60px rgba(20, 22, 18, 0.16), 0 0 0 1px rgba(20, 22, 18, 0.07);
+      }
+    }
+
+    /* ── Scheduled tasks ──
+       ping.md as a list: grouped by the day each task next runs, soonest
+       first, with its time, how it repeats and what the agent will be asked.
+       One form adds a task and edits one. Every button is shown, not just on
+       hover, so it works the same on a phone. */
+    html, body { min-height: 100%; }
+    [hidden] { display: none !important; }
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.45; }
+    button { font: inherit; color: inherit; }
+    input, textarea, select { font: inherit; color: var(--text); }
+    header {
+      display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+      border-bottom: 1px solid var(--border); background: var(--sidebar);
+    }
+    header a { color: var(--text-2); text-decoration: none; }
+    header .title { font-weight: 600; }
+    html.embedded header { display: none; }
+
+    .wrap { max-width: 720px; margin: 0 auto; padding: 22px 20px 40px; }
+    .top { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 18px; }
+    .top .grow { flex: 1; min-width: 0; }
+    h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 3px; max-width: 46ch; }
+
+    .btn {
+      border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
+      border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+    }
+    .btn:hover:not(:disabled) { background: var(--surface-3); }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent-dim); }
+    .btn.primary:hover:not(:disabled) { background: var(--accent-dim); }
+    .btn.danger { color: var(--err); }
+    .btn.danger.solid { background: var(--err); border-color: var(--err); color: #fff; }
+    .btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); padding: 5px 9px; }
+    .btn.ghost:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+    .btn.ghost.danger { color: var(--err); }
+    .btn.ghost.danger:hover:not(:disabled) { background: var(--err-soft); }
+
+    /* The form */
+    .card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 16px; margin-bottom: 22px; box-shadow: var(--shadow-sm); }
+    .card h2 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+    label.lbl { display: block; font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }
+    .field { width: 100%; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+    .field:focus { outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+    textarea.field { min-height: 78px; resize: vertical; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+    .row > div { flex: 1 1 140px; min-width: 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .chip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+    .chip:hover { color: var(--text); border-color: var(--border-strong); }
+    .form-foot { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    .form-foot .msg { flex: 1; min-width: 0; font-size: 13px; color: var(--err); }
+
+    /* The list */
+    .day { font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 18px 2px 7px; }
+    .day:first-child { margin-top: 0; }
+    .day.warn { color: var(--warn); }
+    .list { display: flex; flex-direction: column; gap: 8px; }
+    .task {
+      display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 14px; align-items: start;
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 12px 12px 12px 14px;
+    }
+    .task.editing { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .when .t { font-weight: 650; font-size: 15px; font-variant-numeric: tabular-nums; }
+    .when .in { color: var(--muted); font-size: 12px; margin-top: 1px; }
+    .task .main { min-width: 0; }
+    .what { min-width: 0; overflow-wrap: anywhere; color: var(--text); padding-top: 1px; }
+    .what.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+    .pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .pill { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px; background: var(--accent-soft); color: var(--accent-text); }
+    .pill.retry { background: var(--err-soft); color: var(--err); }
+    .acts { display: flex; gap: 2px; align-items: center; }
+    .acts .ask { font-size: 13px; color: var(--text-2); margin-right: 4px; white-space: nowrap; }
+
+    .empty { text-align: center; padding: 46px 20px; border: 1px dashed var(--border-strong); border-radius: var(--radius); color: var(--text-2); }
+    .empty svg { width: 34px; height: 34px; color: var(--muted); margin-bottom: 10px; }
+    .empty b { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+    .empty p { max-width: 40ch; margin: 0 auto; font-size: 13px; }
+    .foot { color: var(--muted); font-size: 12px; margin-top: 20px; text-align: center; }
+    .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--surface-3); color: var(--text);
+             border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 14px; font-size: 13px; box-shadow: var(--shadow-lg); }
+
+    @media (max-width: 560px) {
+      .wrap { padding: 16px 16px 32px; }
+      .top { flex-direction: column; gap: 10px; }
+      .task { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
+      .task .when { display: flex; gap: 8px; align-items: baseline; }
+      .task .main { grid-column: 1 / -1; grid-row: 2; }
+      .task .acts { grid-column: 2; grid-row: 1; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/chat?user={{ user|urlencode }}">← Chat</a>
+    <span class="title">Scheduled tasks</span>
+  </header>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  </svg>
+
+  <main class="wrap">
+    <div class="top">
+      <div class="grow">
+        <h1>Scheduled tasks</h1>
+        <p class="sub">Your agent does these on its own at the time you set, as if you'd sent it the message then.</p>
+      </div>
+      <button class="btn primary" id="new-btn">+ New task</button>
+    </div>
+
+    <form class="card" id="form" hidden autocomplete="off">
+      <h2 id="form-title">New task</h2>
+      <label class="lbl" for="f-action">What should your agent do?</label>
+      <textarea class="field" id="f-action" maxlength="2000" required
+        placeholder="e.g. Give me a quick rundown of today: my calendar, the weather, and anything urgent in my email."></textarea>
+      <div class="row">
+        <div><label class="lbl" for="f-date">Date</label><input class="field" type="date" id="f-date" required></div>
+        <div><label class="lbl" for="f-time">Time</label><input class="field" type="time" id="f-time" required></div>
+        <div><label class="lbl" for="f-repeat">Repeats</label>
+          <select class="field" id="f-repeat"></select></div>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="form-foot">
+        <span class="msg" id="form-msg" role="alert"></span>
+        <button type="button" class="btn" id="cancel-btn">Cancel</button>
+        <button type="submit" class="btn primary" id="save-btn">Schedule</button>
+      </div>
+    </form>
+
+    <div id="list" aria-live="polite"></div>
+    <p class="foot" id="foot"></p>
+  </main>
+  <div class="toast" id="toast" hidden></div>
+
+<script>
+(() => {
+  const USER = {{ user|tojson }};
+  const $ = id => document.getElementById(id);
+  const REPEAT_LABEL = { hourly: 'Every hour', daily: 'Every day', weekly: 'Every week' };
+
+  // The server's clock, not this device's: a task's time is in the profile's
+  // own time zone, which needn't be the one this browser is in. Kept as
+  // minutes, with the local time elapsed since it was read added on.
+  let serverNow = null, readAt = 0, tasks = [], repeats = [], editing = null, confirming = null;
+
+  const q = params => new URLSearchParams({ user: USER, ...params }).toString();
+  async function api(method, body) {
+    const res = await fetch('/api/schedule' + (method === 'GET' || method === 'DELETE' ? '?' + q(body || {}) : ''), {
+      method, headers: method === 'GET' || method === 'DELETE' ? {} : { 'Content-Type': 'application/json' },
+      body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify({ user: USER, ...body }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.tasks) take(data);
+    if (!res.ok) throw new Error(data.error || `Something went wrong (HTTP ${res.status}).`);
+    return data;
+  }
+  function take(data) {
+    if (data.now) { serverNow = parse(data.now); readAt = Date.now(); }
+    if (data.repeats) repeats = data.repeats;
+    tasks = data.tasks || [];
+    render();
+  }
+
+  // "YYYY-MM-DD HH:MM" <-> a Date whose UTC fields are that wall time, so the
+  // arithmetic never meets this device's time zone or daylight saving.
+  const parse = s => { const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || ''); return m ? new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5])) : null; };
+  const pad = n => String(n).padStart(2, '0');
+  const dateStr = d => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  const timeStr = d => `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  const now = () => new Date((serverNow ? serverNow.getTime() : Date.now()) + (Date.now() - readAt));
+  const dayNum = d => Math.floor(d.getTime() / 864e5);
+  const clock = d => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' });
+
+  function dayLabel(d) {
+    const diff = dayNum(d) - dayNum(now());
+    if (diff <= 0) return 'Today';
+    if (diff === 1) return 'Tomorrow';
+    const opts = { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' };
+    if (d.getUTCFullYear() !== now().getUTCFullYear()) opts.year = 'numeric';
+    return d.toLocaleDateString([], opts);
+  }
+  function inLabel(d) {
+    const mins = Math.round((d - now()) / 6e4);
+    if (mins <= 0) return 'any moment';
+    if (mins < 60) return `in ${mins} min`;
+    const h = Math.floor(mins / 60), m = mins % 60;
+    if (h < 24) return m ? `in ${h} h ${m} min` : `in ${h} h`;
+    const days = Math.round(mins / 1440);
+    return `in ${days} day${days === 1 ? '' : 's'}`;
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function button(label, cls, onClick, title) {
+    const b = el('button', 'btn ' + cls, label);
+    b.type = 'button';
+    if (title) b.title = title;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function render() {
+    const list = $('list');
+    list.textContent = '';
+    if (!tasks.length) {
+      const e = el('div', 'empty');
+      e.innerHTML = '<svg><use href="#i-clock"/></svg>';
+      e.appendChild(el('b', '', 'Nothing scheduled yet'));
+      e.appendChild(el('p', '', 'Add a task here, or just ask your agent, e.g. "every morning at 7, give me a rundown of my day."'));
+      list.appendChild(e);
+    }
+    const timed = tasks.filter(t => t.when).sort((a, b) => parse(a.when) - parse(b.when));
+    const broken = tasks.filter(t => !t.when);
+    let group = null, box = null;
+    for (const t of timed) {
+      const label = dayLabel(parse(t.when));
+      if (label !== group) {
+        group = label;
+        list.appendChild(el('div', 'day', label));
+        box = list.appendChild(el('div', 'list'));
+      }
+      box.appendChild(row(t));
+    }
+    if (broken.length) {
+      list.appendChild(el('div', 'day warn', "Can't tell when these run"));
+      box = list.appendChild(el('div', 'list'));
+      for (const t of broken) box.appendChild(row(t));
+    }
+    const n = now();
+    $('foot').textContent = tasks.length
+      ? `${tasks.length} scheduled · times are in your agent's time zone, where it's ${clock(n)} now`
+      : `Times are in your agent's time zone, where it's ${clock(n)} now.`;
+  }
+
+  function row(t) {
+    const r = el('div', 'task' + (editing && editing.line === t.line ? ' editing' : ''));
+    const d = parse(t.when);
+    const when = r.appendChild(el('div', 'when'));
+    when.appendChild(el('div', 't', d ? clock(d) : '—'));
+    when.appendChild(el('div', 'in', d ? inLabel(d) : 'needs a time'));
+
+    const what = r.appendChild(el('div', 'main'));
+    const text = what.appendChild(el('div', 'what clamp', t.action || '(no instructions)'));
+    text.title = 'Show all';
+    text.addEventListener('click', () => text.classList.toggle('clamp'));
+    const pills = el('div', 'pills');
+    if (t.repeat) pills.appendChild(el('span', 'pill', REPEAT_LABEL[t.repeat] || t.repeat));
+    if (t.retry) pills.appendChild(el('span', 'pill retry', 'Retrying: it failed last time'));
+    if (pills.childNodes.length) what.appendChild(pills);
+
+    const acts = r.appendChild(el('div', 'acts'));
+    if (confirming === t.line) {
+      acts.appendChild(el('span', 'ask', 'Remove?'));
+      acts.appendChild(button('Remove', 'danger solid', () => remove(t)));
+      acts.appendChild(button('Keep', 'ghost', () => { confirming = null; render(); }));
+    } else {
+      acts.appendChild(button('Edit', 'ghost', () => openForm(t)));
+      acts.appendChild(button('Remove', 'ghost danger', () => { confirming = t.line; render(); }));
+    }
+    return r;
+  }
+
+  // ── the form ──
+  function chip(label, set) {
+    const c = el('button', 'chip', label);
+    c.type = 'button';
+    c.addEventListener('click', () => { const d = set(now()); $('f-date').value = dateStr(d); $('f-time').value = timeStr(d); });
+    return c;
+  }
+  const at = (d, days, h, m = 0) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + days, h, m));
+  function fillChips() {
+    const c = $('chips');
+    c.textContent = '';
+    c.appendChild(chip('In 1 hour', d => { const x = new Date(d.getTime() + 36e5); x.setUTCSeconds(0, 0); return x; }));
+    c.appendChild(chip('This evening, 6 PM', d => at(d, d.getUTCHours() >= 18 ? 1 : 0, 18)));
+    c.appendChild(chip('Tomorrow, 8 AM', d => at(d, 1, 8)));
+    c.appendChild(chip('Monday, 9 AM', d => at(d, ((8 - d.getUTCDay()) % 7) || 7, 9)));
+  }
+  function fillRepeats(current) {
+    const s = $('f-repeat');
+    s.textContent = '';
+    s.appendChild(new Option('Never (just once)', ''));
+    for (const r of repeats) s.appendChild(new Option(REPEAT_LABEL[r] || r, r));
+    s.value = current || '';
+  }
+
+  function openForm(t) {
+    editing = t || null;
+    confirming = null;
+    $('form-title').textContent = t ? 'Edit task' : 'New task';
+    $('save-btn').textContent = t ? 'Save changes' : 'Schedule';
+    $('f-action').value = t ? t.action : '';
+    const d = t && parse(t.when);
+    const start = d || at(now(), 1, 8);
+    $('f-date').value = dateStr(start);
+    $('f-time').value = timeStr(start);
+    fillRepeats(t && t.repeat);
+    fillChips();
+    $('form-msg').textContent = '';
+    $('form').hidden = false;
+    render();
+    $('form').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    $('f-action').focus();
+  }
+  function closeForm() {
+    editing = null;
+    $('form').hidden = true;
+    render();
+  }
+
+  $('new-btn').addEventListener('click', () => openForm(null));
+  $('cancel-btn').addEventListener('click', closeForm);
+  $('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const action = $('f-action').value.trim();
+    const date = $('f-date').value, time = $('f-time').value;
+    if (!action) { $('form-msg').textContent = 'Say what your agent should do.'; return $('f-action').focus(); }
+    if (!date || !time) { $('form-msg').textContent = 'Pick a date and a time.'; return; }
+    const body = { action, when: `${date} ${time}`, repeat: $('f-repeat').value };
+    const was = editing;
+    $('save-btn').disabled = true;
+    $('form-msg').textContent = '';
+    try {
+      await api(was ? 'PUT' : 'POST', was ? { ...body, line: was.line } : body);
+      closeForm();
+      toast(was ? 'Saved.' : 'Scheduled.');
+    } catch (err) {
+      $('form-msg').textContent = err.message;
+    } finally {
+      $('save-btn').disabled = false;
+    }
+  });
+
+  async function remove(t) {
+    try {
+      await api('DELETE', { line: t.line });
+      if (editing && editing.line === t.line) closeForm();
+      confirming = null;
+      render();
+      toast('Removed.');
+    } catch (err) {
+      confirming = null;
+      render();
+      toast(err.message);
+    }
+  }
+
+  let toastTimer = null;
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
+  }
+
+  // The agent adds and fires tasks too: keep the list current while it's in
+  // view, without disturbing a form being filled in.
+  async function refresh() {
+    if (document.hidden) return;
+    try { await api('GET'); } catch (err) { if (!tasks.length) $('foot').textContent = err.message; }
+  }
+  document.addEventListener('visibilitychange', refresh);
+  setInterval(refresh, 20000);
+  setInterval(() => { if (!document.hidden) render(); }, 60000);
+  refresh();
+})();
+</script>
+</body>
+</html>

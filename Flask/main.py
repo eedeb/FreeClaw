@@ -3199,41 +3199,42 @@ def _pop_due_pings(name, now):
     caller holds this user's conversation lock, so this can't race add_ping
     rewriting the same file from a turn of theirs."""
     path = user_ping_path(name)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = [ln for ln in f.read().splitlines() if ln.strip()]
-    except FileNotFoundError:
-        return []
-    due, remaining = [], []
-    for ln in lines:
-        stamp, _, action = ln.partition(" - ")
-        time_text, repeat = agent.split_ping_stamp(stamp)
-        when = agent.parse_ping_time(time_text)
-        if when is None:
-            # Keep it (we can't know when it's meant to fire) but make the
-            # skip visible — this is exactly the failure that hid before.
-            logger.warning("Skipping unparseable ping for user=%s: %r", name, ln)
-            remaining.append(ln)
-        elif when <= now:
-            due.append((time_text.strip(), repeat, action.strip()))
-            if repeat:
-                # Rescheduled here, before delivery, so a turn that throws
-                # can't quietly end the recurrence — the next occurrence is
-                # already on disk by the time the agent runs. Missed
-                # intervals collapse into one, so a machine that was off for
-                # a week fires an hourly ping once, not 168 times.
-                nxt = agent.next_ping_time(when, repeat, now)
-                remaining.append(
-                    agent.format_ping_line(nxt, repeat, action.strip()))
-        else:
-            remaining.append(ln)
-    if due:  # only rewrite when we actually took something out
-        # Sort before opening the file, not after: "w" truncates on open, so
-        # anything that throws in here would take the remaining pings with it.
-        remaining = agent.sort_ping_lines(remaining)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(("\n".join(remaining) + "\n") if remaining else "")
-    return due
+    with agent.ping_file_lock(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        except FileNotFoundError:
+            return []
+        due, remaining = [], []
+        for ln in lines:
+            stamp, _, action = ln.partition(" - ")
+            time_text, repeat = agent.split_ping_stamp(stamp)
+            when = agent.parse_ping_time(time_text)
+            if when is None:
+                # Keep it (we can't know when it's meant to fire) but make the
+                # skip visible — this is exactly the failure that hid before.
+                logger.warning("Skipping unparseable ping for user=%s: %r", name, ln)
+                remaining.append(ln)
+            elif when <= now:
+                due.append((time_text.strip(), repeat, action.strip()))
+                if repeat:
+                    # Rescheduled here, before delivery, so a turn that throws
+                    # can't quietly end the recurrence — the next occurrence is
+                    # already on disk by the time the agent runs. Missed
+                    # intervals collapse into one, so a machine that was off for
+                    # a week fires an hourly ping once, not 168 times.
+                    nxt = agent.next_ping_time(when, repeat, now)
+                    remaining.append(
+                        agent.format_ping_line(nxt, repeat, action.strip()))
+            else:
+                remaining.append(ln)
+        if due:  # only rewrite when we actually took something out
+            # Sort before opening the file, not after: "w" truncates on open, so
+            # anything that throws in here would take the remaining pings with it.
+            remaining = agent.sort_ping_lines(remaining)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(("\n".join(remaining) + "\n") if remaining else "")
+        return due
 
 
 # A one-off ping whose delivery failed is tried once more after this long.
@@ -3257,15 +3258,10 @@ def _note_failed_ping(name, action, repeat, error):
         if not repeat and not action.startswith(PING_RETRY_MARKER):
             retry_at = datetime.now() + PING_RETRY_DELAY
             path = user_ping_path(name)
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    lines = [ln for ln in f.read().splitlines() if ln.strip()]
-            except FileNotFoundError:
-                lines = []
-            lines.append(agent.format_ping_line(retry_at, None, PING_RETRY_MARKER + action))
-            lines = agent.sort_ping_lines(lines)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
+            with agent.ping_file_lock(path):
+                lines = agent.read_ping_lines(path)
+                lines.append(agent.format_ping_line(retry_at, None, PING_RETRY_MARKER + action))
+                agent.write_ping_lines(path, lines)
     except Exception:
         logger.exception("Couldn't requeue failed ping for user=%s", name)
         retry_at = None
@@ -3344,6 +3340,101 @@ def _fire_due_pings():
                     # someone not to rely on reminders.
                     logger.exception("Ping delivery failed for user=%s scheduled=%s", name, stamp)
                     _note_failed_ping(name, action, repeat, e)
+
+
+# ── The Scheduled tasks window ───────────────────────────────
+# ping.md, listed for the person: what's scheduled, when it next runs, and
+# ways to add, change and remove one without asking the agent. Adding goes
+# through agent.schedule_ping, the add_ping tool's own checks (a host's
+# limits on it included), and every edit holds the file's lock, so the
+# window can't undo the scheduler firing a ping at the same moment.
+
+SCHEDULE_ACTION_MAX = 2000
+
+
+def _schedule_entries(path):
+    """ping.md as the window shows it, in file order (soonest first)."""
+    out = []
+    for ln in agent.read_ping_lines(path):
+        stamp, sep, action = ln.partition(" - ")
+        text, repeat = agent.split_ping_stamp(stamp)
+        when = agent.parse_ping_time(text) if sep else None
+        action = action.strip() if sep else ln.strip()
+        retry = action.startswith(PING_RETRY_MARKER)
+        if retry:
+            action = action[len(PING_RETRY_MARKER):]
+        out.append({'line': ln, 'when': when.strftime(agent.PING_TIME_FORMAT) if when else None,
+                    'repeat': repeat, 'action': action, 'retry': retry})
+    return out
+
+
+def _schedule_fields(args):
+    """(when, action, repeat) from the window's form. The action is folded
+    onto one line: ping.md holds one task per line."""
+    action = " ".join(str(args.get('action') or '').split())[:SCHEDULE_ACTION_MAX]
+    repeat = str(args.get('repeat') or '').strip().lower() or None
+    return str(args.get('when') or '').strip(), action, repeat
+
+
+def _schedule_refusal(result):
+    """schedule_ping's answer, as the window shows it: the first clause of
+    its error, without the instructions written for the model."""
+    if result.startswith("Already scheduled"):
+        return "That task is already scheduled for that time."
+    text = result[len("Error:"):].strip() if result.startswith("Error:") else result
+    text = re.split(r"\s+[—–]\s+", text, maxsplit=1)[0].strip().rstrip(".")
+    return (text[:1].upper() + text[1:] + ".") if text else "That couldn't be scheduled."
+
+
+@app.route('/schedule')
+def schedule_page():
+    if not logged_in():
+        return redirect(url_for('login'))
+    asked = request.args.get('user', '')
+    _name, err = _files_user(asked or current_user() or '')
+    if err:
+        return redirect(url_for('index'))
+    return render_template('schedule.html', user=asked or _name)
+
+
+@app.route('/api/schedule', methods=['GET', 'POST', 'PUT', 'DELETE'])
+def api_schedule():
+    """The window's list (GET), add (POST), change (PUT, naming the line it
+    replaces) and remove (DELETE, the same). A line that's no longer there —
+    it just fired, or the agent changed it — is a 409 with the list as it is
+    now, which the window shows."""
+    args = request.args if request.method in ('GET', 'DELETE') else (request.get_json(silent=True) or {})
+    name, err = _files_user(args.get('user') or '')
+    if err:
+        return err
+    path = user_ping_path(name)
+    folder = os.path.dirname(path) + os.sep
+    # Bound to this profile, so "now" is theirs, as it is in their turns (a
+    # host can give each account a clock of its own).
+    with sessions.use(sessions.for_user(name)):
+        if request.method == 'POST':
+            when, action, repeat = _schedule_fields(args)
+            result = agent.schedule_ping(folder, when, action, repeat)
+            if not result.startswith("Scheduled for"):
+                return jsonify({'error': _schedule_refusal(result)}), 400
+        elif request.method in ('PUT', 'DELETE'):
+            line = str(args.get('line') or '')
+            with agent.ping_file_lock(path):
+                lines = agent.read_ping_lines(path)
+                if line not in lines:
+                    return jsonify({'error': "That task just ran or was changed, so here's the list as it is now.",
+                                    'tasks': _schedule_entries(path)}), 409
+                kept = list(lines)
+                kept.remove(line)
+                agent.write_ping_lines(path, kept)
+                if request.method == 'PUT':
+                    when, action, repeat = _schedule_fields(args)
+                    result = agent.schedule_ping(folder, when, action, repeat)
+                    if not result.startswith("Scheduled for"):
+                        agent.write_ping_lines(path, lines)       # as it was
+                        return jsonify({'error': _schedule_refusal(result)}), 400
+        return jsonify({'now': datetime.now().strftime(agent.PING_TIME_FORMAT),
+                        'repeats': list(agent.PING_REPEATS), 'tasks': _schedule_entries(path)})
 
 
 def _ping_scheduler_loop():
