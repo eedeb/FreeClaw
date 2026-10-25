@@ -1235,12 +1235,12 @@
     #ctx-delete:hover:not(:disabled) { border-color: var(--err); color: var(--err); background: var(--err-soft); }
     #ctx-delete:disabled { opacity: 0.4; cursor: default; }
 
-    /* ── Agent browser ──
-       The agent's real browser, live: the Browser page in watch mode in a
-       window of its own. The dot in the title bar pulses while a turn is
-       using it. */
-    .ab-live { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
-    #win-agent.working .ab-live { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+    /* ── The agent's browser ──
+       One browser, one window: the Browser app is the agent's own browser,
+       live, and it's the window that opens when a turn starts browsing. The
+       dot in its title bar pulses while a turn is using it. */
+    .ab-live { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; display: none; }
+    #win-browser.working .ab-live { display: block; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 
     /* ── App window ──
        What opening an installed MCP app shows: its icon, what it is, and the
@@ -1358,9 +1358,10 @@
       .wl.close { width: 30px; height: 30px; background: var(--surface-3) !important; color: var(--text-2); font-size: 15px; }
       .wl.close::after { opacity: 1; font-weight: 500; }
       .win-title { left: 16px; right: 56px; justify-content: flex-start; }
-      /* The agent's browser on a phone: a picture-in-picture card in the
-         corner, rather than a sheet over the chat it's working for. */
-      #win-agent.win {
+      /* The browser, opened by a turn on a phone: a picture-in-picture card
+         in the corner, rather than a sheet over the chat it's working for.
+         Tapping it makes it the full window. */
+      #win-browser.win.pip {
         left: auto !important; right: 8px;
         top: 8px !important;
         width: min(320px, calc(100% - 16px)) !important;
@@ -1568,7 +1569,7 @@
         <button class="wl min" data-glyph="–" title="Minimize"></button>
         <button class="wl max" data-glyph="+" title="Maximize"></button>
       </div>
-      <div class="win-title"><svg><use href="#i-browser"/></svg><span class="wt-text">Browser</span></div>
+      <div class="win-title"><span class="ab-live"></span><svg><use href="#i-browser"/></svg><span class="wt-text">Browser</span></div>
     </div>
     <div class="win-body"></div>
     <div class="win-resize"></div>
@@ -1652,21 +1653,6 @@
         <div class="mw-note"></div>
       </div>
     </div>
-    <div class="win-resize"></div>
-  </section>
-
-  <!-- Opens itself while the agent uses its browser tools, and replays what
-       they did. Nothing in here is a real page. -->
-  <section class="win" id="win-agent" data-app="agent" hidden aria-label="Agent browser">
-    <div class="win-bar">
-      <div class="win-lights">
-        <button class="wl close" data-glyph="×" title="Close"></button>
-        <button class="wl min" data-glyph="–" title="Minimize"></button>
-        <button class="wl max" data-glyph="+" title="Maximize"></button>
-      </div>
-      <div class="win-title"><span class="ab-live"></span>Agent browser</div>
-    </div>
-    <div class="win-body"></div>
     <div class="win-resize"></div>
   </section>
 
@@ -3689,7 +3675,10 @@
   const APPS = {
     // 705 tall so the page, under the window bar and the browser's own
     // toolbar, comes out at the remote viewport's 16:10 with no letterbox.
-    browser:  { w: 1000, h: 705, src: () => '/browser' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
+    // The agent's own browser, live; also what opens when a turn starts
+    // browsing (agentBrowser below). There is no second browser window.
+    browser:  { w: 1000, h: 705, src: () => '/browser' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : ''),
+                onClose: () => { agentBrowser.closed(); return true; } },
     settings: { w: 820,  h: 660, src: () => '/settings' },
     // Only there when the install has the Developer app (FC_DISABLE_DEVELOPER
     // unset): without its window, openApp finds nothing to open.
@@ -3697,10 +3686,6 @@
     appstore: { w: 940,  h: 700, src: () => '/appstore' },
     schedule: { w: 640,  h: 640, src: () => '/schedule' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
     mcp:      { w: 380,  h: 360 },
-    // Up in the top-right corner, out of the thread's way.
-    agent:    { w: 540,  h: 400, place: d => ({ w: 540, h: 400, x: d.width - 540 - 18, y: 14 }),
-                src: () => '/browser?watch=agent' + (currentUser ? '&user=' + encodeURIComponent(currentUser) : ''),
-                onClose: () => { agentBrowser.closed(); return true; } },
     files:    { w: 520,  h: 560, onOpen: ctxOpen, onClose: ctxClosePanel },
   };
   const wm = { z: 20, focused: null, order: [] };   // order: open apps, oldest first
@@ -3783,11 +3768,14 @@
     }
 
     if (spec.src) ensureFrame(app, opts.src);
+    // The person opening the browser themselves (the sidebar, a sign-in or
+    // CAPTCHA card) while a turn has it up small: it's theirs now.
+    if (app === 'browser' && !opts.place) agentBrowser.keep();
 
     if (win.hidden) {
       const d = deskRect();
       const n = wm.order.length;
-      const g = winGeo[app] || (spec.place && spec.place(d)) || {
+      const g = winGeo[app] || (opts.place && opts.place(d)) || (spec.place && spec.place(d)) || {
         w: spec.w, h: spec.h,
         x: (d.width - Math.min(spec.w, d.width - 16)) / 2 + n * 26,
         y: Math.max(12, (d.height - Math.min(spec.h, d.height - 16)) / 2 - 40) + n * 26,
@@ -3856,7 +3844,7 @@
   }
 
   // ── Menu bar task pills ──
-  const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings', agent: 'Agent browser',
+  const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings',
                       appstore: 'App Store', developer: 'Developer', schedule: 'Scheduled tasks' };
   function renderTasks() {
     tasksEl.innerHTML = '';
@@ -3954,7 +3942,7 @@
     } else if (d.type === 'freeclaw-focus') {
       const frame = [...document.querySelectorAll('.win iframe')].find(f => f.contentWindow === e.source);
       const win = frame && frame.closest('.win');
-      if (win && win.dataset.app === 'agent') agentBrowser.keep();
+      if (win && win.dataset.app === 'browser') agentBrowser.keep();
       if (win && wm.focused !== win.dataset.app) focusApp(win.dataset.app);
     }
   });
@@ -4192,13 +4180,17 @@
     };
   })();
 
-  // ── Agent browser ──────────────────────────────────────────────────
-  // Pops the agent's browser up, live, when a turn starts using it, and tidies
-  // it away again after a turn that opened it if nobody touched it. What's in
-  // the window is the real thing (browser.html?watch=agent) — the agent's
-  // Chromium streamed as it works — so all this decides is when it's open.
+  // ── The agent's browser ────────────────────────────────────────────
+  // Pops the Browser window up, live, when a turn starts using the browser,
+  // and tidies it away again after a turn that opened it if nobody touched
+  // it. It's the same window as the sidebar's Browser — the agent's Chromium
+  // streamed as it works, the one browser there is — so all this decides is
+  // when it's open. Already open (the person opened it), it's left as it is.
+  // Opened by a turn, it starts small in the top-right corner, out of the
+  // thread's way, unless the person has put the window somewhere already.
+  const CORNER = d => ({ w: 540, h: 400, x: d.width - 540 - 18, y: 14 });
   const agentBrowser = (() => {
-    const win = winEl('agent');
+    const win = winEl('browser');
     let auto = false, touched = false, dismissed = false, closeTimer = null;
 
     // Which tool names belong to a browser. MCP tools arrive as
@@ -4238,7 +4230,8 @@
         auto = true;
         touched = false;
         launchIcon();
-        openApp('agent');
+        win.classList.add('pip');
+        openApp('browser', { place: CORNER });
       }
       win.classList.add('working');
     }
@@ -4253,18 +4246,20 @@
       // long enough to see where the agent ended up.
       if (auto && !touched) {
         clearTimeout(closeTimer);
-        closeTimer = setTimeout(() => { if (!touched && !win.hidden) closeApp('agent'); }, 8000);
+        closeTimer = setTimeout(() => { if (!touched && !win.hidden) closeApp('browser'); }, 8000);
       }
     }
 
     function closed() {
       clearTimeout(closeTimer);
       if (sendBtn.disabled) dismissed = true;
-      win.classList.remove('working');
+      auto = false;
+      win.classList.remove('working', 'pip');
     }
 
-    // Anyone who reaches in (drags it, clicks into it) is keeping it.
-    function keep() { touched = true; clearTimeout(closeTimer); }
+    // Anyone who reaches in (drags it, clicks into it) is keeping it — and
+    // on a phone, gets the full window.
+    function keep() { touched = true; clearTimeout(closeTimer); win.classList.remove('pip'); }
     win.addEventListener('pointerdown', keep);
 
     return { call, result, turnEnd, closed, setServers, keep };
