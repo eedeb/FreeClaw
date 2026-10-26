@@ -271,6 +271,38 @@
     }
     .app-icon.off .app-tile { filter: grayscale(1); opacity: 0.45; }
     .app-icon.off .app-label { opacity: 0.55; }
+
+    /* A tool's on/off switch beside its row: Browser, Developer, each
+       installed app (and anything else marked data-tool-server). Off, its
+       tools aren't sent to the agent at all, which saves tokens on every
+       message. A sibling of the row's button, not inside it: a button
+       can't hold another. */
+    .app-row { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
+    .app-row[hidden] { display: none; }
+    .app-row > .app-icon { flex: 1; min-width: 0; }
+    .app-row:hover > .app-icon { background: var(--surface-3); color: var(--text); }
+    .app-switch {
+      flex-shrink: 0;
+      width: 30px; height: 18px;
+      margin-right: 6px;
+      padding: 0;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      background: var(--surface-3);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .app-switch i {
+      position: absolute; top: 2px; left: 2px;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--muted);
+      transition: transform 0.15s, background 0.15s;
+    }
+    .app-switch[aria-checked="true"] { background: var(--accent); border-color: transparent; }
+    .app-switch[aria-checked="true"] i { transform: translateX(12px); background: var(--accent-ink); }
+    .app-switch:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+    .app-switch:disabled { opacity: 0.5; cursor: default; }
     .sb-empty {
       padding: 4px 10px 6px;
       font-size: 12.5px;
@@ -1464,7 +1496,7 @@
         <span class="app-label">Browser</span>
       </button>
       {% if developer %}
-      <button class="app-icon" id="icon-developer" data-app="developer" title="Developer">
+      <button class="app-icon" id="icon-developer" data-app="developer" data-tool-server="developer" title="Developer">
         <span class="app-tile"><svg><use href="#i-developer"/></svg></span>
         <span class="app-label">Developer</span>
       </button>
@@ -3996,15 +4028,24 @@
     mcpServers = servers;
     agentBrowser.setServers(servers.filter(s => s.browser).map(s => s.name));
 
+    // The Browser row shows whenever there's a browser to switch, on or off:
+    // hidden only while it's off would hide its own switch.
     const browserIcon = document.getElementById('icon-browser');
-    const ready = servers.some(s => s.browser && s.enabled !== false && s.browser.status === 'ready');
-    if (browserIcon) browserIcon.hidden = !ready;
+    const browserServer = servers.find(s => s.builtin && s.browser) || servers.find(s => s.browser);
+    if (browserIcon) {
+      browserIcon.hidden = !browserServer;
+      if (browserServer) browserIcon.dataset.toolServer = browserServer.name;
+      const ready = browserServer && browserServer.enabled !== false && browserServer.browser.status === 'ready';
+      const state = browserIcon.querySelector('.app-state') || browserIcon.appendChild(Object.assign(
+        document.createElement('span'), { className: 'app-state' }));
+      state.textContent = browserServer && browserServer.enabled !== false && !ready ? 'Setting up' : '';
+    }
 
     // Builtins aren't "installed" — the browser already has its own icon.
     const apps = servers.filter(s => !s.builtin);
     const want = new Set(apps.map(s => s.name));
     iconsEl.querySelectorAll('.app-icon.mcp-app').forEach(el => {
-      if (!want.has(el.dataset.mcp)) el.remove();
+      if (!want.has(el.dataset.mcp)) (el.closest('.app-row') || el).remove();
     });
     for (const s of apps) {
       let el = mcpIconEl(s.name);
@@ -4022,7 +4063,6 @@
       const on = s.enabled !== false;
       el.title = s.name + (on ? '' : ' (off)');
       el.classList.toggle('off', !on);
-      el.querySelector('.app-state').textContent = on ? '' : 'Off';
       // Refetched only when where it comes from changes, not on every toggle.
       const iconFrom = mcpHost(s);
       if (el.dataset.iconFrom !== iconFrom) {
@@ -4031,8 +4071,83 @@
       }
     }
     mcpEmpty.hidden = apps.length > 0;
+    syncSwitches(servers);
     mcpWindow.sync();
     markActiveNav();
+  }
+
+  // ── On/off switches in the sidebar ──
+  // Every row that stands for a tool server gets one: installed apps
+  // (data-mcp) and the built-ins marked data-tool-server (Browser,
+  // Developer; an install can mark its own). It's the same per-user choice
+  // as the app window's Enabled/Disabled and Settings → MCP servers: off, the
+  // server's tools are left out of the agent's list, so they cost no tokens.
+  function switchFor(el) {
+    let row = el.parentElement;
+    if (!row || !row.classList.contains('app-row')) {
+      row = document.createElement('div');
+      row.className = 'app-row';
+      el.parentNode.insertBefore(row, el);
+      row.appendChild(el);
+    }
+    let sw = row.querySelector(':scope > .app-switch');
+    if (!sw) {
+      sw = document.createElement('button');
+      sw.type = 'button';
+      sw.className = 'app-switch';
+      sw.setAttribute('role', 'switch');
+      sw.innerHTML = '<i></i>';
+      sw.addEventListener('click', e => {
+        e.stopPropagation();
+        setToolEnabled(sw, sw.getAttribute('aria-checked') !== 'true');
+      });
+      row.appendChild(sw);
+    }
+    row.hidden = el.hidden;
+    return sw;
+  }
+
+  function syncSwitches(servers) {
+    iconsEl.querySelectorAll('.app-icon[data-mcp], .app-icon[data-tool-server]').forEach(el => {
+      const name = el.dataset.mcp || el.dataset.toolServer;
+      const s = servers.find(x => x.name === name);
+      const row = el.closest('.app-row');
+      if (!s) {
+        if (row) row.querySelector(':scope > .app-switch')?.remove();
+        return;
+      }
+      const sw = switchFor(el);
+      const on = s.enabled !== false;
+      const label = (el.querySelector('.app-label')?.textContent || name).trim();
+      sw.dataset.server = name;
+      sw.setAttribute('aria-checked', on ? 'true' : 'false');
+      sw.setAttribute('aria-label', label + (on ? ' on' : ' off'));
+      sw.title = on ? `${label} is on. Switch it off to leave its tools out and save tokens.`
+                    : `${label} is off: your agent doesn't see its tools. Switch it on to use it.`;
+      el.classList.toggle('off', !on);
+    });
+  }
+
+  async function setToolEnabled(sw, enabled) {
+    const name = sw.dataset.server;
+    if (!name || sw.disabled) return;
+    sw.disabled = true;
+    sw.setAttribute('aria-checked', enabled ? 'true' : 'false');      // at once; put back on failure
+    try {
+      const res = await fetch('/api/mcp/' + encodeURIComponent(name), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, user: currentUser }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+      sw.disabled = false;
+      renderMcpServers(data.servers || mcpServers);
+    } catch (e) {
+      sw.disabled = false;
+      sw.setAttribute('aria-checked', enabled ? 'false' : 'true');
+      sw.title = 'Couldn’t switch it: ' + e.message;
+    }
   }
 
   const mcpWindow = (() => {
