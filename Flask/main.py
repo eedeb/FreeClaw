@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session, Response, stream_with_context
 from werkzeug.exceptions import HTTPException
+import src.activity as activity
 import src.agent as agent
 import src.agent_names as agent_names
 import src.approvals as approvals
@@ -3327,8 +3328,14 @@ def _fire_due_pings():
                     stamped = f"{agent.PING_PREFIX} [{when}]: {action}"
                     # Drained here rather than by agent.agent() so a chat page
                     # that's open can watch it happen (live_turns).
+                    # And recorded for the Activity window (src/activity.py):
+                    # nobody watched this turn, so what it did, and whether it
+                    # wanted something only the user can give, is written down.
                     with live_turns.turn(name, stamped, "schedule") as live:
-                        for _event in live.watch(agent.agent_stream(user_input=stamped, ping=True)):
+                        for _event in activity.observe(
+                                live.watch(agent.agent_stream(user_input=stamped, ping=True)),
+                                activity.path_for(name), "schedule", stamped, agent.get_messages,
+                                server_of=functools.partial(_tool_server, name)):
                             pass
                         save_conversation(name, agent.get_messages())
                     logger.info("Delivered ping for user=%s scheduled=%s action=%r", name, stamp, action)
@@ -3384,6 +3391,49 @@ def _schedule_refusal(result):
     text = result[len("Error:"):].strip() if result.startswith("Error:") else result
     text = re.split(r"\s+[—–]\s+", text, maxsplit=1)[0].strip().rstrip(".")
     return (text[:1].upper() + text[1:] + ".") if text else "That couldn't be scheduled."
+
+
+def _tool_server(user, tool_name):
+    """The name of the MCP server behind `tool_name` for `user`, or None."""
+    entry = agent.registry_for(user).get(tool_name)
+    return (entry or {}).get("server", {}).get("name") if entry else None
+
+
+# ── The Activity window ──────────────────────────────────────
+# What each agent did while nobody was watching (src/activity.py): scheduled
+# tasks that ran, how each went, and anything left waiting on the user. One
+# agent per request, through the same check the file and schedule routes use;
+# the window asks for each agent in /api/users and shows them together.
+
+@app.route('/activity')
+def activity_page():
+    if not logged_in():
+        return redirect(url_for('login'))
+    # Which agent its "add a task" ideas go to: the one asked for, else the
+    # one this session is talking to (as for the Scheduled tasks page).
+    asked = request.args.get('user', '')
+    name, err = _files_user(asked or current_user() or '')
+    return render_template('activity.html', user=asked or (name if not err else ''))
+
+
+@app.route('/api/activity', methods=['GET', 'DELETE'])
+def api_activity():
+    """GET: this agent's entries, newest first, and how many are newer than
+    ?since= (a Unix time; the sidebar's badge). DELETE: clear them."""
+    name, err = _files_user(request.args.get('user') or current_user() or '')
+    if err:
+        return err
+    path = activity.path_for(name)
+    if request.method == 'DELETE':
+        activity.clear(path)
+        return jsonify({'ok': True})
+    entries = sorted(activity.read(path), key=lambda e: e.get('ts') or 0, reverse=True)
+    try:
+        since = float(request.args.get('since') or 0)
+    except ValueError:
+        since = 0.0
+    return jsonify({'entries': entries[:150],
+                    'new_count': sum(1 for e in entries if (e.get('ts') or 0) > since) if since else 0})
 
 
 @app.route('/schedule')

@@ -3878,8 +3878,11 @@ _DEFAULT_TAG_SETTINGS = (7, 20, 0.4, 'all', 0.0)  # any tag not listed, and any
 # A fired ping. Never classified: the text is the model's own note to itself,
 # written days ago, and the classifier reading "Remind them to check the
 # weather" as Smalltalk would hand the turn a toolset with no search in it — a
-# reminder that silently can't do what it was set up to do. Every tool, the
-# default reach, and cold, because a ping is nearly always a factual errand.
+# reminder that silently can't do what it was set up to do. Routed by Jev when
+# there's a key (the note says what it needs as plainly as a typed message
+# does, and a task that fires every day pays for every tool description on
+# every step of every run); otherwise every tool, the default reach. Cold
+# either way, because a ping is nearly always a factual errand.
 PING_TAG = "Ping"
 _PING_SETTINGS = (7, 20, 0.3, 'all', 0.0)
 
@@ -4686,8 +4689,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     (see _follow_through), from its pinned prefix.
 
     `ping=True` marks `user_input` as a scheduled ping firing rather than
-    something the user just typed: it skips the classifier and runs with every
-    tool (see _PING_SETTINGS).
+    something the user just typed: it skips the classifier, and is routed by
+    Jev when there's a key or runs with every tool when not (see
+    _PING_SETTINGS).
 
     Runs against whichever Session is bound for this thread (src/session.py),
     so two callers can drive their own turns at once. The recursive tool-hop
@@ -4725,6 +4729,14 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         if ping:
             tag = PING_TAG
             recent, lean, temp, tool_mode, _ = _PING_SETTINGS
+            # Jev picks its tools, history and memory, as for a typed message.
+            # load_tools still offers whatever it left out. Not its local
+            # route for tiny messages, which sends no tools at all: a short
+            # note like "check the weather" still has an errand to run. No
+            # key, or no answer: every tool, as before.
+            routed = _jev_route(user_input, sess)
+            if routed and routed[0].local:
+                routed = None
         else:
             # Jev first, when there's a key: it decides the tools, history and
             # memory below. None — no key, or no answer in time — means the
@@ -4732,9 +4744,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             routed = _jev_route(user_input, sess)
         if routed:
             # Nothing here comes from the tag table: the tag is only the
-            # reply's label, and Jev chose the temperature on its own.
-            tag = routed[0].tag
-            temp = routed[0].temperature
+            # reply's label, and Jev chose the temperature on its own. A ping
+            # keeps its own label and stays cold.
+            if not ping:
+                tag = routed[0].tag
+                temp = routed[0].temperature
             print('Jev route: ' + routed[0].summary())
         elif not ping:
             intent, certainty = Classy.classify(user_input, CLASSIFIER_PATH)
