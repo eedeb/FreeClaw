@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FreeClaw · Activity</title>
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
+  <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link rel="icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <script>
+    // Opened as a window on the chat desktop: the desktop is the navigation
+    // there, so this page drops its own header.
+    if (window.self !== window.top) document.documentElement.classList.add('embedded');
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design tokens ──
+       One palette for every FreeClaw page, light or dark with the system.
+       The same block opens each template, so a framed page (Settings in its
+       window, say) always matches the desktop around it. */
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1011;
+      --sidebar: #141517;
+      --surface: #17181a;
+      --surface-2: #1d1f22;
+      --surface-3: #25272b;
+      --border: #26282c;
+      --border-strong: #34373c;
+      --text: #ececee;
+      --text-2: #b0b2b8;
+      --muted: #7c7f87;
+      --accent: #c8f04a;
+      --accent-dim: #a8cc38;
+      --accent-ink: #141a05;
+      --accent-text: #c8f04a;
+      --accent-soft: rgba(200, 240, 74, 0.12);
+      --accent-line: rgba(200, 240, 74, 0.32);
+      --user-bg: #2b3a10;
+      --user-text: #f1f8de;
+      --agent-bg: #1d1f22;
+      --code-bg: #0b0c0d;
+      --code-text: #d5e8b5;
+      --err: #ef5f5f;
+      --err-soft: rgba(239, 95, 95, 0.12);
+      --warn: #e6b445;
+      --scrim: rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+      --radius: 10px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --sidebar: #f5f5f3;
+        --surface: #ffffff;
+        --surface-2: #f1f2ef;
+        --surface-3: #e7e8e4;
+        --border: #e5e6e1;
+        --border-strong: #d3d5ce;
+        --text: #18191b;
+        --text-2: #4b4f56;
+        --muted: #7d8189;
+        --accent-dim: #b4dc32;
+        --accent-ink: #1a2205;
+        --accent-text: #4b7a06;
+        --accent-soft: rgba(120, 170, 10, 0.12);
+        --accent-line: rgba(100, 150, 10, 0.35);
+        --user-bg: #e4f3bf;
+        --user-text: #1b2507;
+        --agent-bg: #f1f2ef;
+        --code-bg: #f6f7f4;
+        --code-text: #2d4a06;
+        --err: #d93f3f;
+        --err-soft: rgba(217, 63, 63, 0.09);
+        --warn: #b7800d;
+        --scrim: rgba(20, 22, 18, 0.28);
+        --shadow-sm: 0 1px 2px rgba(20, 22, 18, 0.08);
+        --shadow-lg: 0 24px 60px rgba(20, 22, 18, 0.16), 0 0 0 1px rgba(20, 22, 18, 0.07);
+      }
+    }
+
+    /* ── Activity ──
+       What each agent did while nobody was watching (src/activity.py),
+       newest first and grouped by day: what it was asked, how it went, the
+       apps it used and what it said. Anything left waiting on the user is
+       marked, and "Needs you" shows only those. Every button is shown, not
+       just on hover, so it works the same on a phone. */
+    html, body { min-height: 100%; }
+    [hidden] { display: none !important; }
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.45; }
+    button { font: inherit; color: inherit; }
+    header {
+      display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+      border-bottom: 1px solid var(--border); background: var(--sidebar);
+    }
+    header a { color: var(--text-2); text-decoration: none; }
+    header .title { font-weight: 600; }
+    html.embedded header { display: none; }
+
+    .wrap { max-width: 720px; margin: 0 auto; padding: 22px 20px 40px; }
+    .top { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+    .top .grow { flex: 1; min-width: 0; }
+    h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 3px; max-width: 52ch; }
+    .btn { border: 1px solid var(--border-strong); background: var(--surface-2); border-radius: 8px;
+           padding: 5px 12px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+    .btn:hover { background: var(--surface-3); }
+    .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+    .chip { border: 1px solid var(--border-strong); background: transparent; border-radius: 999px;
+            padding: 3px 11px; font-size: 12.5px; cursor: pointer; color: var(--text-2); }
+    .chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+    h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 20px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+    .item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 12px 14px; margin-bottom: 8px; }
+    .item.needs_you { border-color: var(--accent-line); }
+    .row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .title-line { font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .tag { font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border-strong);
+           color: var(--text-2); white-space: nowrap; }
+    .tag.done { color: var(--accent-text); border-color: var(--accent-line); }
+    .tag.needs_you { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+    .tag.failed, .tag.stopped, .tag.switched_off, .tag.credits { color: var(--err); border-color: var(--err); }
+    .ask { color: var(--text-2); font-size: 13px; margin-top: 6px; overflow-wrap: anywhere; }
+    .summary { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; }
+    .summary.clip { max-height: 7.5em; overflow: hidden; }
+    .more { background: none; border: 0; color: var(--accent-text); padding: 0; cursor: pointer; font-size: 12.5px; margin-top: 4px; }
+    .wait { margin-top: 8px; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); }
+    .links { margin-top: 8px; font-size: 12.5px; }
+    .links a { color: var(--accent-text); text-decoration: none; }
+
+    /* Nothing yet: a few tasks to start with, one tap each. */
+    .empty { padding: 26px 4px 8px; text-align: center; color: var(--muted); }
+    .empty b { display: block; color: var(--text); font-size: 15px; margin-bottom: 6px; }
+    .ideas { display: grid; gap: 8px; margin-top: 16px; text-align: left; }
+    .idea { display: flex; gap: 12px; align-items: center; background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 12px 14px; }
+    .idea .grow { flex: 1; min-width: 0; }
+    .idea b { font-size: 14px; margin: 0; }
+    .idea span { display: block; font-size: 12.5px; color: var(--muted); }
+    .msg { font-size: 12.5px; margin-top: 8px; }
+    .msg.err { color: var(--err); }
+    .msg.ok { color: var(--accent-text); }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/chat?user={{ user|urlencode }}">← Chat</a>
+    <span class="title">Activity</span>
+  </header>
+
+  <main class="wrap">
+    <div class="top">
+      <div class="grow">
+        <h1>Activity</h1>
+        <p class="sub">What your agents did on their own: each scheduled task that ran, how it went, and
+          anything waiting for your OK.</p>
+      </div>
+      <button class="btn" id="clear" hidden>Clear</button>
+    </div>
+    <div class="filters" id="filters" hidden>
+      <button class="chip" data-f="all" aria-pressed="true">All</button>
+      <button class="chip" data-f="needs_you" aria-pressed="false">Needs you</button>
+      <button class="chip" data-f="problems" aria-pressed="false">Didn't finish</button>
+    </div>
+    <div id="list"></div>
+    <div class="empty" id="empty" hidden>
+      <b>Nothing yet</b>
+      When a scheduled task runs, what it did shows up here. A few to start with:
+      <div class="ideas" id="ideas"></div>
+      <div class="msg" id="msg" hidden></div>
+    </div>
+  </main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const AGENT = {{ user|tojson }};
+  const LABEL = { done: 'Done', needs_you: 'Needs you', switched_off: 'Switched off',
+                  credits: 'Out of credits', failed: "Didn't finish", stopped: 'Stopped' };
+  const SOURCE = { schedule: 'Scheduled task', discord: 'Discord', teams: 'Microsoft Teams',
+                   email: 'Email', bridge: 'A message' };
+  // Starting points for an empty record: each one a scheduled task, with a
+  // word limit, because a short reply is a cheap one.
+  const IDEAS = [
+    { title: 'Morning briefing', blurb: 'Every day at 8:00 AM', time: '08:00', repeat: 'daily',
+      prompt: "Give me a short morning briefing: the weather where I live (if you don't know where, ask me once and remember it), what's on my calendar today if you can see it, and anything I asked you to keep an eye on. Under 120 words." },
+    { title: 'News digest', blurb: 'Every day at 7:30 AM', time: '07:30', repeat: 'daily',
+      prompt: 'Give me the five most important news stories from the last 24 hours, one sentence each with its source and a link. Under 150 words.' },
+    { title: 'Week ahead', blurb: 'Sundays at 6:00 PM', time: '18:00', repeat: 'weekly', day: 0,
+      prompt: "Give me a short look at the week ahead: what's on my calendar if you can see it, anything I asked you to remember for this week, and one thing worth planning for. Under 150 words." },
+  ];
+  let entries = [], filter = 'all';
+
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function day(ts) {
+    const d = new Date(ts * 1000), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+    if (d.toDateString() === now.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+  }
+  function time(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+  function shown(e) {
+    if (filter === 'needs_you') return e.status === 'needs_you' || e.status === 'switched_off';
+    if (filter === 'problems') return ['failed', 'stopped', 'switched_off', 'credits'].includes(e.status);
+    return true;
+  }
+
+  function render() {
+    const list = $('list'); list.innerHTML = '';
+    const items = entries.filter(shown);
+    $('empty').hidden = entries.length > 0;
+    $('filters').hidden = $('clear').hidden = entries.length === 0;
+    let last = null;
+    items.forEach(e => {
+      const d = day(e.ts);
+      if (d !== last) { list.appendChild(el('h2', '', d)); last = d; }
+      const box = el('div', 'item ' + e.status);
+      const row = el('div', 'row');
+      row.appendChild(el('span', 'title-line', e.title || e.ask || SOURCE[e.source] || 'A task'));
+      row.appendChild(el('span', 'tag ' + e.status, LABEL[e.status] || e.status));
+      row.appendChild(el('span', 'when', time(e.ts)));
+      box.appendChild(row);
+      const meta = [SOURCE[e.source] || e.source, e.agent];
+      if (e.apps && e.apps.length) meta.push('used ' + e.apps.join(', '));
+      box.appendChild(el('div', 'meta', meta.filter(Boolean).join(' · ')));
+      // A titled scheduled task's ask is its own prompt: the title says it.
+      if (e.title && e.ask && e.source !== 'schedule') box.appendChild(el('div', 'ask', e.ask));
+      if (e.waiting && e.waiting.length) {
+        box.appendChild(el('div', 'wait', (e.status === 'switched_off' ? 'Switched off: ' : 'Wanted your OK to: ')
+          + e.waiting.join('; ') + '. Open the chat to say yes.'));
+      }
+      if (e.summary) {
+        const s = el('div', 'summary', e.summary);
+        box.appendChild(s);
+        if (e.summary.length > 280) {
+          s.classList.add('clip');
+          const more = el('button', 'more', 'Show all');
+          more.addEventListener('click', () => { const c = s.classList.toggle('clip'); more.textContent = c ? 'Show all' : 'Show less'; });
+          box.appendChild(more);
+        }
+      }
+      const links = el('div', 'links');
+      const a = el('a', '', 'Open the chat');
+      a.href = '/chat?user=' + encodeURIComponent(e.agent || ''); a.target = '_top';
+      links.appendChild(a); box.appendChild(links);
+      list.appendChild(box);
+    });
+  }
+
+  function renderIdeas() {
+    const box = $('ideas'); box.innerHTML = '';
+    IDEAS.forEach(idea => {
+      const row = el('div', 'idea');
+      const text = el('div', 'grow');
+      text.appendChild(el('b', '', idea.title)); text.appendChild(el('span', '', idea.blurb));
+      const add = el('button', 'btn primary', 'Add');
+      add.addEventListener('click', () => addIdea(idea, add));
+      row.appendChild(text); row.appendChild(add);
+      box.appendChild(row);
+    });
+  }
+
+  // The agent's clock, from /api/schedule ("YYYY-MM-DD HH:MM"), so "8:00 AM"
+  // is theirs even when this browser is somewhere else.
+  function parse(s) { const m = /^(\d+)-(\d+)-(\d+) (\d+):(\d+)/.exec(s || ''); return m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) : new Date(); }
+  function fmt(d) { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+  function nextRun(now, hm, repeat, weekday) {
+    const base = parse(now), [h, m] = hm.split(':').map(Number);
+    const d = new Date(base); d.setHours(h, m, 0, 0);
+    if (repeat === 'weekly') { while (d.getDay() !== weekday || d <= base) d.setDate(d.getDate() + 1); }
+    else if (d <= base) d.setDate(d.getDate() + 1);
+    return fmt(d);
+  }
+  async function addIdea(idea, button) {
+    const msg = $('msg');
+    button.disabled = true;
+    try {
+      const q = AGENT ? '?user=' + encodeURIComponent(AGENT) : '';
+      const now = (await (await fetch('/api/schedule' + q)).json()).now;
+      const r = await fetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: AGENT, when: nextRun(now, idea.time, idea.repeat, idea.day || 0),
+                               action: 'Routine: ' + idea.title + '. ' + idea.prompt, repeat: idea.repeat }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "That couldn't be scheduled.");
+      button.textContent = 'Added';
+      msg.textContent = idea.title + ' is scheduled. It shows up here after its first run, and in Scheduled tasks now.';
+      msg.className = 'msg ok'; msg.hidden = false;
+    } catch (e) {
+      button.disabled = false;
+      msg.textContent = e.message; msg.className = 'msg err'; msg.hidden = false;
+    }
+  }
+
+  // Every agent of this login, each asked for on its own (the same access
+  // check as its files), shown together.
+  async function load() {
+    try {
+      const users = ((await (await fetch('/api/users')).json()).users || []).filter(u => !u.subagent);
+      const lists = await Promise.all(users.map(u =>
+        fetch('/api/activity?user=' + encodeURIComponent(u.name)).then(r => r.ok ? r.json() : { entries: [] })
+          .then(d => (d.entries || []).map(e => Object.assign({ agent: u.name }, e)))));
+      entries = [].concat(...lists).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    } catch (e) { entries = []; }
+    render();
+  }
+
+  $('filters').addEventListener('click', ev => {
+    const b = ev.target.closest('.chip'); if (!b) return;
+    filter = b.dataset.f;
+    document.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c === b)));
+    render();
+  });
+  $('clear').addEventListener('click', async () => {
+    if (!confirm("Clear the activity record for all your agents? Their chats keep everything.")) return;
+    const names = [...new Set(entries.map(e => e.agent))];
+    await Promise.all(names.map(n => fetch('/api/activity?user=' + encodeURIComponent(n), { method: 'DELETE' })));
+    load();
+  });
+  // Opening the window counts as having seen what's in it (the sidebar badge).
+  try { localStorage.setItem('fc-activity-seen', String(Date.now() / 1000)); } catch (e) {}
+  renderIdeas();
+  load(); setInterval(load, 30000);
+})();
+</script>
+</body>
+</html>

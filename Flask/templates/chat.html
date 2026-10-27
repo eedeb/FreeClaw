@@ -1408,6 +1408,27 @@
 
     /* Leaving for the user picker. */
     body.leaving #shell, body.leaving #windows { opacity: 0; transform: scale(0.99); transition: opacity 0.2s ease, transform 0.2s ease; }
+    /* The Activity button's count of what's new since it was last opened. */
+    .app-badge {
+      margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+      background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 700;
+      line-height: 18px; text-align: center; flex-shrink: 0;
+    }
+
+    /* "Do this every morning?" under a reply worth repeating. */
+    .repeat-offer {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      margin: 2px 0 14px; padding: 8px 12px; border-radius: 10px;
+      border: 1px dashed var(--border-strong); color: var(--text-2); font-size: 13px;
+    }
+    .repeat-offer .q { flex: 1; min-width: 160px; }
+    .repeat-offer button {
+      border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
+      border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .repeat-offer button.yes { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+    .repeat-offer button.no { background: none; border-color: transparent; color: var(--muted); }
+    .repeat-offer a { color: var(--accent-text); cursor: pointer; }
   </style>
 </head>
 <body>
@@ -1425,6 +1446,9 @@
   </symbol>
   <symbol id="i-developer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5.5l-3 13"/>
+  </symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 12h4l2.5-6 5 12 2.5-6H21"/>
   </symbol>
   <symbol id="i-schedule" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12.5" r="8.5"/><path d="M12 8v4.5l3 2"/><path d="M4.5 4.5 7 2.5M19.5 4.5 17 2.5"/>
@@ -1490,6 +1514,11 @@
       <button class="app-icon" id="icon-schedule" data-app="schedule" title="Scheduled tasks">
         <span class="app-tile"><svg><use href="#i-schedule"/></svg></span>
         <span class="app-label">Scheduled tasks</span>
+      </button>
+      <button class="app-icon" id="icon-activity" data-app="activity" title="Activity">
+        <span class="app-tile"><svg><use href="#i-activity"/></svg></span>
+        <span class="app-label">Activity</span>
+        <span class="app-badge" id="activity-badge" hidden></span>
       </button>
       <button class="app-icon" id="icon-browser" data-app="browser" title="Browser" hidden>
         <span class="app-tile"><svg><use href="#i-browser"/></svg></span>
@@ -1630,6 +1659,19 @@
         <button class="wl max" data-glyph="+" title="Maximize"></button>
       </div>
       <div class="win-title"><svg><use href="#i-schedule"/></svg>Scheduled tasks</div>
+    </div>
+    <div class="win-body"></div>
+    <div class="win-resize"></div>
+  </section>
+
+  <section class="win" id="win-activity" data-app="activity" hidden aria-label="Activity">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-activity"/></svg>Activity</div>
     </div>
     <div class="win-body"></div>
     <div class="win-resize"></div>
@@ -2696,6 +2738,7 @@
     inputEl.blur();
     clearFile();
 
+    lastAsk = text;
     // Show the user's message immediately so it doesn't feel like it
     // vanished into the void while the agent is working. This is rendered
     // optimistically; renderConversation() will replace it (and recompute
@@ -2708,6 +2751,126 @@
       body: JSON.stringify({ message: agentMessage })
     }));
   }
+
+  // ── Activity's badge ──
+  // How many entries the agents' Activity record (src/activity.py) gained
+  // since the window was last opened in this browser. Each agent is asked on
+  // its own, as the window does; a failure just leaves the badge as it was.
+  const activityBadge = (() => {
+    const KEY = 'fc-activity-seen';
+    const badge = () => document.getElementById('activity-badge');
+    const since = () => {
+      try { return parseFloat(localStorage.getItem(KEY) || '0') || 0; } catch (_) { return 0; }
+    };
+    async function check() {
+      const el = badge();
+      if (!el) return;
+      // Never opened here: what the last three days brought.
+      const t = since() || Date.now() / 1000 - 3 * 86400;
+      try {
+        const users = ((await (await fetch('/api/users')).json()).users || []).filter(u => !u.subagent);
+        const counts = await Promise.all(users.map(u =>
+          fetch('/api/activity?user=' + encodeURIComponent(u.name) + '&since=' + t)
+            .then(r => r.ok ? r.json() : {}).then(d => d.new_count || 0)));
+        const n = counts.reduce((a, b) => a + b, 0);
+        el.textContent = n > 9 ? '9+' : String(n);
+        el.hidden = !n;
+      } catch (_) { /* the next check */ }
+    }
+    function seen() {
+      try { localStorage.setItem(KEY, String(Date.now() / 1000)); } catch (_) {}
+      const el = badge(); if (el) el.hidden = true;
+    }
+    return { check, seen };
+  })();
+  activityBadge.check();
+  setInterval(activityBadge.check, 60000);
+
+  // ── "Do this every morning?" ──
+  // Under the reply to something worth repeating, one offer to make it a
+  // scheduled task. Worth repeating means the turn looked something up (it
+  // ran a tool) and the message reads like a check, a summary or a watch —
+  // decided here on the page, so it costs the model nothing. Not for a
+  // message that already says when, nor a turn that scheduled something
+  // itself, and only once per wording.
+  const REPEATABLE = /\b(check|summari[sz]e|look (?:for|up|at|into)|find|what'?s (?:new|happening|on)|any (?:new|updates?)|news|headlines|weather|forecast|prices?|deals?|inbox|e-?mails?|calendar|agenda|track|monitor|update me|digest|scores?|stocks?|status|reviews?)\b/i;
+  const ALREADY_TIMED = /\b(every|each|daily|weekly|monthly|hourly|tomorrow|tonight|remind me|schedule|in \d+ (?:minutes?|hours?|days?))\b/i;
+  const OFFERED_KEY = 'fc-repeat-offered';
+  function repeatCadence(text, tools) {
+    const t = String(text || '').trim();
+    if (t.length < 8 || t.length > 400 || t.startsWith('/') || t.startsWith('📞')) return null;
+    if (!tools.length || tools.some(n => n === 'add_ping' || n === 'cancel_ping')) return null;
+    if (ALREADY_TIMED.test(t) || !REPEATABLE.test(t)) return null;
+    return /\b(this week|next week|weekend|week ahead)\b/i.test(t) ? 'weekly' : 'daily';
+  }
+  function offeredBefore(text) {
+    const key = text.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200);
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(OFFERED_KEY) || '[]'); } catch (_) {}
+    if (seen.includes(key)) return true;
+    try { localStorage.setItem(OFFERED_KEY, JSON.stringify(seen.concat([key]).slice(-200))); } catch (_) {}
+    return false;
+  }
+  function offerRepeat(text, tools) {
+    const cadence = repeatCadence(text, tools);
+    if (!cadence || offeredBefore(text)) return;
+    const box = document.createElement('div');
+    box.className = 'repeat-offer';
+    const q = document.createElement('span');
+    q.className = 'q';
+    q.textContent = cadence === 'weekly' ? 'Do this every week?' : 'Do this every morning?';
+    box.appendChild(q);
+    const choices = cadence === 'weekly'
+      ? [['Sundays at 6:00 PM', 'weekly', '18:00'], ['Every morning', 'daily', '08:00']]
+      : [['Every day at 8:00 AM', 'daily', '08:00'], ['Every week', 'weekly', '08:00']];
+    choices.forEach(([label, repeat, hm], i) => {
+      const b = document.createElement('button');
+      b.className = i === 0 ? 'yes' : '';
+      b.textContent = label;
+      b.addEventListener('click', () => scheduleRepeat(box, text, repeat, hm, label));
+      box.appendChild(b);
+    });
+    const no = document.createElement('button');
+    no.className = 'no'; no.textContent = 'No thanks';
+    no.addEventListener('click', () => box.remove());
+    box.appendChild(no);
+    messagesEl.appendChild(box);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+  async function scheduleRepeat(box, text, repeat, hm, label) {
+    const user = currentUser || '';
+    const q = user ? '?user=' + encodeURIComponent(user) : '';
+    box.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    try {
+      // The agent's clock ("YYYY-MM-DD HH:MM"), so 8:00 is theirs.
+      const now = (await (await fetch('/api/schedule' + q)).json()).now || '';
+      const m = /^(\d+)-(\d+)-(\d+) (\d+):(\d+)/.exec(now);
+      const base = m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) : new Date();
+      const [h, min] = hm.split(':').map(Number);
+      const when = new Date(base); when.setHours(h, min, 0, 0);
+      if (repeat === 'weekly' && hm === '18:00') { while (when.getDay() !== 0 || when <= base) when.setDate(when.getDate() + 1); }
+      else if (when <= base) when.setDate(when.getDate() + 1);
+      const p = n => String(n).padStart(2, '0');
+      const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())} ${p(when.getHours())}:${p(when.getMinutes())}`;
+      const r = await fetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user, when: stamp, action: text, repeat }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "That couldn't be scheduled.");
+      box.innerHTML = '';
+      const done = document.createElement('span');
+      done.className = 'q';
+      done.textContent = `Scheduled: ${label.toLowerCase()}. What it does each time shows up in Activity. `;
+      const link = document.createElement('a');
+      link.textContent = 'Change it';
+      link.addEventListener('click', () => openApp('schedule'));
+      done.appendChild(link);
+      box.appendChild(done);
+    } catch (e) {
+      box.querySelectorAll('button').forEach(b => { b.disabled = false; });
+      box.querySelector('.q').textContent = e.message;
+    }
+  }
+  let lastAsk = '';
 
   // Where a turn this page didn't start came from, for the note above it.
   const LIVE_FROM = {
@@ -2730,6 +2893,7 @@
     let activeApproval = null;
     let activeReasoning = null;
     let activeMcp = null;       // the installed app the running tool belongs to
+    const turnTools = [];       // what this turn ran, for the repeat offer
 
     // The thinking is over the moment anything else shows up — text, a tool
     // call, or the end of the turn. A turn with tool calls makes several LLM
@@ -2868,6 +3032,7 @@
             finishReasoning();
             dropLiveBubble();
             if (thinking.parentNode) thinking.remove();
+            turnTools.push(evt.name);
             activeToolIndicator = addToolLive(evt.name);
             agentBrowser.call(evt.name, evt.arguments);
             if (activeMcp) appUsage.stop(activeMcp);
@@ -3033,6 +3198,7 @@
             // turn, including its tool-call requests. Rebuilding them from the
             // saved messages would drop back to the last request alone.
             renderConversation(evt.conversation, { keepLiveUsage: true });
+            if (!live) offerRepeat(lastAsk, turnTools);
           }
         }
       }
@@ -3717,6 +3883,8 @@
     developer: { w: 1040, h: 680, src: () => '/developer' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
     appstore: { w: 940,  h: 700, src: () => '/appstore' },
     schedule: { w: 640,  h: 640, src: () => '/schedule' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
+    activity: { w: 620,  h: 680, src: () => '/activity' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : ''),
+                onOpen: () => activityBadge.seen() },
     mcp:      { w: 380,  h: 360 },
     files:    { w: 520,  h: 560, onOpen: ctxOpen, onClose: ctxClosePanel },
   };
@@ -3877,7 +4045,8 @@
 
   // ── Menu bar task pills ──
   const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings',
-                      appstore: 'App Store', developer: 'Developer', schedule: 'Scheduled tasks' };
+                      appstore: 'App Store', developer: 'Developer', schedule: 'Scheduled tasks',
+                      activity: 'Activity' };
   function renderTasks() {
     tasksEl.innerHTML = '';
     for (const app of wm.order) {
