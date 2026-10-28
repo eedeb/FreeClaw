@@ -15,6 +15,7 @@ import src.jev as jev
 import src.live_turns as live_turns
 import src.mcp_client as mcp_client
 import src.mcp_catalog as mcp_catalog
+import src.routines as routines
 import src.session as sessions
 import src.subagents as subagents
 import src.telemetry as telemetry
@@ -3349,7 +3350,7 @@ def _fire_due_pings():
                     _note_failed_ping(name, action, repeat, e)
 
 
-# ── The Scheduled tasks window ───────────────────────────────
+# ── The Tasks window: scheduled tasks ────────────────────────
 # ping.md, listed for the person: what's scheduled, when it next runs, and
 # ways to add, change and remove one without asking the agent. Adding goes
 # through agent.schedule_ping, the add_ping tool's own checks (a host's
@@ -3399,21 +3400,19 @@ def _tool_server(user, tool_name):
     return (entry or {}).get("server", {}).get("name") if entry else None
 
 
-# ── The Activity window ──────────────────────────────────────
+# ── Activity ─────────────────────────────────────────────────
 # What each agent did while nobody was watching (src/activity.py): scheduled
 # tasks that ran, how each went, and anything left waiting on the user. One
 # agent per request, through the same check the file and schedule routes use;
-# the window asks for each agent in /api/users and shows them together.
+# the Tasks window asks for each agent in /api/users and shows them together.
 
 @app.route('/activity')
 def activity_page():
-    if not logged_in():
-        return redirect(url_for('login'))
-    # Which agent its "add a task" ideas go to: the one asked for, else the
-    # one this session is talking to (as for the Scheduled tasks page).
-    asked = request.args.get('user', '')
-    name, err = _files_user(asked or current_user() or '')
-    return render_template('activity.html', user=asked or (name if not err else ''))
+    """The Tasks window's Activity tab (it used to be a window of its own)."""
+    args = {'tab': 'activity'}
+    if request.args.get('user'):
+        args['user'] = request.args['user']
+    return redirect(url_for('schedule_page', **args))
 
 
 @app.route('/api/activity', methods=['GET', 'DELETE'])
@@ -3444,7 +3443,10 @@ def schedule_page():
     _name, err = _files_user(asked or current_user() or '')
     if err:
         return redirect(url_for('index'))
-    return render_template('schedule.html', user=asked or _name)
+    # The Tasks window: Activity, Scheduled and Routines in one.
+    tab = request.args.get('tab', '')
+    return render_template('schedule.html', user=asked or _name, routines=routines.catalog(),
+                           tab=tab if tab in ('activity', 'scheduled', 'routines') else '')
 
 
 @app.route('/api/schedule', methods=['GET', 'POST', 'PUT', 'DELETE'])

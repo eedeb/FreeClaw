@@ -1408,7 +1408,7 @@
 
     /* Leaving for the user picker. */
     body.leaving #shell, body.leaving #windows { opacity: 0; transform: scale(0.99); transition: opacity 0.2s ease, transform 0.2s ease; }
-    /* The Activity button's count of what's new since it was last opened. */
+    /* The Tasks button's count of what's new in Activity since it was last seen. */
     .app-badge {
       margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
       background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 700;
@@ -1446,9 +1446,6 @@
   </symbol>
   <symbol id="i-developer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5.5l-3 13"/>
-  </symbol>
-  <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 12h4l2.5-6 5 12 2.5-6H21"/>
   </symbol>
   <symbol id="i-schedule" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12.5" r="8.5"/><path d="M12 8v4.5l3 2"/><path d="M4.5 4.5 7 2.5M19.5 4.5 17 2.5"/>
@@ -1511,13 +1508,9 @@
         <span class="app-tile"><svg><use href="#i-files"/></svg></span>
         <span class="app-label">Files</span>
       </button>
-      <button class="app-icon" id="icon-schedule" data-app="schedule" title="Scheduled tasks">
+      <button class="app-icon" id="icon-schedule" data-app="schedule" title="Tasks">
         <span class="app-tile"><svg><use href="#i-schedule"/></svg></span>
-        <span class="app-label">Scheduled tasks</span>
-      </button>
-      <button class="app-icon" id="icon-activity" data-app="activity" title="Activity">
-        <span class="app-tile"><svg><use href="#i-activity"/></svg></span>
-        <span class="app-label">Activity</span>
+        <span class="app-label">Tasks</span>
         <span class="app-badge" id="activity-badge" hidden></span>
       </button>
       <button class="app-icon" id="icon-browser" data-app="browser" title="Browser" hidden>
@@ -1651,27 +1644,14 @@
   </section>
   {% endif %}
 
-  <section class="win" id="win-schedule" data-app="schedule" hidden aria-label="Scheduled tasks">
+  <section class="win" id="win-schedule" data-app="schedule" hidden aria-label="Tasks">
     <div class="win-bar">
       <div class="win-lights">
         <button class="wl close" data-glyph="×" title="Close"></button>
         <button class="wl min" data-glyph="–" title="Minimize"></button>
         <button class="wl max" data-glyph="+" title="Maximize"></button>
       </div>
-      <div class="win-title"><svg><use href="#i-schedule"/></svg>Scheduled tasks</div>
-    </div>
-    <div class="win-body"></div>
-    <div class="win-resize"></div>
-  </section>
-
-  <section class="win" id="win-activity" data-app="activity" hidden aria-label="Activity">
-    <div class="win-bar">
-      <div class="win-lights">
-        <button class="wl close" data-glyph="×" title="Close"></button>
-        <button class="wl min" data-glyph="–" title="Minimize"></button>
-        <button class="wl max" data-glyph="+" title="Maximize"></button>
-      </div>
-      <div class="win-title"><svg><use href="#i-activity"/></svg>Activity</div>
+      <div class="win-title"><svg><use href="#i-schedule"/></svg>Tasks</div>
     </div>
     <div class="win-body"></div>
     <div class="win-resize"></div>
@@ -2752,9 +2732,9 @@
     }));
   }
 
-  // ── Activity's badge ──
+  // ── The Tasks button's badge ──
   // How many entries the agents' Activity record (src/activity.py) gained
-  // since the window was last opened in this browser. Each agent is asked on
+  // since the Tasks window last showed its Activity tab in this browser. Each agent is asked on
   // its own, as the window does; a failure just leaves the badge as it was.
   const activityBadge = (() => {
     const KEY = 'fc-activity-seen';
@@ -2777,11 +2757,7 @@
         el.hidden = !n;
       } catch (_) { /* the next check */ }
     }
-    function seen() {
-      try { localStorage.setItem(KEY, String(Date.now() / 1000)); } catch (_) {}
-      const el = badge(); if (el) el.hidden = true;
-    }
-    return { check, seen };
+    return { check };
   })();
   activityBadge.check();
   setInterval(activityBadge.check, 60000);
@@ -2859,7 +2835,7 @@
       box.innerHTML = '';
       const done = document.createElement('span');
       done.className = 'q';
-      done.textContent = `Scheduled: ${label.toLowerCase()}. What it does each time shows up in Activity. `;
+      done.textContent = `Scheduled: ${label.toLowerCase()}. What it does each time shows up in Tasks. `;
       const link = document.createElement('a');
       link.textContent = 'Change it';
       link.addEventListener('click', () => openApp('schedule'));
@@ -3882,9 +3858,10 @@
     // unset): without its window, openApp finds nothing to open.
     developer: { w: 1040, h: 680, src: () => '/developer' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
     appstore: { w: 940,  h: 700, src: () => '/appstore' },
-    schedule: { w: 640,  h: 640, src: () => '/schedule' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : '') },
-    activity: { w: 620,  h: 680, src: () => '/activity' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : ''),
-                onOpen: () => activityBadge.seen() },
+    // Tasks: Activity, Scheduled and Routines in one window. The page marks
+    // Activity seen when that tab shows, so the badge is asked again after.
+    schedule: { w: 700,  h: 720, src: () => '/schedule' + (currentUser ? '?user=' + encodeURIComponent(currentUser) : ''),
+                onOpen: () => setTimeout(activityBadge.check, 1500) },
     mcp:      { w: 380,  h: 360 },
     files:    { w: 520,  h: 560, onOpen: ctxOpen, onClose: ctxClosePanel },
   };
@@ -4045,8 +4022,7 @@
 
   // ── Menu bar task pills ──
   const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings',
-                      appstore: 'App Store', developer: 'Developer', schedule: 'Scheduled tasks',
-                      activity: 'Activity' };
+                      appstore: 'App Store', developer: 'Developer', schedule: 'Tasks' };
   function renderTasks() {
     tasksEl.innerHTML = '';
     for (const app of wm.order) {

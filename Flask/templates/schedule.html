@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-  <title>FreeClaw · Scheduled tasks</title>
+  <title>FreeClaw · Tasks</title>
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"/>
   <meta name="theme-color" content="#0f1011" media="(prefers-color-scheme: dark)"/>
   <link rel="apple-touch-icon" href="https://freeclaw.eedeb.dev/eagle.png"/>
@@ -85,11 +85,12 @@
       }
     }
 
-    /* ── Scheduled tasks ──
-       ping.md as a list: grouped by the day each task next runs, soonest
-       first, with its time, how it repeats and what the agent will be asked.
-       One form adds a task and edits one. Every button is shown, not just on
-       hover, so it works the same on a phone. */
+    /* ── Tasks ──
+       One window for what the agent does on its own: Activity (what ran and
+       how it went, src/activity.py), Scheduled (ping.md as a list, grouped by
+       the day each task next runs, with one form to add and edit), and
+       Routines (ready-made tasks, src/routines.py). Every button is shown,
+       not just on hover, so it works the same on a phone. */
     html, body { min-height: 100%; }
     [hidden] { display: none !important; }
     body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.45; }
@@ -176,61 +177,157 @@
       .task .main { grid-column: 1 / -1; grid-row: 2; }
       .task .acts { grid-column: 2; grid-row: 1; }
     }
+
+    /* ── Tasks: tabs ── */
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 18px; overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      display: inline-flex; align-items: center; gap: 7px; flex: none;
+      border: 0; background: none; padding: 8px 12px 10px; margin-bottom: -1px; cursor: pointer;
+      color: var(--text-2); font-size: 13.5px; font-weight: 550; border-bottom: 2px solid transparent;
+    }
+    .tab:hover { color: var(--text); }
+    .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+    .tab .count { font-size: 11px; font-weight: 650; border-radius: 999px; padding: 0 7px; line-height: 17px;
+                  background: var(--surface-3); color: var(--text-2); }
+    .tab .count.hot { background: var(--accent); color: var(--accent-ink); }
+    .panel[hidden] { display: none; }
+    .chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+
+    /* ── Activity: what ran, newest first ── */
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; align-items: center; }
+    .filters .grow { flex: 1; }
+    .item { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 12px 14px; }
+    .item.needs_you { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .item .head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .item .title-line { font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .item .at { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .status { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+              background: var(--surface-3); color: var(--text-2); }
+    .status.done { background: var(--accent-soft); color: var(--accent-text); }
+    .status.needs_you { background: var(--accent); color: var(--accent-ink); }
+    .status.failed, .status.stopped, .status.switched_off, .status.credits { background: var(--err-soft); color: var(--err); }
+    .item .ask { color: var(--text-2); font-size: 13px; margin-top: 6px; overflow-wrap: anywhere; }
+    .item .wait { margin-top: 8px; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); }
+    .item .summary { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; }
+    .item .summary.clip { max-height: 7.5em; overflow: hidden; }
+    .item .links { margin-top: 8px; display: flex; gap: 14px; font-size: 12.5px; }
+    .item .links a, .linkish { color: var(--accent-text); text-decoration: none; background: none; border: 0; padding: 0; cursor: pointer; font-size: 12.5px; }
+
+    /* ── Routines: one-tap cards ── */
+    .cats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 10px; }
+    .routine { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+               padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .routine.on { border-color: var(--accent-line); }
+    .routine h3 { font-size: 14.5px; font-weight: 650; display: flex; gap: 8px; align-items: baseline; }
+    .routine h3 span:first-child { flex: 1; }
+    .routine .blurb { color: var(--text-2); font-size: 13px; }
+    .routine .needs { display: flex; gap: 5px; flex-wrap: wrap; }
+    .routine .needs span { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; color: var(--muted); }
+    .routine .when-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
+    .routine .when-row .field { width: auto; padding: 5px 8px; font-size: 13px; }
+    .routine .field.text { width: 100%; }
+    .routine .runs { font-size: 12.5px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+    .routine .routine-form { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+    .routine .routine-form[hidden] { display: none; }
+    .routine .linkish { align-self: flex-start; margin-top: auto; }
+    .routine .foot-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .routine .note { font-size: 12.5px; }
+    .routine .note.err { color: var(--err); }
+    .routine .note.ok { color: var(--accent-text); }
+
+    /* A routine in the Scheduled list: its name, then its prompt. */
+    .what b { font-weight: 650; }
   </style>
 </head>
 <body>
   <header>
     <a href="/chat?user={{ user|urlencode }}">← Chat</a>
-    <span class="title">Scheduled tasks</span>
+    <span class="title">Tasks</span>
   </header>
 
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 5 12 2.5-6H21"/></symbol>
   </svg>
 
   <main class="wrap">
     <div class="top">
       <div class="grow">
-        <h1>Scheduled tasks</h1>
-        <p class="sub">Your agent does these on its own at the time you set, as if you'd sent it the message then.</p>
+        <h1>Tasks</h1>
+        <p class="sub">What your agent does on its own: what it did, what's coming up, and ready-made routines to add.</p>
       </div>
       <button class="btn primary" id="new-btn">+ New task</button>
     </div>
 
-    <form class="card" id="form" hidden autocomplete="off">
-      <h2 id="form-title">New task</h2>
-      <label class="lbl" for="f-action">What should your agent do?</label>
-      <textarea class="field" id="f-action" maxlength="2000" required
-        placeholder="e.g. Give me a quick rundown of today: my calendar, the weather, and anything urgent in my email."></textarea>
-      <div class="row">
-        <div><label class="lbl" for="f-date">Date</label><input class="field" type="date" id="f-date" required></div>
-        <div><label class="lbl" for="f-time">Time</label><input class="field" type="time" id="f-time" required></div>
-        <div><label class="lbl" for="f-repeat">Repeats</label>
-          <select class="field" id="f-repeat"></select></div>
-      </div>
-      <div class="chips" id="chips"></div>
-      <div class="form-foot">
-        <span class="msg" id="form-msg" role="alert"></span>
-        <button type="button" class="btn" id="cancel-btn">Cancel</button>
-        <button type="submit" class="btn primary" id="save-btn">Schedule</button>
-      </div>
-    </form>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="activity" id="tab-activity">Activity <span class="count" id="count-activity" hidden></span></button>
+      <button class="tab" role="tab" data-tab="scheduled" id="tab-scheduled">Scheduled <span class="count" id="count-scheduled" hidden></span></button>
+      <button class="tab" role="tab" data-tab="routines" id="tab-routines">Routines</button>
+    </div>
 
-    <div id="list" aria-live="polite"></div>
-    <p class="foot" id="foot"></p>
+    <!-- ── Activity ── -->
+    <section class="panel" id="panel-activity" role="tabpanel">
+      <div class="filters" id="filters" hidden>
+        <button class="chip" data-f="all" aria-pressed="true">All</button>
+        <button class="chip" data-f="needs_you" aria-pressed="false">Needs you</button>
+        <button class="chip" data-f="problems" aria-pressed="false">Didn't finish</button>
+        <span class="grow"></span>
+        <button class="btn ghost" id="clear-btn">Clear</button>
+      </div>
+      <div id="activity" aria-live="polite"></div>
+    </section>
+
+    <!-- ── Scheduled ── -->
+    <section class="panel" id="panel-scheduled" role="tabpanel" hidden>
+      <form class="card" id="form" hidden autocomplete="off">
+        <h2 id="form-title">New task</h2>
+        <label class="lbl" for="f-action">What should your agent do?</label>
+        <textarea class="field" id="f-action" maxlength="2000" required
+          placeholder="e.g. Give me a quick rundown of today: my calendar, the weather, and anything urgent in my email."></textarea>
+        <div class="row">
+          <div><label class="lbl" for="f-date">Date</label><input class="field" type="date" id="f-date" required></div>
+          <div><label class="lbl" for="f-time">Time</label><input class="field" type="time" id="f-time" required></div>
+          <div><label class="lbl" for="f-repeat">Repeats</label>
+            <select class="field" id="f-repeat"></select></div>
+        </div>
+        <div class="chips" id="chips"></div>
+        <div class="form-foot">
+          <span class="msg" id="form-msg" role="alert"></span>
+          <button type="button" class="btn" id="cancel-btn">Cancel</button>
+          <button type="submit" class="btn primary" id="save-btn">Schedule</button>
+        </div>
+      </form>
+      <div id="list" aria-live="polite"></div>
+      <p class="foot" id="foot"></p>
+    </section>
+
+    <!-- ── Routines ── -->
+    <section class="panel" id="panel-routines" role="tabpanel" hidden>
+      <div class="cats" id="cats"></div>
+      <div class="grid" id="grid"></div>
+      <p class="foot">Each one is a scheduled task: change or remove it under Scheduled. Anything it would send or change still asks you first.</p>
+    </section>
   </main>
   <div class="toast" id="toast" hidden></div>
 
 <script>
 (() => {
   const USER = {{ user|tojson }};
+  const ROUTINES = {{ routines|tojson }};
+  const FIRST_TAB = {{ tab|tojson }};
   const $ = id => document.getElementById(id);
   const REPEAT_LABEL = { hourly: 'Every hour', daily: 'Every day', weekly: 'Every week' };
+  const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const ROUTINE_RE = /^Routine: ([^.]{1,80})\.\s*/;
 
   // The server's clock, not this device's: a task's time is in the profile's
   // own time zone, which needn't be the one this browser is in. Kept as
   // minutes, with the local time elapsed since it was read added on.
   let serverNow = null, readAt = 0, tasks = [], repeats = [], editing = null, confirming = null;
+  let entries = [], filter = 'all', cat = null, tab = null;
 
   const q = params => new URLSearchParams({ user: USER, ...params }).toString();
   async function api(method, body) {
@@ -248,6 +345,8 @@
     if (data.repeats) repeats = data.repeats;
     tasks = data.tasks || [];
     render();
+    renderRoutines();
+    counts();
   }
 
   // "YYYY-MM-DD HH:MM" <-> a Date whose UTC fields are that wall time, so the
@@ -292,6 +391,129 @@
     return b;
   }
 
+  // ── tabs ──
+  function show(name) {
+    tab = name;
+    for (const t of ['activity', 'scheduled', 'routines']) {
+      $('tab-' + t).setAttribute('aria-selected', String(t === name));
+      $('panel-' + t).hidden = t !== name;
+    }
+    try { localStorage.setItem('fc-tasks-tab', name); } catch (_) {}
+    if (name === 'activity') seen();
+  }
+  document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
+  function counts() {
+    const waiting = entries.filter(e => e.status === 'needs_you').length;
+    const a = $('count-activity');
+    a.textContent = waiting ? `${waiting} need${waiting === 1 ? 's' : ''} you` : String(entries.length);
+    a.classList.toggle('hot', waiting > 0);
+    a.hidden = !entries.length;
+    const s = $('count-scheduled');
+    s.textContent = String(tasks.length);
+    s.hidden = !tasks.length;
+  }
+
+  // ── Activity ──
+  // Every agent of this login, each asked for on its own (the same access
+  // check as its files), shown together; the agent's name only when there's
+  // more than one.
+  const LABEL = { done: 'Done', needs_you: 'Needs you', switched_off: 'Switched off',
+                  credits: 'Out of credits', failed: "Didn't finish", stopped: 'Stopped' };
+  const SOURCE = { schedule: 'Scheduled', discord: 'Discord', teams: 'Microsoft Teams', email: 'Email', bridge: 'A message' };
+  let agentCount = 1;
+  function seen() { try { localStorage.setItem('fc-activity-seen', String(Date.now() / 1000)); } catch (_) {} }
+  function shown(e) {
+    if (filter === 'needs_you') return e.status === 'needs_you' || e.status === 'switched_off';
+    if (filter === 'problems') return ['failed', 'stopped', 'switched_off', 'credits'].includes(e.status);
+    return true;
+  }
+  function localDay(ts) {
+    const d = new Date(ts * 1000), today = new Date(), y = new Date(today); y.setDate(today.getDate() - 1);
+    if (d.toDateString() === today.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+  }
+  function renderActivity() {
+    const box = $('activity');
+    box.textContent = '';
+    $('filters').hidden = !entries.length;
+    if (!entries.length) {
+      const e = el('div', 'empty');
+      e.innerHTML = '<svg><use href="#i-pulse"/></svg>';
+      e.appendChild(el('b', '', 'Nothing has run yet'));
+      e.appendChild(el('p', '', "When a task runs on its own, what it did shows up here, including anything waiting for your OK."));
+      const go = button('Browse routines', 'primary', () => show('routines'));
+      go.style.marginTop = '14px';
+      e.appendChild(go);
+      box.appendChild(e);
+      return;
+    }
+    let group = null, list = null;
+    for (const e of entries.filter(shown)) {
+      const label = localDay(e.ts);
+      if (label !== group) {
+        group = label;
+        box.appendChild(el('div', 'day', label));
+        list = box.appendChild(el('div', 'list'));
+      }
+      list.appendChild(entry(e));
+    }
+  }
+  function entry(e) {
+    const r = el('div', 'item ' + e.status);
+    const head = r.appendChild(el('div', 'head'));
+    head.appendChild(el('span', 'title-line', e.title || e.ask || SOURCE[e.source] || 'A task'));
+    head.appendChild(el('span', 'status ' + e.status, LABEL[e.status] || e.status));
+    head.appendChild(el('span', 'at', new Date(e.ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })));
+    const meta = [SOURCE[e.source] || e.source, agentCount > 1 ? e.agent : null];
+    if (e.apps && e.apps.length) meta.push('used ' + e.apps.join(', '));
+    r.appendChild(el('div', 'meta', meta.filter(Boolean).join(' · ')));
+    // A scheduled task with a title (a routine) is its own prompt: the title says it.
+    if (e.title && e.ask && e.source !== 'schedule') r.appendChild(el('div', 'ask', e.ask));
+    if (e.waiting && e.waiting.length) {
+      r.appendChild(el('div', 'wait', (e.status === 'switched_off' ? 'Switched off: ' : 'Wanted your OK to: ')
+        + e.waiting.join('; ') + '. Open the chat to say yes.'));
+    }
+    if (e.summary) {
+      const s = r.appendChild(el('div', 'summary', e.summary));
+      if (e.summary.length > 280) {
+        s.classList.add('clip');
+        const more = el('button', 'linkish', 'Show all');
+        more.addEventListener('click', () => { const c = s.classList.toggle('clip'); more.textContent = c ? 'Show all' : 'Show less'; });
+        r.appendChild(more);
+      }
+    }
+    const links = r.appendChild(el('div', 'links'));
+    const a = links.appendChild(el('a', '', 'Open the chat'));
+    a.href = '/chat?user=' + encodeURIComponent(e.agent || ''); a.target = '_top';
+    return r;
+  }
+  async function loadActivity() {
+    try {
+      const users = ((await (await fetch('/api/users')).json()).users || []).filter(u => !u.subagent);
+      agentCount = users.length;
+      const lists = await Promise.all(users.map(u =>
+        fetch('/api/activity?user=' + encodeURIComponent(u.name)).then(r => r.ok ? r.json() : { entries: [] })
+          .then(d => (d.entries || []).map(e => Object.assign({ agent: u.name }, e)))));
+      entries = [].concat(...lists).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    } catch (_) { /* the next refresh */ }
+    renderActivity();
+    counts();
+  }
+  $('filters').addEventListener('click', ev => {
+    const b = ev.target.closest('.chip'); if (!b) return;
+    filter = b.dataset.f;
+    document.querySelectorAll('#filters .chip').forEach(c => c.setAttribute('aria-pressed', String(c === b)));
+    renderActivity();
+  });
+  $('clear-btn').addEventListener('click', async () => {
+    if (!confirm('Clear the activity record for all your agents? Their chats keep everything.')) return;
+    const names = [...new Set(entries.map(e => e.agent))];
+    await Promise.all(names.map(n => fetch('/api/activity?user=' + encodeURIComponent(n), { method: 'DELETE' })));
+    loadActivity();
+  });
+
+  // ── Scheduled ──
   function render() {
     const list = $('list');
     list.textContent = '';
@@ -299,7 +521,10 @@
       const e = el('div', 'empty');
       e.innerHTML = '<svg><use href="#i-clock"/></svg>';
       e.appendChild(el('b', '', 'Nothing scheduled yet'));
-      e.appendChild(el('p', '', 'Add a task here, or just ask your agent, e.g. "every morning at 7, give me a rundown of my day."'));
+      e.appendChild(el('p', '', 'Add a routine, add a task here, or just ask your agent, e.g. "every morning at 7, give me a rundown of my day."'));
+      const go = button('Browse routines', 'primary', () => show('routines'));
+      go.style.marginTop = '14px';
+      e.appendChild(go);
       list.appendChild(e);
     }
     const timed = tasks.filter(t => t.when).sort((a, b) => parse(a.when) - parse(b.when));
@@ -333,10 +558,16 @@
     when.appendChild(el('div', 'in', d ? inLabel(d) : 'needs a time'));
 
     const what = r.appendChild(el('div', 'main'));
-    const text = what.appendChild(el('div', 'what clamp', t.action || '(no instructions)'));
+    const text = what.appendChild(el('div', 'what clamp'));
+    const m = ROUTINE_RE.exec(t.action || '');
+    if (m) {
+      text.appendChild(el('b', '', m[1]));
+      text.appendChild(document.createTextNode(' — ' + (t.action || '').slice(m[0].length)));
+    } else text.textContent = t.action || '(no instructions)';
     text.title = 'Show all';
     text.addEventListener('click', () => text.classList.toggle('clamp'));
     const pills = el('div', 'pills');
+    if (m) pills.appendChild(el('span', 'pill', 'Routine'));
     if (t.repeat) pills.appendChild(el('span', 'pill', REPEAT_LABEL[t.repeat] || t.repeat));
     if (t.retry) pills.appendChild(el('span', 'pill retry', 'Retrying: it failed last time'));
     if (pills.childNodes.length) what.appendChild(pills);
@@ -378,6 +609,7 @@
   }
 
   function openForm(t) {
+    show('scheduled');
     editing = t || null;
     confirming = null;
     $('form-title').textContent = t ? 'Edit task' : 'New task';
@@ -438,6 +670,118 @@
     }
   }
 
+  // ── Routines ──
+  // Each card adds a scheduled task (src/routines.py): its first run is the
+  // next time it's due on the agent's clock. "Add and run it now" also adds a
+  // one-off a minute out, so the first result arrives while they're looking.
+  function routineOn(r) { return tasks.filter(t => t.repeat && (t.action || '').startsWith('Routine: ' + r.title + '.')); }
+  function routineAction(r, value) {
+    const v = String(value || '').split(/\s+/).join(' ').trim().slice(0, 200);
+    return ('Routine: ' + r.title + '. ' + r.prompt.split('{input}').join(v)).slice(0, 2000);
+  }
+  function nextRun(hm, repeat, weekday) {
+    const n = now(), [h, m] = hm.split(':').map(Number);
+    const d = at(n, 0, h, m);
+    if (repeat === 'weekly') {
+      const want = (weekday + 1) % 7;          // getUTCDay: 0 is Sunday; ours: 0 is Monday
+      while (d.getUTCDay() !== want || d <= n) d.setUTCDate(d.getUTCDate() + 1);
+    } else if (d <= n) d.setUTCDate(d.getUTCDate() + 1);
+    return `${dateStr(d)} ${timeStr(d)}`;
+  }
+  function describe(t) {
+    const d = parse(t.when);
+    if (!d) return REPEAT_LABEL[t.repeat] || t.repeat;
+    return t.repeat === 'weekly' ? `${DAYS[(d.getUTCDay() + 6) % 7]}s at ${clock(d)}` : `Every day at ${clock(d)}`;
+  }
+  function renderRoutines() {
+    const cats = [...new Set(ROUTINES.map(r => r.cat))];
+    if (!cat || !cats.includes(cat)) cat = cats[0];
+    const bar = $('cats');
+    bar.textContent = '';
+    for (const c of cats) {
+      const b = el('button', 'chip', c);
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(c === cat));
+      b.addEventListener('click', () => { cat = c; renderRoutines(); });
+      bar.appendChild(b);
+    }
+    const grid = $('grid');
+    // Don't redraw a card someone is filling in.
+    if (grid.contains(document.activeElement) && document.activeElement.matches('input, select')) return;
+    grid.textContent = '';
+    for (const r of ROUTINES.filter(x => x.cat === cat)) grid.appendChild(card(r));
+  }
+  function card(r) {
+    const live = routineOn(r);
+    const box = el('div', 'routine' + (live.length ? ' on' : ''));
+    const h = box.appendChild(el('h3'));
+    h.appendChild(el('span', '', r.title));
+    if (live.length) h.appendChild(el('span', 'pill', 'On'));
+    box.appendChild(el('div', 'blurb', r.blurb));
+    if (r.needs && r.needs.length) {
+      const n = box.appendChild(el('div', 'needs'));
+      r.needs.forEach(x => n.appendChild(el('span', '', x)));
+    }
+    for (const t of live) {
+      const runs = box.appendChild(el('div', 'runs'));
+      runs.appendChild(el('span', '', describe(t)));
+      runs.appendChild(button('Remove', 'ghost danger', () => remove(t)));
+    }
+    // One that's on shows when it runs; adding a second is a click away.
+    const form = box.appendChild(el('div', 'routine-form'));
+    if (live.length) {
+      form.hidden = true;
+      const more = box.insertBefore(el('button', 'linkish', 'Add another'), form);
+      more.type = 'button';
+      more.addEventListener('click', () => { form.hidden = false; more.remove(); });
+    }
+    let input = null;
+    if (r.input) {
+      const l = form.appendChild(el('label', 'lbl', r.input.label));
+      input = el('input', 'field text');
+      input.type = 'text'; input.placeholder = r.input.placeholder || ''; input.maxLength = 200;
+      l.appendChild(input);
+    }
+    const weekly = r.repeat === 'weekly' && repeats.includes('weekly');
+    const when = form.appendChild(el('div', 'when-row'));
+    let daySel = null;
+    if (weekly) {
+      daySel = el('select', 'field');
+      DAYS.forEach((d, i) => { const o = new Option(d + 's', i); o.selected = i === r.day; daySel.appendChild(o); });
+      when.appendChild(daySel);
+    } else when.appendChild(el('span', '', 'Every day'));
+    when.appendChild(el('span', '', 'at'));
+    const time = el('input', 'field');
+    time.type = 'time'; time.value = r.time;
+    when.appendChild(time);
+    const foot = form.appendChild(el('div', 'foot-row'));
+    const note = el('div', 'note');
+    note.hidden = true;
+    const say = (text, ok) => { note.textContent = text; note.className = 'note ' + (ok ? 'ok' : 'err'); note.hidden = false; };
+    async function add(runNow) {
+      const value = input ? input.value.trim() : '';
+      if (input && !value) { say(`Fill in "${r.input.label}" first.`); input.focus(); return; }
+      const repeat = weekly ? 'weekly' : 'daily';
+      foot.querySelectorAll('button').forEach(b => { b.disabled = true; });
+      try {
+        await api('POST', { when: nextRun(time.value || r.time, repeat, daySel ? +daySel.value : 0),
+                            action: routineAction(r, value), repeat });
+        if (runNow) {
+          const soon = new Date(now().getTime() + 6e4);
+          await api('POST', { when: `${dateStr(soon)} ${timeStr(soon)}`, action: routineAction(r, value) });
+        }
+        toast(runNow ? `${r.title} added. The first run starts within a minute or two.` : `${r.title} added.`);
+      } catch (err) {
+        say(err.message);
+        foot.querySelectorAll('button').forEach(b => { b.disabled = false; });
+      }
+    }
+    foot.appendChild(button('Add', 'primary', () => add(false)));
+    foot.appendChild(button('Add and run it now', '', () => add(true)));
+    box.appendChild(note);
+    return box;
+  }
+
   let toastTimer = null;
   function toast(text) {
     const t = $('toast');
@@ -447,16 +791,25 @@
     toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
   }
 
-  // The agent adds and fires tasks too: keep the list current while it's in
-  // view, without disturbing a form being filled in.
+  // The agent adds and fires tasks too: keep everything current while it's
+  // in view, without disturbing a form being filled in.
   async function refresh() {
     if (document.hidden) return;
     try { await api('GET'); } catch (err) { if (!tasks.length) $('foot').textContent = err.message; }
+    loadActivity();
   }
   document.addEventListener('visibilitychange', refresh);
   setInterval(refresh, 20000);
   setInterval(() => { if (!document.hidden) render(); }, 60000);
-  refresh();
+
+  // Which tab first: the one asked for, else the last one used here, else
+  // Activity once something has run and Routines before anything has.
+  let saved = null;
+  try { saved = localStorage.getItem('fc-tasks-tab'); } catch (_) {}
+  show(FIRST_TAB || saved || 'activity');
+  refresh().then(() => {
+    if (!FIRST_TAB && !saved && !entries.length && !tasks.length) show('routines');
+  });
 })();
 </script>
 </body>
