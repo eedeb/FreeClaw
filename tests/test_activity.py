@@ -149,14 +149,31 @@ class TestActivityApi(unittest.TestCase):
             s["authenticated"] = True
             s["current_user"] = self.user
 
-    def test_page_and_sidebar(self):
-        r = self.client.get(f"/activity?user={self.user}")
+    def test_one_tasks_window(self):
+        """Activity, Scheduled and Routines are one window, Tasks."""
+        r = self.client.get(f"/schedule?user={self.user}&tab=routines")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b"Activity", r.data)
-        self.assertIn(json.dumps(self.user).encode(), r.data)
-        chat = self.client.get(f"/chat?user={self.user}").data
-        self.assertIn(b'id="icon-activity"', chat)
-        self.assertIn(b'id="win-activity"', chat)
+        page = r.get_data(as_text=True)
+        for tab in ("activity", "scheduled", "routines"):
+            self.assertIn(f'id="panel-{tab}"', page)
+        self.assertIn('const FIRST_TAB = "routines";', page)
+        self.assertIn(json.dumps(self.user), page)
+        self.assertIn('"key": "morning"', page, "the routines are in it")
+        self.assertIn('const FIRST_TAB = "";', self.client.get(f"/schedule?user={self.user}&tab=nope")
+                      .get_data(as_text=True), "an unknown tab is ignored")
+        chat = self.client.get(f"/chat?user={self.user}").get_data(as_text=True)
+        self.assertEqual(chat.count('data-app="schedule"'), 2, "one button, one window")
+        self.assertIn('<span class="app-label">Tasks</span>', chat)
+        self.assertIn('id="activity-badge"', chat)
+        self.assertNotIn('id="icon-activity"', chat)
+        self.assertNotIn('id="win-activity"', chat)
+
+    def test_old_activity_address(self):
+        r = self.client.get(f"/activity?user={self.user}")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/schedule?", r.headers["Location"])
+        self.assertIn("tab=activity", r.headers["Location"])
+        self.assertIn(f"user={self.user}", r.headers["Location"])
 
     def test_entries_newest_first_and_since(self):
         path = self.activity.path_for(self.user)
@@ -294,3 +311,63 @@ class TestRepeatOffer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRoutines(unittest.TestCase):
+    """The Routines tab's catalog (src/routines.py)."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import src.activity as activity
+            import src.routines as routines
+        except Exception as e:                               # pragma: no cover
+            raise unittest.SkipTest(f"Couldn't import FreeClaw: {e}")
+        cls.routines, cls.activity = routines, activity
+
+    def test_catalog(self):
+        rs = self.routines.ROUTINES
+        self.assertEqual(len({r["key"] for r in rs}), len(rs))
+        self.assertEqual(len({r["title"] for r in rs}), len(rs))
+        for r in rs:
+            self.assertNotIn(".", r["title"], "a title marks the task, so no full stop")
+            self.assertIn(r["repeat"], ("daily", "weekly"))
+            self.assertRegex(r["time"], r"^\d\d:\d\d$")
+            if r["repeat"] == "weekly":
+                self.assertIn(r.get("day"), range(7))
+            self.assertEqual("{input}" in r["prompt"], bool(r.get("input")), r["key"])
+            self.assertLessEqual(len(self.routines.action(r, "x" * 500)), 2000)
+
+    def test_action_names_the_run(self):
+        r = self.routines.ROUTINES[0]
+        action = self.routines.action(r)
+        self.assertTrue(action.startswith(f"Routine: {r['title']}. "))
+        title, _ask = self.activity.clean_ask("PING [due 2026-10-28 07:00, repeats daily]: " + action)
+        self.assertEqual(title, r["title"])
+        detail = next(x for x in self.routines.ROUTINES if x.get("input"))
+        self.assertIn("a b", self.routines.action(detail, "a\n\n b"))
+
+    def test_catalog_is_what_the_page_gets(self):
+        self.assertEqual([c["key"] for c in self.routines.catalog()], [r["key"] for r in self.routines.ROUTINES])
+
+
+class TestTasksPage(unittest.TestCase):
+    """The Tasks page's routine scheduling, on the agent's clock (run with node)."""
+
+    def test_next_run(self):
+        if not shutil.which("node"):
+            raise unittest.SkipTest("node isn't installed")
+        with open(os.path.join(ROOT, "Flask", "templates", "schedule.html"), encoding="utf-8") as f:
+            text = f.read()
+        pick = lambda start, end: text[text.index(start):text.index(end)]
+        js = (pick("  const parse = s =>", "  function dayLabel")
+              + pick("  const at = (d, days", "  function fillChips")
+              + pick("  function nextRun", "  function describe"))
+        prog = ("let serverNow = null, readAt = 0;\n" + js +
+                "serverNow = parse('2026-10-27 08:30'); readAt = Date.now();\n"   # a Tuesday
+                "console.log(JSON.stringify([nextRun('07:00','daily'), nextRun('09:00','daily'),"
+                " nextRun('18:00','weekly',6), nextRun('09:00','weekly',1), nextRun('08:00','weekly',1)]));")
+        out = subprocess.run(["node", "-e", prog], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), ["2026-10-28 07:00", "2026-10-27 09:00", "2026-11-01 18:00",
+                                                  "2026-10-27 09:00", "2026-11-03 08:00"])

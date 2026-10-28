@@ -1,4 +1,4 @@
-"""Tests for the Scheduled tasks window: /schedule and /api/schedule
+"""Tests for the Tasks window's Scheduled tab: /schedule and /api/schedule
 (Flask/main.py), and the ping.md lock it shares with add_ping and the
 scheduler (src/agent.py).
 
@@ -55,7 +55,7 @@ class TestScheduleApi(unittest.TestCase):
     def test_page(self):
         r = self.client.get(f"/schedule?user={self.user}")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b"Scheduled tasks", r.data)
+        self.assertIn(b"<h1>Tasks</h1>", r.data)
         self.assertIn(b"icon-schedule", self.client.get(f"/chat?user={self.user}").data)
 
     def test_signed_out(self):
