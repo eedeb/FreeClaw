@@ -1567,10 +1567,10 @@
       <div class="empty-name" id="greeting">How can I help?</div>
       <div class="empty-sub">Your agent can browse the web, use your apps, work with files and run jobs on a schedule.</div>
       <div class="suggestions">
-        <button type="button" class="suggestion" data-prompt="What's the weather this weekend where I live?"><b>Check the weather</b><span>for this weekend, from a real forecast</span></button>
-        <button type="button" class="suggestion" data-prompt="Every morning at 7, give me a quick rundown of my day."><b>Plan my mornings</b><span>a daily rundown, on a schedule</span></button>
-        <button type="button" class="suggestion" data-prompt="Find me three well-reviewed budget headphones under $50 and compare them."><b>Shop for me</b><span>compare products across the web</span></button>
-        <button type="button" class="suggestion" data-prompt="Remember that I like short answers with the important part first."><b>Teach it about you</b><span>it remembers for next time</span></button>
+        <button type="button" class="suggestion" data-prompt="Compare three laptops under $900 for a college student: battery life, weight, reviews, and where each is cheapest right now. Put it in a table."><b>Research a purchase</b><span>real listings and reviews, side by side</span></button>
+        <button type="button" class="suggestion" data-prompt="Plan a 3-day weekend in Chicago for two next month, under $1,000: flights from where I live, a well-reviewed hotel downtown, and a day-by-day plan."><b>Plan a trip</b><span>flights, a place to stay, a day-by-day plan</span></button>
+        <button type="button" class="suggestion" data-prompt="Go through my email from the last three days: tell me what needs a reply and what needs doing, and draft replies to the important ones. Don't send anything."><b>Get through my inbox</b><span>sorts it and drafts the replies</span></button>
+        <button type="button" class="suggestion" data-prompt="Every Sunday at 6 PM, send me the week ahead: my calendar, bills and deadlines, and anything I need to prepare."><b>Run my week</b><span>a Sunday look-ahead, on a schedule</span></button>
       </div>
     </div>
 
@@ -3812,8 +3812,51 @@
   document.querySelectorAll('#sidebar .app-icon').forEach(wireIcon);
   document.getElementById('get-apps').addEventListener('click', () => { closeNav(); openApp('appstore'); });
 
-  // The welcome screen's suggestions only fill the composer: nothing is sent
-  // until the user says so, and they can edit it first.
+  // The welcome screen's suggestions: four of these each visit, so the range
+  // of what the agent does shows over time, always with one that runs on a
+  // schedule. Each is a whole errand — the kind that takes a person half an
+  // hour — written out in full, so it works the moment it's sent. The four
+  // in the page are what shows without this script.
+  const SUGGESTIONS = [
+    { title: 'Research a purchase', sub: 'real listings and reviews, side by side',
+      prompt: 'Compare three laptops under $900 for a college student: battery life, weight, reviews, and where each is cheapest right now. Put it in a table.' },
+    { title: 'Plan a trip', sub: 'flights, a place to stay, a day-by-day plan',
+      prompt: 'Plan a 3-day weekend in Chicago for two next month, under $1,000: flights from where I live, a well-reviewed hotel downtown, and a day-by-day plan.' },
+    { title: 'Get through my inbox', sub: 'sorts it and drafts the replies',
+      prompt: "Go through my email from the last three days: tell me what needs a reply and what needs doing, and draft replies to the important ones. Don't send anything." },
+    { title: 'Find someone good', sub: 'ratings, prices and how to book',
+      prompt: 'Find three well-reviewed plumbers near me who can come this week. Compare their ratings, any prices they list, and how to book each one.' },
+    { title: 'Answer a hard question', sub: 'researches it, with sources',
+      prompt: "Would a heat pump save me money in a cold climate like Chicago's? Look into the upfront cost, yearly savings and any rebates, and cite your sources." },
+    { title: 'Make a spreadsheet', sub: 'a real file to download',
+      prompt: 'Make a monthly budget for a family of four on $5,000 a month, with categories and amounts, and save it as a spreadsheet I can download.' },
+    { title: 'Run my week', sub: 'a Sunday look-ahead, on a schedule', scheduled: true,
+      prompt: 'Every Sunday at 6 PM, send me the week ahead: my calendar, bills and deadlines, and anything I need to prepare.' },
+    { title: 'Watch a price', sub: 'checks every morning, says when it drops', scheduled: true,
+      prompt: 'Every morning at 8, check the price of the Sony WH-1000XM6 headphones at the big stores and tell me when it drops under $300.' },
+  ];
+  (function pickSuggestions() {
+    const box = document.querySelector('.suggestions');
+    if (!box) return;
+    const shuffled = SUGGESTIONS.map(s => [Math.random(), s]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+    const scheduled = shuffled.find(s => s.scheduled);
+    // Three errands, then one that runs on its own; on a narrow screen only
+    // the first two show, so those are always errands.
+    const picked = shuffled.filter(s => !s.scheduled).slice(0, 3).concat([scheduled]);
+    box.textContent = '';
+    for (const s of picked) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'suggestion';
+      b.dataset.prompt = s.prompt;
+      b.appendChild(document.createElement('b')).textContent = s.title;
+      b.appendChild(document.createElement('span')).textContent = s.sub;
+      box.appendChild(b);
+    }
+  })();
+
+  // They only fill the composer: nothing is sent until the user says so, and
+  // they can edit it first.
   document.querySelectorAll('.suggestion').forEach(btn => btn.addEventListener('click', () => {
     if (inputEl.disabled) return;
     inputEl.value = btn.dataset.prompt;
