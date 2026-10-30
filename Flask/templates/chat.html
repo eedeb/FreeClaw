@@ -2769,7 +2769,8 @@
   // ran a tool) and the message reads like a check, a summary or a watch —
   // decided here on the page, so it costs the model nothing. Not for a
   // message that already says when, nor a turn that scheduled something
-  // itself, and only once per wording.
+  // itself, only once per wording, and never once they've said "Don't ask
+  // again" in this browser.
   const REPEATABLE = /\b(check|summari[sz]e|look (?:for|up|at|into)|find|what'?s (?:new|happening|on)|any (?:new|updates?)|news|headlines|weather|forecast|prices?|deals?|inbox|e-?mails?|calendar|agenda|track|monitor|update me|digest|scores?|stocks?|status|reviews?)\b/i;
   const ALREADY_TIMED = /\b(every|each|daily|weekly|monthly|hourly|tomorrow|tonight|remind me|schedule|in \d+ (?:minutes?|hours?|days?))\b/i;
   const OFFERED_KEY = 'fc-repeat-offered';
@@ -2790,7 +2791,9 @@
   }
   function offerRepeat(text, tools) {
     const cadence = repeatCadence(text, tools);
-    if (!cadence || offeredBefore(text)) return;
+    if (!cadence) return;
+    try { if (localStorage.getItem('fc-repeat-off') === '1') return; } catch (_) {}
+    if (offeredBefore(text)) return;
     const box = document.createElement('div');
     box.className = 'repeat-offer';
     const q = document.createElement('span');
@@ -2811,6 +2814,24 @@
     no.className = 'no'; no.textContent = 'No thanks';
     no.addEventListener('click', () => box.remove());
     box.appendChild(no);
+    const never = document.createElement('button');
+    never.className = 'no'; never.textContent = 'Don\u2019t ask again';
+    never.addEventListener('click', () => {
+      try { localStorage.setItem('fc-repeat-off', '1'); } catch (_) {}
+      box.innerHTML = '';
+      const said = document.createElement('span');
+      said.className = 'q';
+      said.textContent = 'Okay, I won\u2019t offer that again. You can still schedule anything in Tasks. ';
+      const undo = document.createElement('a');
+      undo.textContent = 'Undo';
+      undo.addEventListener('click', () => {
+        try { localStorage.removeItem('fc-repeat-off'); } catch (_) {}
+        box.remove();
+      });
+      said.appendChild(undo);
+      box.appendChild(said);
+    });
+    box.appendChild(never);
     messagesEl.appendChild(box);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
