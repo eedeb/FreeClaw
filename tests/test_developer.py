@@ -377,7 +377,7 @@ class TestProtocol(Workspace):
         self.assertEqual([r["id"] for r in replies], [1, 2, 3, 4])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-06-18")
         names = [t["name"] for t in replies[1]["result"]["tools"]]
-        self.assertEqual(names, ["ls", "read", "write", "edit", "overview", "outline", "find", "search", "run", "git_clone", "git_status", "git_diff", "git_commit", "git_push", "git_fetch", "git_pull", "git_branch", "preview"])
+        self.assertEqual(names, ["ls", "read", "write", "edit", "overview", "outline", "find", "search", "run", "git_clone", "git_status", "git_diff", "git_commit", "git_push", "git_fetch", "git_pull", "git_branch", "preview", "check"])
         self.assertIn("1\tx", replies[2]["result"]["content"][0]["text"])
         self.assertTrue(replies[3]["result"]["isError"])
 
@@ -385,6 +385,71 @@ class TestProtocol(Workspace):
         for tool in dev.TOOLS:
             with self.subTest(tool=tool["name"]):
                 self.assertLessEqual(len(tool["description"]), 140)
+
+
+class TestNotes(Workspace):
+    """write and edit say straight away what's wrong with what they wrote."""
+
+    def test_syntax(self):
+        self.assertIn("SyntaxError", self.call("write", path="a.py", content="def f(:\n    pass\n"))
+        self.assertNotIn("Error", self.call("write", path="b.py", content="x = 1\n"))
+        self.assertIn("Invalid JSON", self.call("write", path="c.json", content="{1}"))
+        self.put("d.py", "x = 1\n")
+        self.assertIn("at line 1", self.call("edit", path="d.py", old="x = 1", new="x = = 1"))
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_page_scripts(self):
+        out = self.call("write", path="p.html", content="<p>hi</p>\n<script>\nlet x = ;\n</script>")
+        self.assertIn("at line 3", out, "the page's own line number")
+        self.assertNotIn("Error", self.call("write", path="q.html", content="<script>let x = 1;</script>"))
+
+    def test_long_lines(self):
+        self.assertIn("over", self.call("write", path="m.js", content="var a=1;" * 100))
+        self.assertNotIn("over", self.call("write", path="n.txt", content="short\n"))
+
+
+def _chromium():
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            pw.chromium.launch(headless=True).close()
+        return True
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
+@unittest.skipUnless(_chromium(), "needs playwright and Chromium")
+class TestCheck(Workspace):
+    def test_errors_steps_eval(self):
+        self.put("game/index.html", "<title>G</title><h1>Hi</h1><script src='gone.js'></script>\n<script>\n"
+                 "window.score = 0;\naddEventListener('keydown', e => { if (e.key === ' ') score++; });\n"
+                 "console.log('ready'); console.log('ready');\n"
+                 "setTimeout(() => { null.boom }, 50);\n</script>")
+        out = self.call("check", path="game", steps=["press Space", "hold Space 100", "wait 50"],
+                        eval="score", wait=200)
+        self.assertIn("1 error", out)
+        self.assertIn("game/index.html:6:", out)
+        self.assertIn("near: `setTimeout", out)
+        self.assertIn("[log] ready (×2)", out)
+        self.assertIn("404 /gone.js", out)
+        self.assertIn("Text: Hi", out)
+        self.assertRegex(out, r"score → [1-9]")
+
+    def test_no_local_network(self):
+        self.put("site/index.html", "<script>fetch('http://127.0.0.1:1/x').catch(() => {});</script>")
+        self.assertIn("blocked http://127.0.0.1:1/x", self.call("check", path="site", wait=100))
+
+    def test_stays_in_its_folder(self):
+        self.put("secret.txt", "s")
+        self.put("site/index.html", "<script>fetch('/../secret.txt').then(r => console.log(r.status));</script>")
+        self.assertNotIn("200", self.call("check", path="site", wait=200))
+
+    def test_screenshot_and_bad_steps(self):
+        self.put("index.html", "<h1>x</h1>")
+        text, png = self.call("check", path="index.html", screenshot=True)
+        self.assertTrue(png.startswith(b"\x89PNG"))
+        self.assertIn("Unknown step", self.error("check", path="index.html", steps=["dance"]))
+        self.assertIn("nothing visible", self.error("check", path="index.html", steps=["click Nope"]))
 
 
 class TestOffSwitch(unittest.TestCase):

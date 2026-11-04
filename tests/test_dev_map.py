@@ -83,6 +83,15 @@ class MapTests(unittest.TestCase):
         self.assertIn("## Setup", md)
         self.assertNotIn("not a heading", md)                # inside a code fence
 
+    def test_outline_page_scripts(self):
+        with open(os.path.join(self.root, "page.html"), "w") as f:
+            f.write("<style>\n  .a { color: red }\n</style>\n<script>\n"
+                 "function loop() {}\nclass Player {\n  update(dt) {\n  }\n}\n</script>\n")
+        out = self.call("outline", path="page.html")
+        self.assertIn("5  function loop", out)
+        self.assertIn("class Player", out)
+        self.assertNotIn("color", out)
+
     def test_broken_python_still_outlined(self):
         out = self.call("outline", path="shop/broken.py")
         self.assertIn("def ok()", out)

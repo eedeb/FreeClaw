@@ -32,6 +32,7 @@ than pulling in the `mcp` package, and nothing may write to stdout except
 protocol messages. Standard library only.
 """
 
+import base64
 import fnmatch
 import functools
 import http.server
@@ -46,6 +47,7 @@ import sys
 import threading
 import time
 
+import src.dev_check as dev_check
 import src.dev_git as dev_git
 import src.dev_map as dev_map
 
@@ -203,6 +205,21 @@ def _write_text(path, text):
     with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(text)
     os.replace(tmp, path)
+
+
+def _notes(path, text, long_lines=True):
+    """What's worth knowing straight after a write or edit: a syntax error
+    (dev_check.syntax), and lines too long for read to show whole."""
+    out = []
+    problem = dev_check.syntax(path, text)
+    if problem:
+        out.append(f"\n{problem}")
+    if long_lines:
+        long = sum(1 for line in text.splitlines() if len(line) > READ_LINE_CHARS)
+        if long:
+            out.append(f"\nNote: {long} line{'s are' if long > 1 else ' is'} over {READ_LINE_CHARS} chars, "
+                       "which read cuts off. One statement per line keeps the code readable and editable.")
+    return "".join(out)
 
 
 def _int(value, name, default, low, high):
@@ -666,6 +683,20 @@ TOOLS = [
         "description": "Serve a workspace folder on localhost and return its URL, to open in the browser.",
         "inputSchema": {"type": "object", "properties": {"path": _PATH}},
     },
+    {
+        "name": "check",
+        "description": "Test a web page in a headless browser: JS errors at file:line, console, failed "
+                       "requests, text. Then steps, eval, screenshot.",
+        "inputSchema": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "An .html file, or a folder with index.html."},
+            "steps": {"type": "array", "items": {"type": "string"},
+                      "description": "In order, e.g. " + dev_check.STEPS_HELP + "."},
+            "eval": {"type": "string", "description": "JS expression, evaluated last; result as JSON."},
+            "wait": {"type": "integer", "description": f"ms after load before the steps; default "
+                                                       f"{dev_check.WAIT_DEFAULT_MS}."},
+            "screenshot": {"type": "boolean"},
+        }, "required": ["path"]},
+    },
 ]
 
 TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
@@ -764,7 +795,8 @@ class Tools:
         existed = os.path.exists(path)
         _write_text(path, content)
         lines = content.count("\n") + (0 if content.endswith("\n") or not content else 1)
-        return f"{'Overwrote' if existed else 'Created'} {rel_of(root, path)} ({lines} lines)"
+        return (f"{'Overwrote' if existed else 'Created'} {rel_of(root, path)} ({lines} lines)"
+                + _notes(path, content))
 
     # edit
 
@@ -794,7 +826,8 @@ class Tools:
         text = text.replace(old, new) if args.get("all") else text.replace(old, new, 1)
         _write_text(path, text)
         replaced = count if args.get("all") else 1
-        return f"Edited {rel}: {replaced} replacement{'s' if replaced > 1 else ''}, first at line {line}"
+        return (f"Edited {rel}: {replaced} replacement{'s' if replaced > 1 else ''}, first at line {line}"
+                + _notes(path, text, long_lines=False))
 
     # search
 
@@ -915,6 +948,34 @@ class Tools:
     def t_git_branch(self, root, args):
         return self._git(dev_git.branch, self._repo(root, args), args.get("name"), bool(args.get("switch")))
 
+    # check
+
+    def t_check(self, root, args):
+        target = resolve(root, args.get("path"), must_exist=True)
+        if os.path.isdir(target):
+            folder, page = target, "index.html"
+            if not os.path.isfile(os.path.join(folder, page)):
+                raise ToolError(f"{rel_of(root, folder)}: no index.html there. Name the .html file.")
+        else:
+            folder, page = os.path.dirname(target), os.path.basename(target)
+        steps = args.get("steps") or []
+        if isinstance(steps, str):
+            steps = [steps]
+        if not isinstance(steps, list):
+            raise ToolError("steps must be a list of strings.")
+        wait = _int(args.get("wait"), "wait", dev_check.WAIT_DEFAULT_MS, 0, dev_check.WAIT_MAX_MS)
+        expression = args.get("eval")
+        if expression is not None and not isinstance(expression, str):
+            raise ToolError("eval must be a string.")
+        try:
+            text, png = dev_check.check(folder, page, rel_of(root, folder), wait, [str(s) for s in steps],
+                                        expression or None, bool(args.get("screenshot")))
+        except dev_check.CheckError as e:
+            raise ToolError(str(e))
+        except ImportError:
+            raise ToolError("check needs playwright and Chromium, which aren't installed here.")
+        return text if png is None else (text, png)
+
     # preview
 
     def t_preview(self, root, args):
@@ -962,8 +1023,13 @@ class Server:
 
     def call(self, name, args):
         try:
-            text = self.tools.call(name, args)
-            return {"content": [{"type": "text", "text": text}]}
+            result = self.tools.call(name, args)
+            if isinstance(result, tuple):
+                text, png = result
+                return {"content": [{"type": "text", "text": text},
+                                    {"type": "image", "mimeType": "image/png",
+                                     "data": base64.b64encode(png).decode("ascii")}]}
+            return {"content": [{"type": "text", "text": result}]}
         except ToolError as e:
             return {"content": [{"type": "text", "text": str(e)}], "isError": True}
         except Exception as e:                               # noqa: BLE001

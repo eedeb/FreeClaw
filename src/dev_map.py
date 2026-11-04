@@ -174,7 +174,9 @@ _PATTERNS = {
 _FAMILY = {".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js", ".ts": "js", ".tsx": "js", ".vue": "js",
            ".svelte": "js", ".go": "go", ".rs": "rs", ".rb": "rb", ".php": "php", ".java": "jvm",
            ".kt": "jvm", ".kts": "jvm", ".cs": "jvm", ".swift": "jvm", ".dart": "jvm", ".c": "c",
-           ".h": "c", ".cpp": "c", ".cc": "c", ".hpp": "c", ".sh": "sh", ".bash": "sh", ".sql": "sql"}
+           ".h": "c", ".cpp": "c", ".cc": "c", ".hpp": "c", ".sh": "sh", ".bash": "sh", ".sql": "sql",
+           # A page's inline scripts.
+           ".html": "js", ".htm": "js"}
 _HEADING = re.compile(r"^(#{1,4})\s+(.+?)\s*#*\s*$")
 
 
