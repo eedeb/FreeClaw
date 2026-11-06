@@ -878,7 +878,7 @@ def _throttle_tool_call(name, args_dict=None):
     if (identical and name not in _REPEATABLE_TOOLS
             and sess.identical_tool_calls >= TOOL_CALL_RUN_LIMIT):
         held = IDENTICAL_REPEAT
-    elif (not name.startswith(_MCP_TOOL_PREFIX)
+    elif (not name.startswith(_MCP_TOOL_PREFIX) and name != LOAD_TOOLS_NAME
             and sess.consecutive_tool_calls >= TOOL_CALL_RUN_LIMIT):
         held = SAME_TOOL_RUN
     else:
@@ -4544,6 +4544,21 @@ def _jev_route_details(route, groups, messages, full_start, picked, eco_messages
     }
 
 
+def _withheld_group(asked, withheld):
+    """The withheld group `asked` names, or None. Forgiving about the spelling
+    models use: "Composio" for "mcp:Composio", any case. A miss used to load
+    nothing and cost a round, and the retry could then hit the repeat
+    throttle — a scheduled run spent three calls loading one group."""
+    if asked in withheld:
+        return asked
+    want = asked.strip().lower()
+    for gid in withheld:
+        low = gid.lower()
+        if want in (low, low.split(":", 1)[-1]):
+            return gid
+    return None
+
+
 def _load_tools(args_dict):
     """load_tools: add withheld groups to the pinned tool list, so the next
     request of this turn — and every one after — carries them. Costs the
@@ -4552,7 +4567,11 @@ def _load_tools(args_dict):
     asked = args_dict.get("groups") or []
     if isinstance(asked, str):
         asked = [asked]
-    got = [g for g in asked if g in sess.turn_withheld]
+    got = []
+    for g in asked:
+        g = _withheld_group(str(g), sess.turn_withheld)
+        if g and g not in got:
+            got.append(g)
     if not got:
         available = ", ".join(sess.turn_withheld) or "none — everything is already loaded"
         return f"Nothing loaded. Groups you can load: {available}."
