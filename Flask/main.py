@@ -1537,8 +1537,17 @@ def api_dev_file():
     if path != root and os.path.isdir(path) and request.method == 'DELETE':
         # A folder with something in it only when asked for in so many words
         # (recursive): the page says how much is in it and asks first.
-        if any(n != '.gitkeep' for n in os.listdir(path)):
+        inside = [n for n in os.listdir(path) if n != '.gitkeep']
+        if inside:
             if args.get('recursive') not in ('1', 'true', True):
+                # What the file list hides (.git, node_modules, ...) is named,
+                # or a folder that looks empty can't be deleted and nobody
+                # can see why.
+                hidden = sorted(n for n in inside if n in dev_server.SKIP_DIRS)
+                if hidden and len(hidden) == len(inside):
+                    return jsonify({'error': f"That folder isn't empty: it holds {', '.join(hidden)}, "
+                                             "which the file list doesn't show. Delete it with "
+                                             "everything in it to remove it.", 'hidden': hidden}), 400
                 return jsonify({'error': "That folder isn't empty."}), 400
             try:
                 # rmtree removes links inside it rather than following them.

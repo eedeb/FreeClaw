@@ -603,6 +603,22 @@ class TestRoutes(unittest.TestCase):
             self.assertNotEqual(r.status_code, 200, "never the workspace itself")
             self.assertTrue(os.path.isdir(root))
 
+    def test_delete_folder_with_only_hidden(self):
+        """A repo whose files are gone still holds .git, which the tree hides:
+        the refusal says so, and recursive removes it."""
+        with mock.patch.dict(os.environ, {"FC_DISABLE_DEVELOPER": "", "FC_DISABLE_BASH": ""}):
+            root = self.main.mcp_client.developer_workspace(self.user)
+            os.makedirs(os.path.join(root, "web", ".git", "objects"))
+            tree = self.client.get(f"/api/dev/tree?user={self.user}").get_json()
+            self.assertIn("web", tree["folders"])
+            self.assertFalse([f for f in tree["files"] if f["path"].startswith("web/")], "looks empty")
+            r = self.client.delete(f"/api/dev/file?user={self.user}&path=web")
+            self.assertEqual(r.status_code, 400)
+            self.assertIn(".git", r.get_json()["error"])
+            r = self.client.delete(f"/api/dev/file?user={self.user}&path=web&recursive=1")
+            self.assertEqual(r.status_code, 200, r.get_json())
+            self.assertFalse(os.path.exists(os.path.join(root, "web")))
+
     def test_off(self):
         with mock.patch.dict(os.environ, {"FC_DISABLE_DEVELOPER": "1"}):
             self.assertEqual(self.client.get("/developer").status_code, 404)
