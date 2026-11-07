@@ -146,6 +146,30 @@ class TestRead(Workspace):
             f.write(b"\x00\x01\x02")
         self.assertIn("not a text file", self.error("read", path="b.bin"))
 
+    def test_read_an_image(self):
+        png = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00"
+               b"\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7"
+               b"\x35\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82")
+        with open(os.path.join(self.root, "pic.png"), "wb") as f:
+            f.write(png)
+        text, image, mime = self.call("read", path="pic.png")
+        self.assertEqual((image, mime), (png, "image/png"))
+        self.assertIn("pic.png · 1x1", text)
+        # A big one is shrunk to fit, keeping its shape.
+        try:
+            from PIL import Image
+        except ImportError:
+            return
+        Image.new("RGB", (4000, 2000), "red").save(os.path.join(self.root, "big.jpg"))
+        text, image, mime = self.call("read", path="big.jpg")
+        import io
+        with Image.open(io.BytesIO(image)) as im:
+            self.assertEqual(im.size, (dev.VIEW_MAX_EDGE, dev.VIEW_MAX_EDGE // 2))
+        self.assertIn("4000x2000 (shown at 1600x800)", text)
+        with open(os.path.join(self.root, "broken.png"), "wb") as f:
+            f.write(b"not a png")
+        self.assertIn("couldn't be opened", self.error("read", path="broken.png"))
+
 
 class TestWriteEdit(Workspace):
     def test_write_creates_folders_and_reports_briefly(self):
@@ -453,13 +477,17 @@ class TestCheck(Workspace):
 
     def test_save_as_image(self):
         self.put("post/index.html", "<style>body{margin:0;background:#123}</style><h1>Post</h1>")
-        out = self.call("check", path="post", size="300x200", save="post/out.jpg")
-        self.assertIn("Saved post/out.jpg (300×200", out)
+        text, image, mime = self.call("check", path="post", size="300x200", save="post/out.jpg")
+        self.assertIn("Saved post/out.jpg (300×200", text)
         with open(os.path.join(self.root, "post", "out.jpg"), "rb") as f:
             data = f.read()
         self.assertTrue(data.startswith(b"\xff\xd8"), "a JPEG")
-        out = self.call("check", path="post", save="renders/out.png")
-        self.assertIn("Saved renders/out.png (960×640", out)
+        # The finished image comes back, to be looked over: the saved file itself.
+        self.assertEqual((image, mime), (data, "image/jpeg"))
+        self.assertIn("attached", text)
+        text, image, mime = self.call("check", path="post", save="renders/out.png")
+        self.assertIn("Saved renders/out.png (960×640", text)
+        self.assertTrue(image.startswith(b"\x89PNG") and mime == "image/png")
         self.assertIn("save must end", self.error("check", path="post", save="post/out.gif"))
         self.assertIn("size is WIDTHxHEIGHT", self.error("check", path="post", size="9999x10", save="a.png"))
 

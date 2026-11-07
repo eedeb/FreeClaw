@@ -192,6 +192,50 @@ def _is_text(path):
     return b"\x00" not in chunk
 
 
+# Images `read` hands back as the picture itself, for the model to look at:
+# a post or graphic it rendered (check's save, or a script), a photo.
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".gif": "image/gif", ".webp": "image/webp"}
+# Bigger than this is shrunk to fit (it's resent with every request while it
+# stays in the conversation), keeping its shape. Without Pillow it's sent as
+# it is, up to VIEW_MAX_BYTES.
+VIEW_MAX_EDGE = 1600
+VIEW_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _view_image(path):
+    """(bytes, mime type, "WxH" or "") of an image file, shrunk if large."""
+    mime = IMAGE_TYPES[os.path.splitext(path)[1].lower()]
+    with open(path, "rb") as f:
+        data = f.read(VIEW_MAX_BYTES * 8 + 1)
+    try:
+        from PIL import Image
+    except ImportError:
+        if len(data) > VIEW_MAX_BYTES:
+            raise ToolError(f"{os.path.basename(path)} is too big to look at "
+                            f"({len(data) // 1024:,} KB; up to {VIEW_MAX_BYTES // 1024:,} KB).")
+        return data, mime, ""
+    import io
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            size = f"{im.width}x{im.height}"
+            if max(im.size) <= VIEW_MAX_EDGE and len(data) <= VIEW_MAX_BYTES:
+                return data, mime, size
+            im.seek(0)
+            im = im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB")
+            im.thumbnail((VIEW_MAX_EDGE, VIEW_MAX_EDGE))
+            out = io.BytesIO()
+            if im.mode == "RGBA":
+                im.save(out, "PNG", optimize=True)
+                mime = "image/png"
+            else:
+                im.save(out, "JPEG", quality=88)
+                mime = "image/jpeg"
+            return out.getvalue(), mime, size + f" (shown at {im.width}x{im.height})"
+    except (OSError, ValueError, Image.DecompressionBombError):
+        raise ToolError(f"{os.path.basename(path)} couldn't be opened as an image.")
+
+
 def _read_text(path):
     with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
         return f.read()
@@ -559,7 +603,7 @@ TOOLS = [
     {
         "name": "read",
         "description": f"Numbered lines of a file, {READ_DEFAULT_LINES} at a time (max {READ_MAX_LINES}). "
-                       "Gives the total; read only what you need.",
+                       "Gives the total; read only what you need. An image comes back as the picture.",
         "inputSchema": {"type": "object", "properties": {
             "path": _PATH,
             "start": {"type": "integer", "description": "First line, from 1."},
@@ -697,7 +741,8 @@ TOOLS = [
             "screenshot": {"type": "boolean"},
             "size": {"type": "string", "description": "Viewport WIDTHxHEIGHT, e.g. 1080x1350."},
             "save": {"type": "string", "description": "Write the page as an image here (.png/.jpg) at "
-                                                      "`size`: a post, card or diagram drawn in HTML/CSS."},
+                                                      "`size`: a post, card or diagram drawn in HTML/CSS. "
+                                                      "You get the saved image back to check."},
         }, "required": ["path"]},
     },
 ]
@@ -760,6 +805,10 @@ class Tools:
         rel = rel_of(root, path)
         if os.path.isdir(path):
             raise ToolError(f"{rel}: a folder. Use ls.")
+        if os.path.splitext(path)[1].lower() in IMAGE_TYPES:
+            data, mime, size = _view_image(path)
+            return (f"{rel} · {size + ' · ' if size else ''}{os.path.getsize(path):,} bytes. "
+                    "Here it is: look it over before you show or send it.", data, mime)
         if not _is_text(path):
             raise ToolError(f"{rel}: not a text file.")
         start = _int(args.get("start"), "start", 1, 1, 10**9)
@@ -992,6 +1041,12 @@ class Tools:
             raise ToolError("check needs playwright and Chromium, which aren't installed here.")
         if save:
             text = text.replace(f"Saved {os.path.basename(save)} ", f"Saved {rel_of(root, save)} ", 1)
+            if png is None and os.path.isfile(save):
+                # The finished image, for the model to look over before it's
+                # shown or posted: exactly what was saved, not a fresh shot.
+                data, mime, _size = _view_image(save)
+                return text + "\nThe saved image is attached: check it, fix the page and save again "\
+                    "if anything is off.", data, mime
         return text if png is None else (text, png)
 
     # preview
@@ -1043,10 +1098,11 @@ class Server:
         try:
             result = self.tools.call(name, args)
             if isinstance(result, tuple):
-                text, png = result
+                text, image = result[0], result[1]
+                mime = result[2] if len(result) > 2 else "image/png"
                 return {"content": [{"type": "text", "text": text},
-                                    {"type": "image", "mimeType": "image/png",
-                                     "data": base64.b64encode(png).decode("ascii")}]}
+                                    {"type": "image", "mimeType": mime,
+                                     "data": base64.b64encode(image).decode("ascii")}]}
             return {"content": [{"type": "text", "text": result}]}
         except ToolError as e:
             return {"content": [{"type": "text", "text": str(e)}], "isError": True}
