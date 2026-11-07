@@ -594,14 +594,19 @@
       .filter(p => p.startsWith(path + '/') && p !== path + '/.gitkeep') : [];
     const nFiles = inside.filter(p => files.some(f => f.path === p)).length;
     const repo = isDir && !path.includes('/') && gitRepos.includes(path);
-    const ask = !isDir || !inside.length ? `Delete ${path}? This can't be undone.`
+    // A repo whose files are all gone still holds .git, which the tree
+    // hides: it isn't empty, and deleting it loses the history.
+    const whole = isDir && (inside.length || repo);
+    const ask = !isDir ? `Delete ${path}? This can't be undone.`
+      : !inside.length ? `Delete ${path}?` + (repo ? ' It\'s a git repo: its history goes too, and anything not pushed to GitHub is lost.' : '')
+        + ' This can\'t be undone.'
       : `Delete ${path} and everything in it (${nFiles} file${nFiles === 1 ? '' : 's'}`
         + `${inside.length > nFiles ? ` in ${inside.length - nFiles} folder${inside.length - nFiles === 1 ? '' : 's'}` : ''})?`
         + (repo ? ' It\'s a git repo: anything not pushed to GitHub is lost.' : '')
         + ' This can\'t be undone.';
     if (!confirm(ask)) return;
     try {
-      await api('DELETE', '/api/dev/file?' + q(isDir && inside.length ? { path, recursive: 1 } : { path }));
+      await api('DELETE', '/api/dev/file?' + q(whole ? { path, recursive: 1 } : { path }));
       if (open.path === path || (isDir && open.path && open.path.startsWith(path + '/'))) setOpen(null, '', 0);
       loadTree();
       if (repo) refreshScm();
