@@ -936,6 +936,71 @@ def _usage_summary(usage):
 # tool result reads as though the model had seen the screenshot it's describing.
 _IMAGE_UNAVAILABLE_NOTE = "\n(An image came back with this result, but it can't be shown to this model.)"
 
+# An image the model looks at itself (get_image_description, an image the
+# person sent) goes as it is up to this size; bigger is scaled down first.
+# Models see at most about 2048px anyway, and every attached image is re-sent
+# on each request until it's pruned, so a 4 MB phone photo would cost that
+# much on every step.
+_IMAGE_MAX_SIDE = 2048
+_IMAGE_KEEP_BYTES = 1_500_000
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+def _image_data_url(path):
+    """(data: URL, (width, height)) for the image at `path`, scaled down when
+    it's big; None when it isn't an image that can be read."""
+    import io
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(path) as im:
+            fmt = (im.format or "").upper()
+            size = im.size
+            small = (max(size) <= _IMAGE_MAX_SIDE and os.path.getsize(path) <= _IMAGE_KEEP_BYTES
+                     and fmt in ("PNG", "JPEG", "GIF", "WEBP"))
+            if small:
+                with open(path, "rb") as f:
+                    data = f.read()
+                mime = "image/" + fmt.lower()
+            else:
+                im = ImageOps.exif_transpose(im)
+                im.thumbnail((_IMAGE_MAX_SIDE, _IMAGE_MAX_SIDE))
+                size = im.size
+                buf = io.BytesIO()
+                if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                    im.save(buf, "PNG", optimize=True)
+                    mime = "image/png"
+                else:
+                    im.convert("RGB").save(buf, "JPEG", quality=88)
+                    mime = "image/jpeg"
+                data = buf.getvalue()
+    except Exception:                                    # noqa: BLE001 — not an image we can read
+        return None
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}", size
+
+
+def _sees_images():
+    """Whether the provider chain can take an image as it is: not when every
+    provider in it has refused one (_unsupported_extras), which is learnt the
+    first time an image is sent to a model without vision."""
+    names = [name for name, _b, key, *_ in _active_providers() if key and key != "None"]
+    return any(name not in _unsupported_extras for name in names)
+
+
+# The tag the chat page puts at the start of a message with an upload
+# (Flask/templates/chat.html: FILE_TAG_RE).
+_UPLOAD_TAG = re.compile(r'^\[File uploaded: "(.*?)" → (.*?)\]')
+
+
+def _attach_upload(message, static_dir):
+    """An image the person sent goes to the model as the image itself, on
+    their message, instead of waiting for a tool call to describe it."""
+    m = _UPLOAD_TAG.match(str(message.get("content") or ""))
+    if not m or not m.group(2).lower().endswith(_IMAGE_EXTS) or not static_dir or not _sees_images():
+        return
+    got = _image_data_url(os.path.join(static_dir, os.path.basename(m.group(2))))
+    if got:
+        message["images"] = [got[0]]
+
 
 def _with_tool_images(messages):
     """`messages` with each tool result's images following it as user content.
@@ -957,7 +1022,8 @@ def _with_tool_images(messages):
         images = m.get("images") or ()
         if not images:
             continue
-        label = f"Image returned by {m.get('name') or 'the tool'}:"
+        label = ("The image they sent:" if m.get("role") == "user"
+                 else f"Image returned by {m.get('name') or 'the tool'}:")
         out.append({"role": "user", "content": [
             {"type": "text", "text": label},
             *({"type": "image_url", "image_url": {"url": url}} for url in images),
@@ -2361,7 +2427,8 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "get_image_description",
-                "description": "Returns a detailed description of an image in /static.",
+                "description": "Look at an image in /static (an upload, a photo, a screenshot): "
+                               "you see the image itself.",
                 "parameters": {
                     "type": "object",
                     "properties": { "filename": { "type": "string" } },
@@ -3535,6 +3602,20 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return f"Added the '{name}' section to context.md."
 
     if command_name == 'get_image_description':
+        # The model looks at the image itself when it can: a description is a
+        # second model's summary, and loses what that model didn't think to
+        # say. The vision provider below is for a chain that can't take images.
+        if _sees_images():
+            filename, error = _filename_arg(args_dict, take_basename=True)
+            if error:
+                return error
+            if not os.path.isfile(static_dir + filename):
+                return "File not found."
+            got = _image_data_url(static_dir + filename)
+            if got is None:
+                return f"{filename} isn't an image that can be opened."
+            url, (w, h) = got
+            return mcp_client.ToolText(f"{filename} ({w}×{h}) is attached below: look at it directly.", [url])
         vision_provider_name = read_vision_provider()
         if not vision_provider_name:
             return "Image description isn't configured — pick a provider in Settings → Vision Model."
@@ -4794,6 +4875,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
 
         agent_messages.append({"role": "user", "content": user_input,
                                "ts": datetime.now().strftime(PING_TIME_FORMAT)})
+        try:
+            _attach_upload(agent_messages[-1], sess.static_dir)
+            if agent_messages[-1].get("images"):
+                _prune_history_images(agent_messages)
+        except Exception:                                # noqa: BLE001 — the text still goes
+            logger.exception("Couldn't attach the uploaded image")
         agent_input = user_input
         if routed:
             route, groups, sections = routed
