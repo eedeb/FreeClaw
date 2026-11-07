@@ -671,7 +671,11 @@ def _extract_message(resp):
     ctype = resp.headers.get("Content-Type", "")
     if "text/event-stream" in ctype:
         found = None
-        for line in resp.text.splitlines():
+        # Always UTF-8 (the SSE spec says so). resp.text guessed ISO-8859-1
+        # for a text/* type with no charset, so every non-ASCII character a
+        # server sent (curly quotes, accents, emoji: Composio's results)
+        # reached the agent garbled: "shouldn't" as "shouldnât".
+        for line in resp.content.decode("utf-8", "replace").splitlines():
             line = line.strip()
             if not line.startswith("data:"):
                 continue
