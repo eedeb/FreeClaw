@@ -695,6 +695,9 @@ TOOLS = [
             "wait": {"type": "integer", "description": f"ms after load before the steps; default "
                                                        f"{dev_check.WAIT_DEFAULT_MS}."},
             "screenshot": {"type": "boolean"},
+            "size": {"type": "string", "description": "Viewport WIDTHxHEIGHT, e.g. 1080x1350."},
+            "save": {"type": "string", "description": "Write the page as an image here (.png/.jpg) at "
+                                                      "`size`: a post, card or diagram drawn in HTML/CSS."},
         }, "required": ["path"]},
     },
 ]
@@ -967,13 +970,28 @@ class Tools:
         expression = args.get("eval")
         if expression is not None and not isinstance(expression, str):
             raise ToolError("eval must be a string.")
+        size = None
+        if args.get("size"):
+            m = re.fullmatch(r"\s*(\d{1,5})\s*[x×]\s*(\d{1,5})\s*", str(args["size"]))
+            if not m or not all(16 <= int(v) <= dev_check.SIZE_MAX for v in m.groups()):
+                raise ToolError(f"size is WIDTHxHEIGHT, each 16 to {dev_check.SIZE_MAX}, e.g. 1080x1350.")
+            size = (int(m.group(1)), int(m.group(2)))
+        save = None
+        if args.get("save"):
+            save = resolve(root, args.get("save"))
+            if not save.lower().endswith((".png", ".jpg", ".jpeg")):
+                raise ToolError("save must end in .png, .jpg or .jpeg.")
+            if os.path.isdir(save):
+                raise ToolError(f"{rel_of(root, save)} is a folder.")
         try:
             text, png = dev_check.check(folder, page, rel_of(root, folder), wait, [str(s) for s in steps],
-                                        expression or None, bool(args.get("screenshot")))
+                                        expression or None, bool(args.get("screenshot")), size, save)
         except dev_check.CheckError as e:
             raise ToolError(str(e))
         except ImportError:
             raise ToolError("check needs playwright and Chromium, which aren't installed here.")
+        if save:
+            text = text.replace(f"Saved {os.path.basename(save)} ", f"Saved {rel_of(root, save)} ", 1)
         return text if png is None else (text, png)
 
     # preview

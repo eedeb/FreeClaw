@@ -451,6 +451,18 @@ class TestCheck(Workspace):
         self.assertIn("Unknown step", self.error("check", path="index.html", steps=["dance"]))
         self.assertIn("nothing visible", self.error("check", path="index.html", steps=["click Nope"]))
 
+    def test_save_as_image(self):
+        self.put("post/index.html", "<style>body{margin:0;background:#123}</style><h1>Post</h1>")
+        out = self.call("check", path="post", size="300x200", save="post/out.jpg")
+        self.assertIn("Saved post/out.jpg (300×200", out)
+        with open(os.path.join(self.root, "post", "out.jpg"), "rb") as f:
+            data = f.read()
+        self.assertTrue(data.startswith(b"\xff\xd8"), "a JPEG")
+        out = self.call("check", path="post", save="renders/out.png")
+        self.assertIn("Saved renders/out.png (960×640", out)
+        self.assertIn("save must end", self.error("check", path="post", save="post/out.gif"))
+        self.assertIn("size is WIDTHxHEIGHT", self.error("check", path="post", size="9999x10", save="a.png"))
+
 
 class TestOffSwitch(unittest.TestCase):
     def test_disabled(self):
