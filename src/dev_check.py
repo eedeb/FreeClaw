@@ -145,10 +145,18 @@ def _step(page, step):
     return 0
 
 
+SIZE_MAX = 4096                 # pixels either way, for a saved image
+
+
 def check(folder, page_rel, root_rel, wait_ms=WAIT_DEFAULT_MS, steps=(), expression=None,
-          screenshot=False):
+          screenshot=False, size=None, save=None):
     """Load `page_rel` (inside `folder`, the site's root), run `steps`, and
-    return (report text, png bytes or None)."""
+    return (report text, png bytes or None).
+
+    `size` (width, height) sets the viewport. `save`, an absolute path ending
+    .png, .jpg or .jpeg, writes the viewport there as an image at exactly that
+    size — a page drawn as a picture (a post, a card, a diagram) — and only a
+    line about it comes back, not the image."""
     from playwright.sync_api import sync_playwright, Error as PlaywrightError
 
     if len(steps) > STEPS_MAX:
@@ -205,8 +213,9 @@ def check(folder, page_rel, root_rel, wait_ms=WAIT_DEFAULT_MS, steps=(), express
         except PlaywrightError as e:
             raise CheckError(f"Couldn't start the browser: {_cut(str(e).splitlines()[0], 160)}")
         try:
-            context = browser.new_context(viewport=VIEWPORT, service_workers="block",
-                                          accept_downloads=False)
+            viewport = {"width": size[0], "height": size[1]} if size else VIEWPORT
+            context = browser.new_context(viewport=viewport, device_scale_factor=1,
+                                          service_workers="block", accept_downloads=False)
             page = context.new_page()
             page.on("console", note_console)
             page.on("pageerror", note_error)
@@ -250,6 +259,11 @@ def check(folder, page_rel, root_rel, wait_ms=WAIT_DEFAULT_MS, steps=(), express
                 text = ""
             if screenshot:
                 shot = page.screenshot(type="png")
+            if save:
+                jpeg = save.lower().endswith((".jpg", ".jpeg"))
+                os.makedirs(os.path.dirname(save), exist_ok=True)
+                page.screenshot(path=save, type="jpeg" if jpeg else "png",
+                                **({"quality": 92} if jpeg else {}))
         finally:
             browser.close()
 
@@ -278,6 +292,9 @@ def check(folder, page_rel, root_rel, wait_ms=WAIT_DEFAULT_MS, steps=(), express
     out.append(f"Title: {_cut(title, 120) or '(none)'}")
     visible = _cut(text, TEXT_CHARS)
     out.append(f"Text: {visible}" if visible else "Text: (nothing visible; a canvas, or blank)")
+    if save:
+        w, h = (size or (VIEWPORT["width"], VIEWPORT["height"]))
+        out.append(f"Saved {os.path.basename(save)} ({w}×{h}, {max(1, os.path.getsize(save) // 1024)} KB).")
     if expression:
         value = str(value)
         if len(value) > EVAL_CHARS:
