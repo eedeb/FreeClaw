@@ -58,6 +58,60 @@ class TestPaths(Workspace):
         self.call("ls")
         self.assertTrue(os.path.isdir(self.root))
 
+    def test_files_style_path_is_the_same_file(self):
+        # Files and the agent's other tools call it projects/drafts/a.txt.
+        self.call("write", path="projects/drafts/a.txt", content="hi\n")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "drafts", "a.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "projects")))
+        self.assertIn("hi", self.call("read", path="projects/drafts/a.txt"))
+        self.assertIn("hi", self.call("read", path="files/projects/drafts/a.txt"))
+        self.assertIn("a.txt", self.call("ls", path="projects"))
+        self.assertIn("drafts", self.call("ls", path="projects/"))
+
+    def test_a_real_projects_folder_still_wins(self):
+        self.put("projects/old.txt", "kept\n")
+        self.assertIn("kept", self.call("read", path="projects/old.txt"))
+
+    def test_not_found_names_the_path_given(self):
+        self.assertIn("projects/nope.txt: not found", self.error("read", path="projects/nope.txt"))
+
+
+class TestRunFiles(Workspace):
+    def test_run_lists_what_it_wrote(self):
+        self.put("drafts/r/make.py", "open('out.mp4', 'w').write('x' * 2048)\n")
+        out = self.call("run", file="drafts/r/make.py")
+        self.assertIn("Files it wrote", out)
+        # Relative to where it ran (the root), and where that is in their files.
+        self.assertIn("out.mp4 · 2.0 KB (in your files: projects/out.mp4)", out)
+
+    def test_run_groups_a_folder_of_frames(self):
+        self.put("gen.py", "import os\nos.makedirs('d/frames', exist_ok=True)\n"
+                           "[open(f'd/frames/{i}.jpg', 'w').write('x') for i in range(30)]\n"
+                           "open('d/reel.mp4', 'w').write('v')\n")
+        out = self.call("run", file="gen.py")
+        self.assertIn("d/frames/ · 30 files", out)
+        self.assertIn("d/reel.mp4", out)
+        self.assertNotIn("d/frames/7.jpg", out)
+
+    def test_run_that_writes_nothing_says_nothing_more(self):
+        self.put("q.py", "print('hi')\n")
+        out = self.call("run", file="q.py")
+        self.assertIn("hi", out)
+        self.assertNotIn("Files it wrote", out)
+        self.assertNotIn("q.py", out.split("\n", 1)[1].replace("hi", ""))
+
+    def test_run_warns_about_a_folder_in_itself(self):
+        out = self.call("run", command="mkdir -p projects/drafts && echo x > projects/drafts/n.txt")
+        self.assertIn("projects/projects/", out)
+        self.assertIn("(in your files: projects/projects/drafts/n.txt)", out)
+
+    def test_run_folder_named_the_files_way_is_explained(self):
+        self.put("drafts/s.py", "print(1)\n")
+        err = self.error("run", file="s.py", path="projects/drafts")
+        self.assertIn("use drafts", err)
+        err = self.error("run", file="projects/drafts/s.py")
+        self.assertIn("use drafts/s.py", err)
+
     def test_no_workspace(self):
         with mock.patch.dict(os.environ, {"FC_DEV_WORKSPACE": ""}):
             self.assertIn("No workspace", self.error("ls"))
