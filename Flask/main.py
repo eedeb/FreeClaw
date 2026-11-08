@@ -1668,11 +1668,13 @@ def api_dev_run():
     if err:
         return err
     run_args = {'file': args.get('path'), 'args': []}
-    shown, error = dev_server.command_line(run_args)
+    # The person's own Run: from the workspace, files named as this page
+    # names them (the agent's runs start at the top of their files).
+    shown, error = dev_server.command_line(run_args, files=False)
     if error:
         return jsonify({'error': error}), 400
     try:
-        argv, popen_kwargs = dev_server.argv_for(root, run_args)
+        argv, popen_kwargs = dev_server.argv_for(root, run_args, files=False)
         proc = dev_server.spawn(argv, root, popen_kwargs)
     except dev_server.ToolError as e:
         return jsonify({'error': str(e)}), 400

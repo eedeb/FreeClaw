@@ -5514,7 +5514,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         where = "GitHub"
                     else:
                         gated, invalid = dev_server.command_line(args_dict)
-                        where = "projects/"
+                        # Where the run starts (dev_server.files_top).
+                        where = "your files"
                     verdict = approvals.NO_COMMAND if invalid else approvals.check(gated)
                     if invalid:
                         # Malformed, so nothing to approve: the model is told

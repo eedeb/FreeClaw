@@ -83,14 +83,14 @@ class TestPaths(Workspace):
 
 class TestRunFiles(Workspace):
     def test_run_says_where_it_ran_and_what_it_wrote(self):
-        self.put("drafts/r/make.py", "open('out.mp4', 'w').write('x' * 2048)\n")
-        out = self.call("run", file="drafts/r/make.py")
+        self.put("drafts/r/make.py", "open('projects/drafts/r/out.mp4', 'w').write('x' * 2048)\n")
+        out = self.call("run", file="projects/drafts/r/make.py")
         self.assertTrue(out.startswith("exit 0 · "), out)
-        self.assertIn("ran in projects/", out.splitlines()[0])
-        # Relative paths in it are from where it ran, and the file is named
-        # the way every tool takes it.
-        self.assertIn("Files it wrote:\n  projects/out.mp4 · 2.0 KB", out)
-        self.assertIn("x", self.call("read", path="projects/out.mp4"))
+        self.assertIn("ran at the top of their files", out.splitlines()[0])
+        # A path in the command is the path every tool shows, and the file it
+        # wrote is named the same way.
+        self.assertIn("Files it wrote:\n  projects/drafts/r/out.mp4 · 2.0 KB", out)
+        self.assertIn("x", self.call("read", path="projects/drafts/r/out.mp4"))
 
     def test_run_in_a_folder_says_so(self):
         self.put("drafts/r/make.py", "open('out.txt', 'w').write('x')\n")
@@ -98,18 +98,25 @@ class TestRunFiles(Workspace):
         self.assertIn("ran in projects/drafts/r/", out.splitlines()[0])
         self.assertIn("projects/drafts/r/out.txt", out)
 
-    def test_run_takes_shown_paths_and_shows_what_runs(self):
-        self.assertEqual(dev.command_line({"file": "projects/drafts/s.py"}), ("python drafts/s.py", None))
+    def test_run_names_paths_the_way_the_tools_do(self):
+        self.assertEqual(dev.command_line({"file": "projects/drafts/s.py"}), ("python projects/drafts/s.py", None))
+        self.assertEqual(dev.command_line({"file": "drafts/s.py"}), ("python projects/drafts/s.py", None))
         self.assertEqual(dev.command_line({"command": "ls", "path": "projects/drafts"}),
-                         ("cd drafts && ls", None))
-        self.assertEqual(dev.command_line({"command": "ls", "path": "projects"}), ("ls", None))
+                         ("cd projects/drafts && ls", None))
+        self.assertEqual(dev.command_line({"command": "ls", "path": "projects"}), ("cd projects && ls", None))
         self.put("drafts/s.py", "print('ran')\n")
         self.assertIn("ran", self.call("run", file="projects/drafts/s.py"))
+        # mkdir -p projects/drafts/x from the top is the workspace's drafts/x:
+        # no projects/ inside projects/.
+        out = self.call("run", command="mkdir -p projects/drafts/x && echo n > projects/drafts/x/n.txt")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "drafts", "x", "n.txt")), out)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "projects")))
+        self.assertIn("projects/drafts/x/n.txt", out)
 
     def test_run_groups_a_folder_of_frames(self):
-        self.put("gen.py", "import os\nos.makedirs('d/frames', exist_ok=True)\n"
-                           "[open(f'd/frames/{i}.jpg', 'w').write('x') for i in range(30)]\n"
-                           "open('d/reel.mp4', 'w').write('v')\n")
+        self.put("gen.py", "import os\nos.makedirs('projects/d/frames', exist_ok=True)\n"
+                           "[open(f'projects/d/frames/{i}.jpg', 'w').write('x') for i in range(30)]\n"
+                           "open('projects/d/reel.mp4', 'w').write('v')\n")
         out = self.call("run", file="gen.py")
         self.assertIn("projects/d/frames/ · 30 files", out)
         self.assertIn("projects/d/reel.mp4", out)
@@ -307,9 +314,13 @@ class TestSearch(Workspace):
 
 class TestRun(Workspace):
     def test_command_line(self):
+        # The agent's runs start at the top of their files, so a file is named
+        # the way every tool shows it.
         self.assertEqual(dev.command_line({"file": "app.py", "args": ["a b", "c"]}),
-                         ("python app.py 'a b' c", None))
-        self.assertEqual(dev.command_line({"file": "go.sh"}), ("bash go.sh", None))
+                         ("python projects/app.py 'a b' c", None))
+        self.assertEqual(dev.command_line({"file": "go.sh"}), ("bash projects/go.sh", None))
+        # The Developer app's Run button runs from the workspace.
+        self.assertEqual(dev.command_line({"file": "app.py"}, files=False), ("python app.py", None))
         self.assertEqual(dev.command_line({"command": " ls -la "}), ("ls -la", None))
         for bad in ({}, {"command": "ls", "file": "a.py"}, {"file": "a.rb"},
                     {"file": "a.py", "args": "x"}, {"command": "ls", "args": ["x"]},
@@ -318,7 +329,8 @@ class TestRun(Workspace):
                 self.assertIsNone(dev.command_line(bad)[0])
         # A folder to run in is allowed only as part of the shown command, so
         # what's approved (and what a saved rule matches) is what runs.
-        self.assertEqual(dev.command_line({"file": "a.py", "cwd": "other"}), ("cd other && python a.py", None))
+        self.assertEqual(dev.command_line({"file": "a.py", "cwd": "other"}),
+                         ("cd projects/other && python a.py", None))
 
     def test_python_file_with_args(self):
         self.put("hello.py", "import sys\nprint('hi', *sys.argv[1:])\n")
@@ -326,10 +338,11 @@ class TestRun(Workspace):
         self.assertTrue(out.startswith("exit 0 · "), out)
         self.assertIn("hi there", out)
 
-    def test_bash_command_runs_in_workspace(self):
+    def test_bash_command_runs_at_the_top_of_their_files(self):
         self.put("marker.txt", "")
-        out = self.call("run", command="ls; echo oops >&2; exit 3")
+        out = self.call("run", command="ls projects; echo oops >&2; exit 3")
         self.assertTrue(out.startswith("exit 3"), out)
+        self.assertIn("ran at the top of their files", out.splitlines()[0])
         self.assertIn("marker.txt", out)
         self.assertIn("oops", out)
 
@@ -379,8 +392,8 @@ class TestArgumentNames(Workspace):
 
     def test_run_in_a_folder(self):
         self.assertEqual(dev.command_line({"command": "python3 x.py", "path": "app"}),
-                         ("cd app && python3 x.py", None))
-        self.assertEqual(dev.command_line({"file": "x.py", "cwd": "app/"}), ("cd app && python x.py", None))
+                         ("cd projects/app && python3 x.py", None))
+        self.assertEqual(dev.command_line({"file": "x.py", "cwd": "app/"}), ("cd projects/app && python x.py", None))
         self.assertIn("ok", self.call("run", command="python3 x.py", path="app"))
 
     def test_run_folder_stays_inside(self):
