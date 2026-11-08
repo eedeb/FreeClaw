@@ -1,4 +1,5 @@
-"""The Files panel plays videos: _file_kind says 'video', and the raw bytes
+"""The Files panel plays videos and audio: _file_kind says 'video' or
+'audio', and the raw bytes
 come back seekable (a Range request gets 206) with a video type.
 
     python tests/test_files_video.py
@@ -33,6 +34,8 @@ class FilesVideo(unittest.TestCase):
         clip = b"\x00\x00\x00\x18ftypmp42" + b"x" * 4000
         for name in ("a.mp4", "b.MOV", "c.webm", "d.m4v", "e.ogv"):
             self.assertEqual(main._file_kind(self.write(name, clip)), "video", name)
+        for name in ("a.mp3", "b.WAV", "c.m4a", "d.ogg", "e.opus", "f.flac", "g.aac", "h.oga"):
+            self.assertEqual(main._file_kind(self.write(name, b"ID3\x00" + b"x" * 400)), "audio", name)
         self.assertEqual(main._file_kind(self.write("p.png", b"\x89PNG")), "image")
         self.assertEqual(main._file_kind(self.write("t.txt", b"hello")), "text")
         self.assertEqual(main._file_kind(self.write("z.zip", b"PK\x00\x00")), "binary")
