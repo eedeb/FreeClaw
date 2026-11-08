@@ -66,6 +66,10 @@ READ_LINE_CHARS = 400
 LS_DEFAULT_DEPTH = 2
 LS_MAX_DEPTH = 5
 LS_MAX_ENTRIES = 200
+# More files than this of one kind in a folder are one line ("480 .jpg files:
+# 0000.jpg … 0479.jpg"): rendered frames, a dataset or a photo dump would
+# otherwise fill the listing with names nobody reads. ls with all names each.
+LS_GROUP_OVER = 20
 
 # search: hits per call, characters of each hit's line, and the largest file
 # it bothers to open (anything bigger is data, not source).
@@ -716,6 +720,7 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {
             "path": _PATH,
             "depth": {"type": "integer", "description": f"Default {LS_DEFAULT_DEPTH}, max {LS_MAX_DEPTH}."},
+            "all": {"type": "boolean", "description": "Name every file, even in a folder of many."},
         }},
     },
     {
@@ -886,7 +891,28 @@ class Tools:
         if not os.path.isdir(top):
             raise ToolError(f"{args.get('path')}: not a folder. Use read for files.")
         depth = _int(args.get("depth"), "depth", LS_DEFAULT_DEPTH, 1, LS_MAX_DEPTH)
+        every = bool(args.get("all"))
         lines, more = [], 0
+
+        def grouped(folder, names, level):
+            """The files of `names` as lines, in name order: each one, except
+            that more than LS_GROUP_OVER of one kind (rendered frames, a photo
+            dump) are one line, where the first of them would be."""
+            files = [n for n in names if not os.path.isdir(os.path.join(folder, n))]
+            kinds = {}
+            for n in files:
+                kinds.setdefault(os.path.splitext(n)[1].lower(), []).append(n)
+            big = {ext: group for ext, group in kinds.items() if len(group) > LS_GROUP_OVER and not every}
+            out = []
+            for n in files:
+                ext = os.path.splitext(n)[1].lower()
+                if ext not in big:
+                    out.append("  " * level + n)
+                elif n == big[ext][0]:
+                    group = big[ext]
+                    kind = f"{ext} files" if ext else "files with no extension"
+                    out.append("  " * level + f"{len(group)} {kind}: {group[0]} … {group[-1]}")
+            return out
 
         def walk(folder, level):
             nonlocal more
@@ -894,20 +920,25 @@ class Tools:
                 names = sorted(os.listdir(folder), key=lambda n: (not os.path.isdir(os.path.join(folder, n)), n.lower()))
             except OSError:
                 return
-            for name in names:
+            dirs = [n for n in names if os.path.isdir(os.path.join(folder, n))]
+            for name in dirs:
                 full = os.path.join(folder, name)
-                is_dir = os.path.isdir(full)
                 if len(lines) >= LS_MAX_ENTRIES:
                     more += 1
                     continue
-                if is_dir and name in SKIP_DIRS:
+                if name in SKIP_DIRS:
                     lines.append("  " * level + name + "/ (skipped)")
                     continue
-                lines.append("  " * level + name + ("/" if is_dir else ""))
+                lines.append("  " * level + name + "/")
                 # Not into a link: it could lead out of the workspace, or round
                 # in a circle.
-                if is_dir and level + 1 < depth and not os.path.islink(full):
+                if level + 1 < depth and not os.path.islink(full):
                     walk(full, level + 1)
+            for line in grouped(folder, names, level):
+                if len(lines) >= LS_MAX_ENTRIES:
+                    more += 1
+                    continue
+                lines.append(line)
 
         walk(top, 0)
         if not lines:
