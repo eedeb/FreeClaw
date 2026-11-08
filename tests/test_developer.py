@@ -138,10 +138,43 @@ class TestLs(Workspace):
     def test_entry_cap(self):
         for i in range(dev.LS_MAX_ENTRIES + 25):
             self.put(f"f{i:04}.txt", "")
-        out = self.call("ls")
+        out = self.call("ls", all=True)
         # The folder it listed, the entries, and the note about the rest.
         self.assertEqual(len(out.splitlines()), dev.LS_MAX_ENTRIES + 2)
         self.assertIn("25+ more entries", out)
+
+    def test_a_folder_of_many_files_is_listed_by_kind(self):
+        for i in range(480):
+            self.put(f"reel/frames/{i:04}.jpg", "")
+        self.put("reel/frames/notes.txt", "")
+        self.put("reel/make.py", "")
+        out = self.call("ls", path="reel")
+        self.assertIn("frames/", out)
+        self.assertIn("480 .jpg files: 0000.jpg … 0479.jpg", out)
+        self.assertIn("notes.txt", out)
+        self.assertIn("make.py", out)
+        self.assertNotIn("0001.jpg", out)
+        self.assertLess(len(out.splitlines()), 10)
+        # all: each one by name.
+        self.assertIn("0001.jpg", self.call("ls", path="reel/frames", all=True))
+
+    def test_a_few_files_are_still_named(self):
+        for i in range(dev.LS_GROUP_OVER):
+            self.put(f"s/{i:02}.png", "")
+        for i in range(10):
+            self.put(f"s/{i}.txt", "")
+        out = self.call("ls", path="s")
+        self.assertIn("00.png", out)
+        self.assertIn("19.png", out)
+        self.assertNotIn("files:", out)
+
+    def test_grouped_line_keeps_name_order(self):
+        self.put("r/a.py", "")
+        for i in range(30):
+            self.put(f"r/b{i:02}.jpg", "")
+        self.put("r/z.txt", "")
+        lines = [l.strip() for l in self.call("ls", path="r").splitlines()[1:]]
+        self.assertEqual(lines, ["a.py", "30 .jpg files: b00.jpg … b29.jpg", "z.txt"])
 
 
 class TestRead(Workspace):
