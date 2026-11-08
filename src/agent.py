@@ -2309,7 +2309,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Reads a file from /static — ping.md, and created or uploaded files. "
+                "description": "Reads a file from their files — ping.md, and created or uploaded files. "
                                "PDFs come back as their text page by page, with scanned pages as images.",
                 "parameters": {
                     "type": "object",
@@ -2326,8 +2326,9 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "Lists the files in /static.",
-                "parameters": { "type": "object", "properties": {} }
+                "description": "Lists a folder of their files (default: the top); folders end in /.",
+                "parameters": { "type": "object", "properties": {
+                    "path": { "type": "string", "description": "A folder, as the tools show it." } } }
             }
         },
         {
@@ -2364,7 +2365,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "delete_file",
-                "description": "Deletes a file from /static. Never delete context.md or ping.md.",
+                "description": "Deletes a file from their files. Never delete context.md or ping.md.",
                 "parameters": {
                     "type": "object",
                     "properties": { "filename": { "type": "string" } },
@@ -2411,7 +2412,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Replaces one exact string in an existing /static file. Use this, not create_file, to change existing content — ping.md, or fixing or removing a context.md line.",
+                "description": "Replaces one exact string in an existing file of theirs. Use this, not create_file, to change existing content — ping.md, or fixing or removing a context.md line.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2427,7 +2428,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "get_image_description",
-                "description": "Look at an image in /static (an upload, a photo, a screenshot): "
+                "description": "Look at an image in their files (an upload, a photo, a screenshot): "
                                "you see the image itself.",
                 "parameters": {
                     "type": "object",
@@ -3161,24 +3162,48 @@ _PROTECTED_FILES = {
 }
 
 
-def _filename_arg(args_dict, take_basename=False):
-    """The tool call's `filename` argument as (filename, error) — exactly one
-    of the two is set. Centralises the missing-name and path-separator checks
-    that every file tool needs, so a call without a filename gets a clear
-    error the model can act on instead of a Python traceback.
+def _filename_arg(args_dict, take_basename=False, root=None):
+    """The tool call's `filename` argument as (path, error) — exactly one of
+    the two is set. The path is relative to the person's files and may go
+    into folders (projects/drafts/notes.md), the same path the Files panel,
+    the Developer tools and the rest name the file by. Centralises the
+    missing-name and stay-inside checks every file tool needs, so a bad call
+    gets a clear error the model can act on instead of a traceback.
 
-    take_basename: for read-style tools, where uploaded files are referenced
-    by their full "static/..." path in the chat tag rather than a bare
-    filename — take just the basename so both forms resolve against this
-    session's static_dir."""
-    name = str(args_dict.get('filename') or '').strip()
-    if take_basename:
-        name = os.path.basename(name)
+    take_basename: for read-style tools. An upload is referenced in the chat
+    by its URL path (static/<user>/files/<name>), which is taken as its path
+    here; and a path that doesn't exist falls back to a file of that name at
+    the top, which is where every file used to be.
+
+    root: the files folder; when given, a path that a link would lead out of
+    is refused too."""
+    name = str(args_dict.get('filename') or '').strip().replace("\\", "/")
     if not name:
         return None, "Error: a filename is required."
-    if "/" in name or "\\" in name:
-        return None, "Invalid filename — use a bare filename, no directories."
-    return name, None
+    if "\x00" in name:
+        return None, "Invalid filename."
+    if take_basename and name.lstrip("/").startswith("static/"):
+        rest = name.lstrip("/")
+        name = rest.split("/files/", 1)[1] if "/files/" in rest else os.path.basename(rest)
+    if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+        return None, "Invalid filename — use a path inside their files, like the tools show."
+    if name.startswith("files/"):
+        name = name[len("files/"):]
+    parts = [p for p in name.split("/") if p not in ("", ".")]
+    if not parts:
+        return None, "Error: a filename is required."
+    if ".." in parts:
+        return None, "Invalid filename — '..' isn't allowed; paths stay inside their files."
+    rel = "/".join(parts)
+    if root:
+        top = os.path.realpath(root)
+        full = os.path.realpath(os.path.join(top, rel))
+        if full != top and not full.startswith(top.rstrip(os.sep) + os.sep):
+            return None, "Invalid filename — that path leads outside their files."
+        if take_basename and len(parts) > 1 and not os.path.exists(full) \
+                and os.path.isfile(os.path.join(top, parts[-1])):
+            rel = parts[-1]
+    return rel, None
 
 
 # ── recall: keyword search over memory and past conversation ─
@@ -3497,7 +3522,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return scraper.get_result(parameter)
 
     if command_name == 'read_file':
-        filename, error = _filename_arg(args_dict, take_basename=True)
+        filename, error = _filename_arg(args_dict, take_basename=True, root=static_dir)
         if error:
             return error
         # The system prompt says never to read context.md with a tool, and a
@@ -3606,7 +3631,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         # second model's summary, and loses what that model didn't think to
         # say. The vision provider below is for a chain that can't take images.
         if _sees_images():
-            filename, error = _filename_arg(args_dict, take_basename=True)
+            filename, error = _filename_arg(args_dict, take_basename=True, root=static_dir)
             if error:
                 return error
             if not os.path.isfile(static_dir + filename):
@@ -3627,7 +3652,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         if not provider.get("model"):
             return f"Provider '{vision_provider_name}' has no model set — add one in Settings → Providers to use it for vision."
 
-        filename, error = _filename_arg(args_dict, take_basename=True)
+        filename, error = _filename_arg(args_dict, take_basename=True, root=static_dir)
         if error:
             return error
         file_location = static_dir+filename
@@ -3703,17 +3728,29 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return datetime.now().strftime(PING_TIME_FORMAT)
 
     if command_name == 'list_files':
-        return "Files in static directory: "+", ".join(os.listdir(static_dir))
+        folder = ""
+        if str(args_dict.get('path') or '').strip() not in ("", ".", "/"):
+            folder, error = _filename_arg({'filename': args_dict.get('path')}, root=static_dir)
+            if error:
+                return error
+        here = os.path.join(static_dir, folder) if folder else static_dir
+        if not os.path.isdir(here):
+            return f"{folder}: not a folder." if os.path.exists(here) else f"{folder}: not found."
+        names = sorted(os.listdir(here), key=lambda n: (not os.path.isdir(os.path.join(here, n)), n.lower()))
+        shown = [n + "/" if os.path.isdir(os.path.join(here, n)) else n for n in names]
+        where = folder + "/" if folder else "their files"
+        return f"In {where}: " + (", ".join(shown) if shown else "nothing")
 
     if command_name == 'read_web':
         return scraper.scrape(parameter)
 
     if command_name == 'create_file':
-        filename, error = _filename_arg(args_dict)
+        filename, error = _filename_arg(args_dict, root=static_dir)
         if error:
             return error
         contents = args_dict.get('contents') or ''
         path = static_dir + filename
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         # "w" truncates, which on context.md would silently destroy every fact
         # learned so far — and create_file is exactly what a model reaches for
         # when it wants to "save" something. Append there instead, so memory
@@ -3728,7 +3765,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return "Your file is accessible at "+_static_url(static_dir, filename)
 
     if command_name == 'delete_file':
-        filename, error = _filename_arg(args_dict)
+        filename, error = _filename_arg(args_dict, root=static_dir)
         if error:
             return error
         protected = _PROTECTED_FILES.get(filename.lower())
@@ -3743,7 +3780,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return "File not found."
 
     if command_name == 'edit_file':
-        filename, error = _filename_arg(args_dict)
+        filename, error = _filename_arg(args_dict, root=static_dir)
         if error:
             return error
         old_str = args_dict.get('old_str')
@@ -3777,9 +3814,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     if command_name == 'cancel_ping':
         return _remove_ping(static_dir, args_dict.get('match'))
     if command_name == 'create_page':
-        filename, error = _filename_arg(args_dict)
+        filename, error = _filename_arg(args_dict, root=static_dir)
         if error:
             return error
+        os.makedirs(os.path.dirname(static_dir + filename), exist_ok=True)
         with open(static_dir+filename, "w", encoding="utf-8") as f:
             f.write(args_dict.get('contents') or '')
         return "Your site is live at "+_static_url(static_dir, filename)
