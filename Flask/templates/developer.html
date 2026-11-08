@@ -363,7 +363,15 @@
   // The open file: its path, the modified time we last loaded or saved, and
   // the text as it was then (dirty = the textarea differs from it).
   const open = { path: null, modified: 0, saved: '' };
-  const collapsed = new Set();
+  // Folders the person has opened. Everything starts closed, so the tree
+  // shows what's at the top and a folder's contents only on a click.
+  const expanded = new Set();
+  const isClosed = path => !expanded.has(path);
+  // A file being opened shows where it is: its folders open.
+  const reveal = path => {
+    const parts = path.split('/');
+    for (let i = 1; i < parts.length; i++) expanded.add(parts.slice(0, i).join('/'));
+  };
   let files = [], folders = [], running = null;
 
   const q = params => new URLSearchParams({ user: USER, ...params }).toString();
@@ -434,7 +442,7 @@
       const data = await api('POST', '/api/dev/rename', { from: path, to });
       if (open.path === path) open.path = data.path;
       else if (open.path && open.path.startsWith(path + '/')) open.path = data.path + open.path.slice(path.length);
-      collapsed.delete(folder);
+      if (folder) expanded.add(folder);
       await loadTree();
       syncBar();
     } catch (e) { alert(e.message); }
@@ -466,7 +474,7 @@
       return;
     }
     // Folders and files in one sorted list, each under its parent, folders
-    // first, with a folder's contents left out while it's collapsed.
+    // first, with a folder's contents left out while it's closed.
     const rows = [...folders.map(p => ({ path: p, dir: true })), ...files.map(f => ({ path: f.path, dir: false }))]
       .sort((a, b) => {
         const pa = a.path.split('/'), pb = b.path.split('/');
@@ -480,7 +488,7 @@
       });
     for (const row of rows) {
       const parts = row.path.split('/');
-      const hidden = parts.slice(0, -1).some((_, i) => collapsed.has(parts.slice(0, i + 1).join('/')));
+      const hidden = parts.slice(0, -1).some((_, i) => isClosed(parts.slice(0, i + 1).join('/')));
       if (hidden) continue;
       const el = document.createElement('div');
       el.className = 'node' + (row.dir ? ' dir' : '') + (row.path === open.path ? ' active' : '');
@@ -488,7 +496,7 @@
       el.draggable = true;
       el.style.paddingLeft = (6 + (parts.length - 1) * 14) + 'px';
       el.title = row.path;
-      el.innerHTML = `<span class="caret">${row.dir ? (collapsed.has(row.path) ? '▸' : '▾') : ''}</span>`
+      el.innerHTML = `<span class="caret">${row.dir ? (isClosed(row.path) ? '▸' : '▾') : ''}</span>`
         + svg(row.dir ? 'i-folder' : 'i-file') + '<span class="name"></span>'
         + '<span class="acts"><span data-act="rename" title="Rename">Rename</span>'
         + '<span data-act="delete" title="Delete">Delete</span></span>';
@@ -498,7 +506,7 @@
         if (act === 'rename') return renameItem(row.path, row.dir);
         if (act === 'delete') return deleteItem(row.path, row.dir);
         if (row.dir) {
-          collapsed.has(row.path) ? collapsed.delete(row.path) : collapsed.add(row.path);
+          isClosed(row.path) ? expanded.add(row.path) : expanded.delete(row.path);
           renderTree();
         } else {
           openFile(row.path);
@@ -521,6 +529,7 @@
     if (path !== open.path && dirty() && !confirm(`Discard your changes to ${open.path}?`)) return;
     try {
       const data = await api('GET', '/api/dev/file?' + q({ path }));
+      reveal(data.path);
       setOpen(data.path, data.content, data.modified);
     } catch (e) {
       alert(e.message);
@@ -571,7 +580,7 @@
       // A folder is made by the first file in it; .gitkeep is the usual name
       // for "keep this empty folder" and git leaves it alone.
       await api('PUT', '/api/dev/file', { path: path + '/.gitkeep', content: '', create: true });
-      collapsed.delete(path);
+      reveal(path + '/');
       await loadTree();
     } catch (e) { alert(e.message); }
   });
