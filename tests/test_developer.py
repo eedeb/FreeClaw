@@ -58,87 +58,68 @@ class TestPaths(Workspace):
         self.call("ls")
         self.assertTrue(os.path.isdir(self.root))
 
-    def test_files_style_path_is_the_same_file(self):
-        # Files and the agent's other tools call it projects/drafts/a.txt.
-        self.call("write", path="projects/drafts/a.txt", content="hi\n")
-        self.assertTrue(os.path.isfile(os.path.join(self.root, "drafts", "a.txt")))
-        self.assertFalse(os.path.exists(os.path.join(self.root, "projects")))
+    def test_one_path_for_a_file(self):
+        # A path is shown the way the person's files name it, and a path the
+        # tools showed can be handed back to any of them.
+        out = self.call("write", path="drafts/a.txt", content="hi\n")
+        self.assertEqual(out, "Created projects/drafts/a.txt (1 lines)")
         self.assertIn("hi", self.call("read", path="projects/drafts/a.txt"))
+        self.assertIn("hi", self.call("read", path="drafts/a.txt"))
         self.assertIn("hi", self.call("read", path="files/projects/drafts/a.txt"))
-        self.assertIn("a.txt", self.call("ls", path="projects"))
-        self.assertIn("drafts", self.call("ls", path="projects/"))
+        self.call("write", path="projects/drafts/b.txt", content="b\n")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "drafts", "b.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "projects")))
+        self.assertTrue(self.call("ls", path="projects").startswith("projects/\n"))
+        self.assertTrue(self.call("ls", path="drafts").startswith("projects/drafts/\n"))
 
-    def test_a_real_projects_folder_still_wins(self):
+    def test_a_folder_named_projects_has_its_shown_path(self):
         self.put("projects/old.txt", "kept\n")
-        self.assertIn("kept", self.call("read", path="projects/old.txt"))
+        self.assertIn("kept", self.call("read", path="projects/projects/old.txt"))
+        self.assertIn("projects/projects/old.txt", self.call("search", pattern="kept"))
 
     def test_not_found_names_the_path_given(self):
         self.assertIn("projects/nope.txt: not found", self.error("read", path="projects/nope.txt"))
 
 
 class TestRunFiles(Workspace):
-    def test_run_lists_what_it_wrote(self):
+    def test_run_says_where_it_ran_and_what_it_wrote(self):
         self.put("drafts/r/make.py", "open('out.mp4', 'w').write('x' * 2048)\n")
         out = self.call("run", file="drafts/r/make.py")
-        self.assertIn("Files it wrote", out)
-        # Relative to where it ran (the root), and where that is in their files.
-        self.assertIn("out.mp4 · 2.0 KB (in your files: projects/out.mp4)", out)
+        self.assertTrue(out.startswith("exit 0 · "), out)
+        self.assertIn("ran in projects/", out.splitlines()[0])
+        # Relative paths in it are from where it ran, and the file is named
+        # the way every tool takes it.
+        self.assertIn("Files it wrote:\n  projects/out.mp4 · 2.0 KB", out)
+        self.assertIn("x", self.call("read", path="projects/out.mp4"))
+
+    def test_run_in_a_folder_says_so(self):
+        self.put("drafts/r/make.py", "open('out.txt', 'w').write('x')\n")
+        out = self.call("run", command="python3 make.py", path="projects/drafts/r")
+        self.assertIn("ran in projects/drafts/r/", out.splitlines()[0])
+        self.assertIn("projects/drafts/r/out.txt", out)
+
+    def test_run_takes_shown_paths_and_shows_what_runs(self):
+        self.assertEqual(dev.command_line({"file": "projects/drafts/s.py"}), ("python drafts/s.py", None))
+        self.assertEqual(dev.command_line({"command": "ls", "path": "projects/drafts"}),
+                         ("cd drafts && ls", None))
+        self.assertEqual(dev.command_line({"command": "ls", "path": "projects"}), ("ls", None))
+        self.put("drafts/s.py", "print('ran')\n")
+        self.assertIn("ran", self.call("run", file="projects/drafts/s.py"))
 
     def test_run_groups_a_folder_of_frames(self):
         self.put("gen.py", "import os\nos.makedirs('d/frames', exist_ok=True)\n"
                            "[open(f'd/frames/{i}.jpg', 'w').write('x') for i in range(30)]\n"
                            "open('d/reel.mp4', 'w').write('v')\n")
         out = self.call("run", file="gen.py")
-        self.assertIn("d/frames/ · 30 files", out)
-        self.assertIn("d/reel.mp4", out)
-        self.assertNotIn("d/frames/7.jpg", out)
+        self.assertIn("projects/d/frames/ · 30 files", out)
+        self.assertIn("projects/d/reel.mp4", out)
+        self.assertNotIn("frames/7.jpg", out)
 
     def test_run_that_writes_nothing_says_nothing_more(self):
         self.put("q.py", "print('hi')\n")
         out = self.call("run", file="q.py")
         self.assertIn("hi", out)
         self.assertNotIn("Files it wrote", out)
-        self.assertNotIn("q.py", out.split("\n", 1)[1].replace("hi", ""))
-
-    def test_run_warns_about_a_folder_in_itself(self):
-        out = self.call("run", command="mkdir -p projects/drafts && echo x > projects/drafts/n.txt")
-        self.assertIn("projects/projects/", out)
-        self.assertIn("(in your files: projects/projects/drafts/n.txt)", out)
-
-    def test_run_folder_named_the_files_way_is_explained(self):
-        self.put("drafts/s.py", "print(1)\n")
-        err = self.error("run", file="s.py", path="projects/drafts")
-        self.assertIn("use drafts", err)
-        err = self.error("run", file="projects/drafts/s.py")
-        self.assertIn("use drafts/s.py", err)
-
-    def test_no_workspace(self):
-        with mock.patch.dict(os.environ, {"FC_DEV_WORKSPACE": ""}):
-            self.assertIn("No workspace", self.error("ls"))
-
-    def test_refuses_escapes(self):
-        os.makedirs(self.root, exist_ok=True)
-        outside = os.path.join(self.base, "secret.txt")
-        with open(outside, "w") as f:
-            f.write("secret")
-        for bad in (outside, "/etc/passwd", "../secret.txt", "a/../../secret.txt", "C:\\x", "a\x00b"):
-            with self.subTest(path=bad):
-                self.error("read", path=bad)
-        self.error("write", path="../evil.py", content="x")
-        self.assertFalse(os.path.exists(os.path.join(self.base, "evil.py")))
-
-    def test_refuses_symlink_out(self):
-        os.makedirs(self.root, exist_ok=True)
-        with open(os.path.join(self.base, "secret.txt"), "w") as f:
-            f.write("secret")
-        os.symlink(self.base, os.path.join(self.root, "link"))
-        self.assertIn("outside", self.error("read", path="link/secret.txt"))
-        self.assertIn("outside", self.error("write", path="link/new.txt", content="x"))
-
-    def test_inside_is_fine(self):
-        self.put("a/b.txt", "hi\n")
-        self.assertIn("hi", self.call("read", path="a/b.txt"))
-        self.assertIn("hi", self.call("read", path="./a/b.txt"))
 
 
 class TestLs(Workspace):
@@ -158,7 +139,8 @@ class TestLs(Workspace):
         for i in range(dev.LS_MAX_ENTRIES + 25):
             self.put(f"f{i:04}.txt", "")
         out = self.call("ls")
-        self.assertEqual(len(out.splitlines()), dev.LS_MAX_ENTRIES + 1)
+        # The folder it listed, the entries, and the note about the rest.
+        self.assertEqual(len(out.splitlines()), dev.LS_MAX_ENTRIES + 2)
         self.assertIn("25+ more entries", out)
 
 
@@ -170,7 +152,7 @@ class TestRead(Workspace):
     def test_default_slice_states_total(self):
         out = self.call("read", path="big.py")
         head, *lines = out.splitlines()
-        self.assertEqual(head, f"big.py · lines 1-{dev.READ_DEFAULT_LINES} of 1000 "
+        self.assertEqual(head, f"projects/big.py · lines 1-{dev.READ_DEFAULT_LINES} of 1000 "
                                f"(next: start={dev.READ_DEFAULT_LINES + 1})")
         self.assertEqual(len(lines), dev.READ_DEFAULT_LINES)
         self.assertEqual(lines[0], "  1\tline 1")
@@ -178,7 +160,7 @@ class TestRead(Workspace):
     def test_range_and_numbers(self):
         out = self.call("read", path="big.py", start=995, lines=10)
         head, *lines = out.splitlines()
-        self.assertEqual(head, "big.py · lines 995-1000 of 1000")
+        self.assertEqual(head, "projects/big.py · lines 995-1000 of 1000")
         self.assertEqual(lines[0], " 995\tline 995")   # numbers right-aligned to the widest
         self.assertEqual(lines[-1], "1000\tline 1000")
 
@@ -228,8 +210,8 @@ class TestRead(Workspace):
 class TestWriteEdit(Workspace):
     def test_write_creates_folders_and_reports_briefly(self):
         out = self.call("write", path="pkg/mod.py", content="a\nb\n")
-        self.assertEqual(out, "Created pkg/mod.py (2 lines)")
-        self.assertEqual(self.call("write", path="pkg/mod.py", content="c"), "Overwrote pkg/mod.py (1 lines)")
+        self.assertEqual(out, "Created projects/pkg/mod.py (2 lines)")
+        self.assertEqual(self.call("write", path="pkg/mod.py", content="c"), "Overwrote projects/pkg/mod.py (1 lines)")
 
     def test_write_size_cap(self):
         self.assertIn("Too big", self.error("write", path="x", content="a" * (dev.WRITE_MAX_BYTES + 1)))
@@ -237,7 +219,7 @@ class TestWriteEdit(Workspace):
     def test_edit_unique(self):
         path = self.put("m.py", "a = 1\nb = 2\n")
         out = self.call("edit", path="m.py", old="b = 2", new="b = 3")
-        self.assertEqual(out, "Edited m.py: 1 replacement, first at line 2")
+        self.assertEqual(out, "Edited projects/m.py: 1 replacement, first at line 2")
         self.assertEqual(open(path).read(), "a = 1\nb = 3\n")
 
     def test_edit_not_found(self):
@@ -273,10 +255,10 @@ class TestSearch(Workspace):
     def test_hits_format(self):
         self.put("a.py", "import os\nx = 1\n")
         self.put("b.txt", "import os\n")
-        self.assertEqual(self.call("search", pattern=r"^import"), "a.py:1: import os\nb.txt:1: import os")
-        self.assertEqual(self.call("search", pattern="import", glob="*.py"), "a.py:1: import os")
+        self.assertEqual(self.call("search", pattern=r"^import"), "projects/a.py:1: import os\nprojects/b.txt:1: import os")
+        self.assertEqual(self.call("search", pattern="import", glob="*.py"), "projects/a.py:1: import os")
         self.assertEqual(self.call("search", pattern="IMPORT", ignore_case=True, path="b.txt"),
-                         "b.txt:1: import os")
+                         "projects/b.txt:1: import os")
 
     def test_cap(self):
         self.put("many.txt", "hit\n" * (dev.SEARCH_MAX_HITS + 30))

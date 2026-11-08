@@ -1473,7 +1473,7 @@ def _dev_user(name):
 def _dev_path(root, rel, must_exist=False):
     """(absolute path, error_response) for `rel` inside the workspace."""
     try:
-        return dev_server.resolve(root, rel, must_exist=must_exist), None
+        return dev_server.resolve(root, rel, must_exist=must_exist, shown=False), None
     except dev_server.ToolError as e:
         return None, (jsonify({'error': str(e)}), 400)
 
@@ -1563,7 +1563,7 @@ def api_dev_file():
                 shutil.rmtree(path)
             except Exception as e:
                 return _log_and_error(e)
-            return jsonify({'ok': True, 'path': dev_server.rel_of(root, path)})
+            return jsonify({'ok': True, 'path': dev_server.inner_rel(root, path)})
         try:
             keep = os.path.join(path, '.gitkeep')
             if os.path.isfile(keep) and not os.path.islink(keep):
@@ -1571,10 +1571,10 @@ def api_dev_file():
             os.rmdir(path)
         except Exception as e:
             return _log_and_error(e)
-        return jsonify({'ok': True, 'path': dev_server.rel_of(root, path)})
+        return jsonify({'ok': True, 'path': dev_server.inner_rel(root, path)})
     if path == root or os.path.isdir(path):
         return jsonify({'error': 'That is a folder, not a file.'}), 400
-    rel = dev_server.rel_of(root, path)
+    rel = dev_server.inner_rel(root, path)
 
     if request.method == 'GET':
         st = os.stat(path)
@@ -1633,13 +1633,13 @@ def api_dev_rename():
     if dst.startswith(src.rstrip(os.sep) + os.sep):
         return jsonify({'error': "A folder can't go inside itself."}), 400
     if os.path.exists(dst):
-        return jsonify({'error': f'{dev_server.rel_of(root, dst)} already exists.'}), 409
+        return jsonify({'error': f'{dev_server.inner_rel(root, dst)} already exists.'}), 409
     try:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         os.rename(src, dst)
     except Exception as e:
         return _log_and_error(e)
-    return jsonify({'ok': True, 'path': dev_server.rel_of(root, dst)})
+    return jsonify({'ok': True, 'path': dev_server.inner_rel(root, dst)})
 
 
 def _dev_stop(name):

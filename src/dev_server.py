@@ -149,36 +149,31 @@ def workspace():
     return os.path.realpath(root)
 
 
-def files_name(root):
-    """The workspace's name in the person's files: it *is* their files'
-    projects/ folder (Flask/static/<user>/files/projects/), so that's
-    "projects"."""
-    return os.path.basename(os.path.normpath(root))
+# Where the workspace is in the person's files: mcp_client.for_user gives
+# every user files/projects/. Every path these tools show starts with it, and
+# every path they take may, so a file has the same name here as in Files and
+# in the agent's other file tools.
+FILES_FOLDER = "projects"
 
 
-def _strip_files_prefix(root, rel):
-    """`rel` with a leading "projects/" (or "files/projects/") taken off: the
-    same file named the way the person's Files and the agent's other file
-    tools name it. Those say projects/drafts/a.mp4 for what this workspace
-    calls drafts/a.mp4, and taking such a path literally here made a
-    projects/ folder inside projects/, with work landing where neither side
-    looked for it. A real folder of that name at the top of the workspace
-    still wins, so nothing that exists becomes unreachable."""
-    name = files_name(root)
+def _inner(rel):
+    """`rel` inside the workspace: a path the tools showed (projects/a.py, or
+    files/projects/a.py) without its projects/; anything else as it was."""
     parts = [p for p in re.split(r"[\\/]+", rel) if p not in ("", ".")]
-    if parts[:1] == ["files"] and parts[1:2] == [name]:
+    if parts[:2] == ["files", FILES_FOLDER]:
         parts = parts[1:]
-    if parts[:1] == [name] and not os.path.lexists(os.path.join(root, name)):
+    if parts[:1] == [FILES_FOLDER]:
         return "/".join(parts[1:]) or "."
     return rel
 
 
-def resolve(root, rel, must_exist=False):
+def resolve(root, rel, must_exist=False, shown=True):
     """Absolute path of `rel` inside `root`, or a ToolError.
 
-    `rel` may also be named as it is in the person's files, with a leading
-    projects/ (see _strip_files_prefix): every file tool means the same file
-    by the same path.
+    `rel` is a path as the tools show it (projects/…), or one relative to
+    the workspace. `shown=False` takes it only as the latter: the Developer
+    app's page names files relative to the workspace, where a folder called
+    projects at its top is just that folder.
 
     Refused before anything is resolved: an absolute path, a drive letter, a
     NUL, and any `..` segment — the agent never needs one, and a path that
@@ -195,7 +190,7 @@ def resolve(root, rel, must_exist=False):
         raise ToolError(f"{rel}: use a path relative to the workspace, like src/app.py.")
     if ".." in re.split(r"[\\/]", rel):
         raise ToolError(f"{rel}: '..' isn't allowed; paths stay inside the workspace.")
-    asked, rel = rel, _strip_files_prefix(root, rel)
+    asked, rel = rel, (_inner(rel) if shown else rel)
     if rel == ".":
         return root
     full = os.path.realpath(os.path.join(root, rel))
@@ -207,10 +202,16 @@ def resolve(root, rel, must_exist=False):
     return full
 
 
-def rel_of(root, path):
-    """`path` as the agent names it: relative, forward slashes."""
+def inner_rel(root, path):
+    """`path` relative to the workspace, forward slashes."""
     rel = os.path.relpath(path, root).replace(os.sep, "/")
     return "." if rel == "." else rel
+
+
+def rel_of(root, path):
+    """`path` as the tools show it: its path in the person's files."""
+    rel = inner_rel(root, path)
+    return FILES_FOLDER if rel == "." else f"{FILES_FOLDER}/{rel}"
 
 
 def _is_text(path):
@@ -426,7 +427,7 @@ def command_line(args):
         where = where.strip()
         if os.path.isabs(where) or ".." in re.split(r"[\\/]", where):
             return None, "path (the folder to run in) must be a folder inside the workspace, like app."
-        where = where.strip("/")
+        where = _inner(where.strip("/")).strip("/")
         if where in ("", "."):
             where = None
     command = args.get("command")
@@ -437,6 +438,7 @@ def command_line(args):
     if file:
         if not isinstance(file, str):
             return None, "file must be a path string."
+        file = _inner(file.strip())
         if extra is None:
             extra = []
         if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
@@ -464,14 +466,8 @@ def argv_for(root, args):
     if error:
         raise ToolError(error)
     args = normalize("run", args)
-    file = args.get("file")
-    where = (args.get("where") or "").strip().strip("/")
-    for given in (where, file):
-        if given and _strip_files_prefix(root, given) != given \
-                and not os.path.exists(os.path.join(root, given)):
-            name = files_name(root)
-            raise ToolError(f"{given}: paths in run are inside the workspace, which already is "
-                            f"{name}/ in their files: use {_strip_files_prefix(root, given)}.")
+    file = _inner(args["file"].strip()) if isinstance(args.get("file"), str) else args.get("file")
+    where = _inner((args.get("where") or "").strip().strip("/")).strip("/")
     if where and where != ".":
         # Run exactly the line the approval showed: `cd <folder> && …`.
         folder = resolve(root, where, must_exist=True)
@@ -579,13 +575,11 @@ def written(before, after):
             if before.get(rel) != (mtime, size)]
 
 
-def files_report(root, found, partial=False):
-    """The lines a run's result adds about the files it wrote: each one's path
-    here and in the person's files, so the agent can open, check or send it
-    from any tool without guessing where it went."""
+def files_report(found, partial=False):
+    """What a run's result says about the files it wrote, each by the path
+    the tools show, so it can be opened, checked or sent from any of them."""
     if not found:
         return ""
-    name = files_name(root)
     groups = {}
     for rel, size in found:
         groups.setdefault(os.path.dirname(rel), []).append((rel, size))
@@ -594,30 +588,21 @@ def files_report(root, found, partial=False):
         items = sorted(groups[folder])
         if len(items) > RUN_FILES_GROUP:
             total = sum(size for _, size in items)
-            here = folder or "."
-            lines.append(f"  {here}/ · {len(items)} files, {_fmt_size(total)} "
-                         f"(in your files: {name}/{folder + '/' if folder else ''})")
+            lines.append(f"  {folder}/ · {len(items)} files, {_fmt_size(total)}")
         else:
-            lines += [f"  {rel} · {_fmt_size(size)} (in your files: {name}/{rel})"
-                      for rel, size in items]
+            lines += [f"  {rel} · {_fmt_size(size)}" for rel, size in items]
     more = len(lines) - RUN_FILES_LINES
     lines = lines[:RUN_FILES_LINES] + ([f"  …and {more} more"] if more > 0 else [])
-    out = "Files it wrote (path here · in your files):\n" + "\n".join(lines)
+    out = "Files it wrote:\n" + "\n".join(lines)
     if partial:
         out += "\n  (the workspace is too big to check every file)"
-    nested = sorted({rel.split("/", 1)[0] for rel, _ in found if rel.split("/", 1)[0] == name})
-    if nested:
-        out += (f"\nNote: this made a {name}/ folder inside the workspace, but the workspace "
-                f"already is {name}/ in their files, so that's {name}/{name}/. Paths here don't "
-                f"start with {name}/: move these up a level (mv {name}/* .) unless that's "
-                f"really what you meant.")
     return out
 
 
 def run(root, args):
     """The `run` tool: run, wait up to the timeout, and report the exit code,
-    the time it took, the trimmed output and the files the run wrote (where
-    they are, here and in the person's files)."""
+    the time it took, the folder it ran in, the trimmed output and the files
+    it wrote."""
     timeout = _int(args.get("timeout"), "timeout", DEFAULT_TIMEOUT, 1, MAX_TIMEOUT)
     argv, popen_kwargs = argv_for(root, args)
     try:
@@ -650,12 +635,15 @@ def run(root, args):
     status = (f"timed out after {timeout}s (killed)" if timed_out.is_set()
               else f"exit {proc.returncode}")
     output = trim.text().strip("\n")
-    result = f"{status} · {took:.1f}s\n{output}" if output else f"{status} · {took:.1f}s · no output"
+    where = _inner((normalize("run", args).get("where") or "").strip().strip("/")).strip("/")
+    ran_in = rel_of(root, os.path.join(root, where) if where not in ("", ".") else root)
+    head = f"{status} · {took:.1f}s · ran in {ran_in}/"
+    result = f"{head}\n{output}" if output else f"{head} · no output"
     report = ""
     if before is not None:
         try:
             after, partial = snapshot(root)
-            report = files_report(root, written(before, after), partial)
+            report = files_report(written(before, after), partial)
         except OSError:
             pass
     return result + ("\n" + report if report else "")
@@ -719,7 +707,7 @@ class Preview:
 # ── tools ────────────────────────────────────────────────────
 
 # Kept short on purpose: every description is resent with every request.
-_PATH = {"type": "string", "description": "Relative to the workspace (their files' projects/ folder; a leading projects/ is fine)."}
+_PATH = {"type": "string", "description": "As the tools show it."}
 
 TOOLS = [
     {
@@ -923,10 +911,10 @@ class Tools:
 
         walk(top, 0)
         if not lines:
-            return f"{rel_of(root, top)}: empty"
+            return f"{rel_of(root, top)}/: empty"
         if more:
             lines.append(f"[… {more}+ more entries; ls a subfolder]")
-        return "\n".join(lines)
+        return f"{rel_of(root, top)}/\n" + "\n".join("  " + line for line in lines)
 
     # read
 
@@ -1028,7 +1016,7 @@ class Tools:
         files = [top] if os.path.isfile(top) else self._files(top, root)
         for path in files:
             rel = rel_of(root, path)
-            if not dev_map.match_glob(path, rel, glob):
+            if not dev_map.match_glob(path, inner_rel(root, path), glob):
                 continue
             try:
                 if os.path.getsize(path) > SEARCH_MAX_FILE_BYTES or not _is_text(path):
@@ -1073,7 +1061,7 @@ class Tools:
         top = resolve(root, args.get("path"), must_exist=True)
         files = [top] if os.path.isfile(top) else self._files(top, root)
         glob = args.get("glob") or ""
-        return top, [p for p in files if dev_map.match_glob(p, rel_of(root, p), glob)]
+        return top, [p for p in files if dev_map.match_glob(p, inner_rel(root, p), glob)]
 
     def t_overview(self, root, args):
         top, files = self._map_files(root, args)

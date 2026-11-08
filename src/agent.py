@@ -1791,9 +1791,7 @@ FAST_BROWSER_INSTRUCTION = (
 # are built to avoid that, and this is what gets the model to use them so.
 DEVELOPER_INSTRUCTION = (
     "Coding: projects live in the Developer workspace (the mcp_developer_* tools; the user sees "
-    "it in the Developer app). It is the projects/ folder of their files, so a file the Developer "
-    "tools call drafts/a.mp4 is projects/drafts/a.mp4 to every other tool; the Developer tools "
-    "take either, and run lists each file it wrote with both. To get your bearings, start with overview (it already sums up the "
+    "it in the Developer app). To get your bearings, start with overview (it already sums up the "
     "README and manifests, so don't read those after it), then outline the folder, and outline a "
     "big file before reading any of it. Use find for a name you know and search for text, then "
     "read only the lines those point to. Change files with edit (exact replacement), not write. "
