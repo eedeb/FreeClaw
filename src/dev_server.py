@@ -171,6 +171,19 @@ def _inner(rel):
     return rel
 
 
+def shown_path(rel):
+    """A path inside the workspace (either form) as the tools show it."""
+    inner = _inner(str(rel or "")).strip("/")
+    return FILES_FOLDER if inner in ("", ".") else f"{FILES_FOLDER}/{inner}"
+
+
+def files_top(root):
+    """The top of the person's files: the folder the workspace is projects/
+    of, and where an agent's run starts, so the paths in its commands are the
+    paths every tool shows."""
+    return os.path.dirname(os.path.normpath(root))
+
+
 def resolve(root, rel, must_exist=False, shown=True):
     """Absolute path of `rel` inside `root`, or a ToolError.
 
@@ -403,7 +416,7 @@ def normalize(name, args):
     return args
 
 
-def command_line(args):
+def command_line(args, files=True):
     """(command line, error) for a `run` call: the exact text the approval
     gate shows and saved rules are matched against, or the reason the call is
     malformed. agent.py calls this before asking anyone anything, and
@@ -411,10 +424,13 @@ def command_line(args):
     can't describe different things.
 
     A file runs as `python <file> <args>` (or `bash <file> <args>`); a command
-    is shown exactly as given. Everything runs from the workspace root, and
-    there's deliberately no separate working-directory argument: it would be
-    one more thing that changes what runs without changing the text a saved
-    rule matches. `cd sub && make` says it in the command, where it's seen.
+    is shown exactly as given. The agent's runs start at the top of the
+    person's files (`files`, files_top), so a file or folder is named the way
+    every tool shows it, projects/…; the Developer app's Run button
+    (files=False) runs from the workspace and names files inside it. A folder
+    to run in is said in the command, `cd projects/app && …`, never as a
+    separate working directory: that would be one more thing that changes what
+    runs without changing the text a saved rule matches.
 
     Anything else in `args` is refused rather than ignored, for the same
     reason."""
@@ -431,8 +447,13 @@ def command_line(args):
         where = where.strip()
         if os.path.isabs(where) or ".." in re.split(r"[\\/]", where):
             return None, "path (the folder to run in) must be a folder inside the workspace, like app."
-        where = _inner(where.strip("/")).strip("/")
-        if where in ("", "."):
+        given = where.strip("/")
+        where = _inner(given).strip("/")
+        if files and given not in ("", "."):
+            # The workspace itself (projects) is a folder to cd into from
+            # the top of their files, like any other.
+            where = shown_path(where)
+        elif where in ("", "."):
             where = None
     command = args.get("command")
     file = args.get("file")
@@ -442,7 +463,9 @@ def command_line(args):
     if file:
         if not isinstance(file, str):
             return None, "file must be a path string."
-        file = _inner(file.strip())
+        file = file.strip()
+        if not where:
+            file = shown_path(file) if files else _inner(file)
         if extra is None:
             extra = []
         if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
@@ -463,10 +486,11 @@ def command_line(args):
     return None, "Pass command (a bash command line) or file (a .py or .sh to run)."
 
 
-def argv_for(root, args):
-    """(argv or command string, popen kwargs) to run a `run` call's arguments
-    from `root`. Validated the same way as `command_line`."""
-    shown, error = command_line(args)
+def argv_for(root, args, files=True):
+    """(argv or command string, popen kwargs) to run a `run` call's arguments,
+    from files_top(root) (or, files=False, from `root`). Validated the same
+    way as `command_line`."""
+    shown, error = command_line(args, files)
     if error:
         raise ToolError(error)
     args = normalize("run", args)
@@ -478,7 +502,8 @@ def argv_for(root, args):
         if not os.path.isdir(folder):
             raise ToolError(f"{where}: not a folder.")
         if file:
-            resolve(folder, file, must_exist=True)
+            # Named from that folder, as the command says (cd folder && …).
+            resolve(folder, args["file"].strip(), must_exist=True, shown=False)
         return shell_argv(shown)
     if file:
         path = resolve(root, file, must_exist=True)
@@ -553,7 +578,9 @@ def _fmt_size(n):
 
 
 def snapshot(root):
-    """{rel path: (mtime_ns, size)} of the files under `root`, and whether the
+    """{path relative to `root`: (mtime_ns, size)} of the files under it (a
+    run's: the top of their files, so these are the paths the tools show),
+    and whether the
     scan stopped early: what a run's report is measured against."""
     state, seen = {}, 0
     for folder, dirs, files in os.walk(root):
@@ -568,7 +595,7 @@ def snapshot(root):
                 st = os.lstat(full)
             except OSError:
                 continue
-            state[rel_of(root, full)] = (st.st_mtime_ns, st.st_size)
+            state[inner_rel(root, full)] = (st.st_mtime_ns, st.st_size)
     return state, False
 
 
@@ -609,13 +636,14 @@ def run(root, args):
     it wrote."""
     timeout = _int(args.get("timeout"), "timeout", DEFAULT_TIMEOUT, 1, MAX_TIMEOUT)
     argv, popen_kwargs = argv_for(root, args)
+    top = files_top(root)
     try:
-        before, _ = snapshot(root)
+        before, _ = snapshot(top)
     except OSError:
         before = None
     started = time.monotonic()
     try:
-        proc = spawn(argv, root, popen_kwargs)
+        proc = spawn(argv, top, popen_kwargs)
     except OSError as e:
         raise ToolError(f"Couldn't start it: {e}")
     trim = Trimmer()
@@ -640,13 +668,13 @@ def run(root, args):
               else f"exit {proc.returncode}")
     output = trim.text().strip("\n")
     where = _inner((normalize("run", args).get("where") or "").strip().strip("/")).strip("/")
-    ran_in = rel_of(root, os.path.join(root, where) if where not in ("", ".") else root)
-    head = f"{status} · {took:.1f}s · ran in {ran_in}/"
+    ran_in = f"ran in {shown_path(where)}/" if where not in ("", ".") else "ran at the top of their files"
+    head = f"{status} · {took:.1f}s · {ran_in}"
     result = f"{head}\n{output}" if output else f"{head} · no output"
     report = ""
     if before is not None:
         try:
-            after, partial = snapshot(root)
+            after, partial = snapshot(top)
             report = files_report(written(before, after), partial)
         except OSError:
             pass
@@ -783,7 +811,7 @@ TOOLS = [
     },
     {
         "name": "run",
-        "description": "Run a bash command or a .py/.sh file, from the workspace root (or path). "
+        "description": "Run a bash command or a .py/.sh file, from the top of their files (or path). "
                        "Returns exit code, output and the files it wrote.",
         "inputSchema": {"type": "object", "properties": {
             "command": {"type": "string"},
