@@ -473,6 +473,7 @@ PINNED_DIRS = ('files', HISTORY_DIR)
 # not here is classified by sniffing its bytes, so a .py, .csv, .json or a
 # text file with no extension at all still opens in the editor.
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg'}
+VIDEO_EXTS = {'.mp4', '.m4v', '.webm', '.mov', '.ogv'}
 
 
 def _is_readonly(rel):
@@ -521,13 +522,17 @@ def _rel_to_user(name, path):
 
 
 def _file_kind(path):
-    """'image', 'text' or 'binary' — what the panel should do with this file.
+    """'image', 'video', 'text' or 'binary' — what the panel should do with
+    this file.
 
-    Extension decides images (we need a real decoder either way). For
+    Extension decides images and videos (we need a real decoder either way). For
     everything else the bytes decide: a file that's valid UTF-8 with no NULs
     in its first chunk is editable text, whatever it's called."""
-    if os.path.splitext(path)[1].lower() in IMAGE_EXTS:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXTS:
         return 'image'
+    if ext in VIDEO_EXTS:
+        return 'video'
     try:
         with open(path, 'rb') as f:
             chunk = f.read(8192)

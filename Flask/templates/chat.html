@@ -1251,7 +1251,8 @@
       overflow: auto;
       background: var(--surface-2);
     }
-    #ctx-image { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: var(--shadow-sm); }
+    #ctx-image, #ctx-video { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: var(--shadow-sm); }
+    #ctx-video { background: #000; }
     #ctx-delete {
       background: none;
       border: 1px solid var(--border-strong);
@@ -1736,7 +1737,7 @@
         <div id="ctx-file-view" hidden>
           <textarea id="ctx-text" spellcheck="false" autocapitalize="off" autocorrect="off"
                     placeholder="Loading…" hidden></textarea>
-          <div id="ctx-image-wrap" hidden><img id="ctx-image" alt=""/></div>
+          <div id="ctx-image-wrap" hidden><img id="ctx-image" alt=""/><video id="ctx-video" controls playsinline preload="metadata" hidden></video></div>
           <div id="ctx-binary" hidden></div>
         </div>
 
@@ -3386,6 +3387,15 @@
   const ctxText      = document.getElementById('ctx-text');
   const ctxImageWrap = document.getElementById('ctx-image-wrap');
   const ctxImage     = document.getElementById('ctx-image');
+  const ctxVideo     = document.getElementById('ctx-video');
+  // Stop a playing video and let go of it, so a closed panel isn't still
+  // holding (or playing) it.
+  function ctxDropMedia() {
+    ctxImage.removeAttribute('src');
+    ctxVideo.pause();
+    ctxVideo.removeAttribute('src');
+    ctxVideo.load();
+  }
   const ctxBinary    = document.getElementById('ctx-binary');
   const ctxSave      = document.getElementById('ctx-save');
   const ctxDelete    = document.getElementById('ctx-delete');
@@ -3463,8 +3473,8 @@
     ctxSave.hidden = true;
     ctxDelete.hidden = true;
     ctxHeading.textContent = '/' + listing;
-    // Drop the image so a closed panel isn't still holding it in memory.
-    ctxImage.removeAttribute('src');
+    // Drop the image or video so a closed panel isn't still holding it.
+    ctxDropMedia();
     ctxText.value = '';
     ctxSetStatus(status || dirHint(listing), status ? 'ok' : '');
 
@@ -3594,6 +3604,9 @@
     ctxText.readOnly = !!f.readonly;
     ctxImageWrap.hidden = true;
     ctxBinary.hidden = true;
+    ctxDropMedia();
+    ctxImage.hidden = false;
+    ctxVideo.hidden = true;
     ctxSave.hidden = f.kind !== 'text' || !!f.readonly;
     ctxSave.disabled = true;
     ctxDelete.hidden = !!f.protected;
@@ -3609,9 +3622,17 @@
       if (!ctxStatus.textContent) ctxSetStatus(fmtSize(f.size) + ' image', '');
       return;
     }
+    if (f.kind === 'video') {
+      ctxImage.hidden = true;
+      ctxVideo.hidden = false;
+      ctxVideo.src = ctxFileUrl(f.name) + '?raw=1&t=' + Date.now();
+      ctxImageWrap.hidden = false;
+      if (!ctxStatus.textContent) ctxSetStatus(fmtSize(f.size) + ' video', '');
+      return;
+    }
     if (f.kind !== 'text') {
       ctxBinary.hidden = false;
-      ctxBinary.textContent = "This one isn't text or an image, so there's "
+      ctxBinary.textContent = "This one isn't text, an image or a video, so there's "
         + "nothing to show here. " + fmtSize(f.size) + ".";
       return;
     }
@@ -3726,7 +3747,7 @@
 
   function ctxClosePanel() {
     if (!ctxConfirmLeave()) return false;
-    ctxImage.removeAttribute('src');
+    ctxDropMedia();
     ctxOpenFile = null;
     ctxOriginal = '';
     return true;
