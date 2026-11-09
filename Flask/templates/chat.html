@@ -3560,6 +3560,51 @@
     }
   }
 
+  // ── a file the agent linked to ──
+  // The agent names its files by their path in the files folder
+  // ("projects/site/index.html"), and Markdown turns [the video](that/path)
+  // into a link relative to this page, which leads nowhere. Such a link opens
+  // the file in the Files window instead. Links with a scheme, a leading
+  // slash or only a #fragment are real pages and are left alone.
+  function ctxLinkedPath(href) {
+    if (!href || /^[a-z][a-z0-9+.-]*:/i.test(href) || /^[\/#?]/.test(href)) return null;
+    let path = href.split('#')[0].split('?')[0];
+    try { path = decodeURIComponent(path); } catch (_) { /* keep it as written */ }
+    path = path.replace(/^(\.\/)+/, '').replace(/^files\//, '');
+    if (!path || path.split('/').some(p => p === '..')) return null;
+    return 'files/' + path.replace(/\/+$/, '');
+  }
+
+  async function ctxReveal(name) {
+    const dir = parentDir(name);
+    openApp('files');
+    await ctxShowList(undefined, dir);
+    const user = await ctxResolveUser();
+    if (!user) return;
+    try {
+      const res = await fetch('/api/users/' + encodeURIComponent(user) + '/files?dir='
+                              + encodeURIComponent(dir));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const entries = (await res.json()).entries || [];
+      const f = entries.find(e => e.name === name);
+      if (ctxDir !== dir || ctxOpenFile) return;
+      if (!f) ctxSetStatus(baseName(name) + ' isn’t here any more.', 'err');
+      else if (f.type === 'dir') ctxShowList(undefined, f.name);
+      else ctxOpenFileView(f);
+    } catch (e) {
+      ctxSetStatus("Couldn't open " + baseName(name) + ' — ' + e.message, 'err');
+    }
+  }
+
+  messagesEl.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('.message.agent .bubble a[href]');
+    if (!a || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    const name = ctxLinkedPath(a.getAttribute('href'));
+    if (!name) return;
+    e.preventDefault();
+    ctxReveal(name);
+  });
+
   // ── moving by drag ──
   let ctxDragging = null;
   async function ctxMove(from, toDir) {
