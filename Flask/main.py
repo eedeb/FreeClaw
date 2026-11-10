@@ -769,6 +769,148 @@ def api_user_file(name, relpath):
     return jsonify({'ok': True, 'name': rel})
 
 
+# ── CONVERSATIONS API ────────────────────────────────────────
+# The Conversations app: the one going on now and the ones /reset archived
+# into history/, each of which can be picked up again (it becomes the current
+# conversation, and the current one is archived in its place) or thrown away.
+# Archives are read-only everywhere else; these are the only ways they change.
+
+_ARCHIVE_ID = re.compile(r'\d{4}-\d{2}-\d{2}_\d{6}')
+_PREVIEW_CHARS = 140
+# (path, mtime, size) -> summary, so the list doesn't re-read every archive.
+_archive_summaries = {}
+
+
+def _message_text(m):
+    content = m.get('content')
+    if isinstance(content, str):
+        return ' '.join(content.split())
+    if isinstance(content, list):
+        texts = [b.get('text') for b in content if isinstance(b, dict) and isinstance(b.get('text'), str)]
+        return ' '.join(' '.join(texts).split()) or '[picture]'
+    return ''
+
+
+def _summary(messages, title=None):
+    """Title, first and last thing the person said, and how many messages."""
+    said = [_message_text(m) for m in messages if m.get('role') == 'user']
+    said = [t for t in said if t]
+    cut = lambda t: t if len(t) <= _PREVIEW_CHARS else t[:_PREVIEW_CHARS - 1].rstrip() + '…'  # noqa: E731
+    first = cut(said[0]) if said else ''
+    if not title or title == 'New chat':
+        title = first[:60] or 'Empty conversation'
+    return {'title': title, 'first': first, 'last': cut(said[-1]) if said else '',
+            'messages': sum(1 for m in messages if m.get('role') in ('user', 'assistant')
+                            and (m.get('role') == 'user' or m.get('content')))}
+
+
+def _archive_path(name, conv_id):
+    if not conv_id or not _ARCHIVE_ID.fullmatch(conv_id):
+        return None
+    return os.path.join(_user_root(name), HISTORY_DIR, conv_id + '.json')
+
+
+def _archive_summary(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime, st.st_size)
+    if key not in _archive_summaries:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if len(_archive_summaries) > 500:
+            _archive_summaries.clear()
+        _archive_summaries[key] = {**_summary(data.get('messages') or [], data.get('title')),
+                                   'archived_at': data.get('archived_at')}
+    return {**_archive_summaries[key], 'size': st.st_size}
+
+
+@app.route('/api/users/<name>/conversations', methods=['GET'])
+def api_conversations(name):
+    """The conversation going on now, then the archived ones, newest first."""
+    name, err = _files_user(name)
+    if err:
+        return err
+    try:
+        ensure_conversation(name)
+        data = load_conversation(name)
+    except Exception as e:
+        return _log_and_error(e)
+    current = {**_summary(data.get('messages') or [], data.get('title')),
+               'updated_at': data.get('updated_at'),
+               'live': live_turns.current(name) is not None}
+    past = []
+    folder = os.path.join(_user_root(name), HISTORY_DIR)
+    try:
+        names = sorted((f for f in os.listdir(folder) if _ARCHIVE_ID.fullmatch(f[:-5] or '')
+                        and f.endswith('.json')), reverse=True)
+    except OSError:
+        names = []
+    for fname in names:
+        summary = _archive_summary(os.path.join(folder, fname))
+        if summary:
+            past.append({'id': fname[:-5], 'label': _history_label(fname), **summary})
+    return jsonify({'user': name, 'current': current, 'past': past})
+
+
+@app.route('/api/users/<name>/conversations/<conv_id>', methods=['DELETE'])
+def api_delete_conversation(name, conv_id):
+    """Throw away one archived conversation."""
+    name, err = _files_user(name)
+    if err:
+        return err
+    path = _archive_path(name, conv_id)
+    if path is None:
+        return jsonify({'error': 'No such conversation'}), 400
+    if not os.path.isfile(path):
+        return jsonify({'error': 'That conversation is already gone.'}), 404
+    try:
+        with _session_lock(name):
+            os.remove(path)
+    except Exception as e:
+        return _log_and_error(e)
+    return jsonify({'ok': True, 'id': conv_id})
+
+
+@app.route('/api/users/<name>/conversations/<conv_id>/continue', methods=['POST'])
+def api_continue_conversation(name, conv_id):
+    """Make an archived conversation the current one again. The current one is
+    archived first, as a reset would; the system message is built fresh, so
+    the picked-up conversation sees today's instructions and memory."""
+    name, err = _files_user(name)
+    if err:
+        return err
+    path = _archive_path(name, conv_id)
+    if path is None:
+        return jsonify({'error': 'No such conversation'}), 400
+    if live_turns.current(name) is not None:
+        return jsonify({'error': "The agent is in the middle of something. Try again when it's done."}), 409
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            archived = json.load(f)
+    except FileNotFoundError:
+        return jsonify({'error': 'That conversation is gone.'}), 404
+    except (OSError, ValueError) as e:
+        return _log_and_error(e)
+    messages = [m for m in archived.get('messages') or [] if isinstance(m, dict) and m.get('role') != 'system']
+    title = _summary(messages, archived.get('title'))['title']
+    try:
+        with _session_lock(name):
+            activate_session(name)
+            agent.reset()
+            agent.set_messages(agent.get_messages()[:1] + messages)
+            updated_at = save_conversation(name, agent.get_messages(), title=title)
+            os.remove(path)
+    except Exception as e:
+        return _log_and_error(e)
+    _close_browsers(name)
+    return jsonify({'ok': True, 'title': title, 'updated_at': updated_at})
+
+
 @app.route('/api/conversation', methods=['GET'])
 def api_get_conversation():
     if not logged_in():

@@ -2025,10 +2025,20 @@ def _archive_conversation(sess):
         os.makedirs(directory, exist_ok=True)
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         path = os.path.join(directory, f"{stamp}.json")
+        # Its title too, for the Conversations app's list.
+        title = None
+        try:
+            with open(os.path.join(os.path.dirname(directory), "conversation.json"),
+                      "r", encoding="utf-8") as f:
+                title = json.load(f).get("title")
+        except (OSError, ValueError, AttributeError):
+            pass
+        record = {"archived_at": datetime.now().strftime(PING_TIME_FORMAT),
+                  "messages": [m for m in sess.messages if m.get("role") != "system"]}
+        if title and title != "New chat":
+            record["title"] = title
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({"archived_at": datetime.now().strftime(PING_TIME_FORMAT),
-                       "messages": [m for m in sess.messages if m.get("role") != "system"]},
-                      f)
+            json.dump(record, f)
     except Exception:
         # Never what fails a reset — the user asked for a fresh conversation,
         # and they get one whether or not the old one could be kept.
