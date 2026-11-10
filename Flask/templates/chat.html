@@ -1120,6 +1120,34 @@
     }
     .win.max .win-resize { display: none; }
 
+    /* ── Conversations window ──
+       The conversation going on now, then the archived ones, newest first:
+       each can be continued (it becomes the current one) or deleted. */
+    #convos-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+    #convos-panel [hidden] { display: none !important; }
+    #convos-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; -webkit-overflow-scrolling: touch; }
+    .convos-label { font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+                    color: var(--muted); padding: 12px 10px 6px; }
+    .convo { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 0 2px 8px;
+             background: var(--surface); }
+    .convo.current { border-color: var(--accent-line); background: var(--accent-soft); }
+    .convo-top { display: flex; align-items: baseline; gap: 10px; }
+    .convo-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; color: var(--text);
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .convo-meta { flex-shrink: 0; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .convo-said { font-size: 12.5px; color: var(--text-2); margin-top: 4px; line-height: 1.4;
+                  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .convo-actions { display: flex; gap: 8px; margin-top: 8px; }
+    .convo-actions button { font-size: 12.5px; font-weight: 600; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+                            border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); }
+    .convo-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .convo-actions button.danger { color: var(--err); }
+    .convo-actions button.danger.confirm { background: var(--err-soft); border-color: var(--err); }
+    .convo-actions button:disabled { opacity: .45; cursor: default; }
+    .convos-foot { padding: 10px 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); min-height: 38px; }
+    #convos-status.err { color: var(--err); }
+    #convos-empty { color: var(--muted); font-size: 13px; padding: 10px; }
+
     /* ── Files window ──
        Everything in this user's files folder — the agent's memory and
        schedule at the top, then whatever it wrote or was given. A list, and
@@ -1471,6 +1499,9 @@
   <symbol id="i-mcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><path d="M16.5 13.5v6M13.5 16.5h6"/>
   </symbol>
+  <symbol id="i-convos" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 10.5a6 6 0 0 1-8.7 5.4L3.5 17l1-3.6A6 6 0 1 1 16 10.5z"/><path d="M18.6 8.4A6 6 0 0 1 19.5 17l1 3.5-3.8-1.1a6 6 0 0 1-5.1.3"/>
+  </symbol>
   <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M20 12.5a7.5 7.5 0 0 1-10.9 6.7L4 20.5l1.3-4.6A7.5 7.5 0 1 1 20 12.5z"/>
   </symbol>
@@ -1497,7 +1528,7 @@
     </div>
 
     <!-- Archives this conversation into history/ and starts an empty one. -->
-    <button id="reset-btn" title="Start a new chat (this one is kept in Files → history)">
+    <button id="reset-btn" title="Start a new chat (this one is kept in Conversations)">
       <svg><use href="#i-new"/></svg>New chat
     </button>
 
@@ -1510,6 +1541,10 @@
       <button class="app-icon" id="icon-files" data-app="files" title="Files">
         <span class="app-tile"><svg><use href="#i-files"/></svg></span>
         <span class="app-label">Files</span>
+      </button>
+      <button class="app-icon" id="icon-convos" data-app="convos" title="Conversations">
+        <span class="app-tile"><svg><use href="#i-convos"/></svg></span>
+        <span class="app-label">Conversations</span>
       </button>
       <button class="app-icon" id="icon-schedule" data-app="schedule" title="Tasks">
         <span class="app-tile"><svg><use href="#i-schedule"/></svg></span>
@@ -1747,6 +1782,24 @@
           <button id="ctx-delete" hidden>delete</button>
           <button id="ctx-save" hidden>save</button>
         </div>
+      </div>
+    </div>
+    <div class="win-resize"></div>
+  </section>
+
+  <section class="win" id="win-convos" data-app="convos" hidden aria-label="Conversations">
+    <div class="win-bar">
+      <div class="win-lights">
+        <button class="wl close" data-glyph="×" title="Close"></button>
+        <button class="wl min" data-glyph="–" title="Minimize"></button>
+        <button class="wl max" data-glyph="+" title="Maximize"></button>
+      </div>
+      <div class="win-title"><svg><use href="#i-convos"/></svg>Conversations</div>
+    </div>
+    <div class="win-body">
+      <div id="convos-panel">
+        <div id="convos-list"></div>
+        <div class="convos-foot"><span id="convos-status"></span></div>
       </div>
     </div>
     <div class="win-resize"></div>
@@ -3417,13 +3470,18 @@
     'files/ping.md': "Scheduled pings, soonest first.",
   };
   const ARCHIVE_HINT = "An archived conversation. Read-only.";
+  // The Files app shows the agent's files folder and nothing above it: the
+  // conversation and its archives are the Conversations app's.
+  const FILES_ROOT = 'files';
+  const shownPath = path => '/' + (path === FILES_ROOT ? '' : path.replace(/^files\//, ''));
+  const upFrom = path => { const up = parentDir(path); return up && (up + '/').startsWith(FILES_ROOT + '/') ? up : FILES_ROOT; };
   const dirHint = dir => DIR_HINTS[dir] || '';
   const fileHint = f => FILE_HINTS[f.name]
     || (f.name.startsWith('history/') ? ARCHIVE_HINT : '');
   const parentDir = path => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
   const baseName = path => path.slice(path.lastIndexOf('/') + 1);
 
-  let ctxDir      = '';      // folder being listed, relative to the user's folder
+  let ctxDir      = 'files'; // folder being listed, relative to the user's folder
   let ctxOpenFile = null;    // { name, kind, protected, readonly } of the open file, or null
   let ctxOriginal = '';      // last known saved text, for the dirty check
   let ctxSaving   = false;
@@ -3473,10 +3531,10 @@
     ctxOriginal = '';
     ctxFileView.hidden = true;
     ctxListView.hidden = false;
-    ctxBack.hidden = !listing;
+    ctxBack.hidden = listing === FILES_ROOT;
     ctxSave.hidden = true;
     ctxDelete.hidden = true;
-    ctxHeading.textContent = '/' + listing;
+    ctxHeading.textContent = shownPath(listing);
     // Drop the image or video so a closed panel isn't still holding it.
     ctxDropMedia();
     ctxText.value = '';
@@ -3497,7 +3555,7 @@
       if (res.status === 404 && listing) {
         // The folder went away (history/ before the first reset, say) —
         // step back up rather than leave the panel on an error.
-        return ctxShowList(undefined, parentDir(listing));
+        return ctxShowList(undefined, upFrom(listing));
       }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
@@ -3557,6 +3615,135 @@
       if (isDir && f.name !== 'history') ctxDropTarget(row, f.name);
       li.appendChild(row);
       ctxListEl.appendChild(li);
+    }
+  }
+
+  // ── Conversations ──
+  const convosList = document.getElementById('convos-list');
+  const convosStatus = document.getElementById('convos-status');
+  function convosSay(msg, err) { convosStatus.textContent = msg || ''; convosStatus.className = err ? 'err' : ''; }
+  const convosApi = path => '/api/users/' + encodeURIComponent(currentUser) + '/conversations' + (path || '');
+  const plural = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
+
+  function convoCard(c, current) {
+    const card = document.createElement('div');
+    card.className = 'convo' + (current ? ' current' : '');
+    const top = document.createElement('div');
+    top.className = 'convo-top';
+    const title = document.createElement('div');
+    title.className = 'convo-title';
+    title.textContent = c.title;
+    const meta = document.createElement('div');
+    meta.className = 'convo-meta';
+    meta.textContent = (current ? (c.live ? 'working now · ' : '') : (c.label ? c.label + ' · ' : ''))
+      + plural(c.messages || 0, 'message');
+    top.append(title, meta);
+    card.appendChild(top);
+    const said = current ? c.last : c.first;
+    if (said) {
+      const p = document.createElement('div');
+      p.className = 'convo-said';
+      p.textContent = said;
+      card.appendChild(p);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'convo-actions';
+    if (current) {
+      const fresh = document.createElement('button');
+      fresh.textContent = 'New chat';
+      fresh.title = 'Start a new chat; this one is kept below';
+      fresh.disabled = sendBtn.disabled || !c.messages;
+      fresh.addEventListener('click', async () => {
+        resetBtn.click();
+        setTimeout(convosLoad, 400);
+      });
+      actions.appendChild(fresh);
+    } else {
+      const go = document.createElement('button');
+      go.className = 'primary';
+      go.textContent = 'Continue';
+      go.title = 'Pick this conversation up again; the current one is kept here';
+      go.disabled = sendBtn.disabled;
+      go.addEventListener('click', () => convoContinue(c, go));
+      const del = document.createElement('button');
+      del.className = 'danger';
+      del.textContent = 'Delete';
+      del.addEventListener('click', () => convoDelete(c, del, card));
+      actions.append(go, del);
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  async function convosLoad() {
+    const user = await ctxResolveUser();
+    if (!user) { convosSay('No agent selected — pick one first.', true); return; }
+    try {
+      const res = await fetch(convosApi());
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      convosList.innerHTML = '';
+      const now = document.createElement('div');
+      now.className = 'convos-label';
+      now.textContent = 'Now';
+      convosList.append(now, convoCard(data.current, true));
+      const past = document.createElement('div');
+      past.className = 'convos-label';
+      past.textContent = 'Past conversations';
+      convosList.appendChild(past);
+      if (!(data.past || []).length) {
+        const empty = document.createElement('div');
+        empty.id = 'convos-empty';
+        empty.textContent = 'None yet. Starting a new chat keeps the current one here.';
+        convosList.appendChild(empty);
+      }
+      for (const c of data.past || []) convosList.appendChild(convoCard(c, false));
+      convosSay(data.past && data.past.length ? plural(data.past.length, 'past conversation') : '');
+    } catch (e) {
+      convosSay("Couldn't load the conversations — " + e.message, true);
+    }
+  }
+
+  async function convoContinue(c, btn) {
+    if (sendBtn.disabled) { convosSay('Wait for the agent to finish first.', true); return; }
+    btn.disabled = true;
+    convosSay('Opening “' + c.title + '”…');
+    try {
+      const res = await fetch(convosApi('/' + encodeURIComponent(c.id) + '/continue'), { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      clearFile();
+      const full = await fetch('/api/conversation');
+      if (full.ok) {
+        const conv = await full.json();
+        lastUpdatedAt = conv.updated_at;
+        applyConversation(conv);
+      }
+      closeApp('convos');
+      showChat();
+    } catch (e) {
+      btn.disabled = false;
+      convosSay("Couldn't continue it — " + e.message, true);
+    }
+  }
+
+  async function convoDelete(c, btn, card) {
+    if (!btn.classList.contains('confirm')) {
+      btn.classList.add('confirm');
+      btn.textContent = 'Delete for good?';
+      setTimeout(() => { btn.classList.remove('confirm'); btn.textContent = 'Delete'; }, 4000);
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const res = await fetch(convosApi('/' + encodeURIComponent(c.id)), { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && res.status !== 404) throw new Error(data.error || ('HTTP ' + res.status));
+      card.remove();
+      convosSay('Deleted “' + c.title + '”.');
+    } catch (e) {
+      btn.disabled = false;
+      convosSay("Couldn't delete it — " + e.message, true);
     }
   }
 
@@ -3636,7 +3823,7 @@
       ctxDragging = null;
       // The back button means "up a level": its target is worked out when
       // dropped, from the folder being shown.
-      ctxMove(from, el === ctxBack ? parentDir(ctxDir) : dir);
+      ctxMove(from, el === ctxBack ? upFrom(ctxDir) : dir);
     });
   }
   ctxDropTarget(ctxBack, null);
@@ -3648,7 +3835,7 @@
     ctxListView.hidden = true;
     ctxFileView.hidden = false;
     ctxBack.hidden = false;
-    ctxHeading.textContent = '/' + f.name;
+    ctxHeading.textContent = shownPath(f.name);
     ctxText.hidden = true;
     ctxText.readOnly = !!f.readonly;
     ctxImageWrap.hidden = true;
@@ -3782,17 +3969,17 @@
   // Opens on the user's folder — conversation.json, files/, history/ — rather
   // than straight into files/.
   function ctxOpen() {
-    ctxShowList(undefined, '');
+    ctxShowList(undefined, FILES_ROOT);
   }
 
   // One level up: an open file back to its folder's listing, a folder to its
   // parent. False when already at the top, so Escape knows to close instead.
   function ctxGoUp() {
     if (ctxOpenFile) {
-      if (ctxConfirmLeave()) ctxShowList(undefined, parentDir(ctxOpenFile.name));
+      if (ctxConfirmLeave()) ctxShowList(undefined, upFrom(ctxOpenFile.name));
       return true;
     }
-    if (ctxDir) { ctxShowList(undefined, parentDir(ctxDir)); return true; }
+    if (ctxDir && ctxDir !== FILES_ROOT) { ctxShowList(undefined, upFrom(ctxDir)); return true; }
     return false;
   }
 
@@ -4001,6 +4188,7 @@
                 onOpen: () => setTimeout(activityBadge.check, 1500) },
     mcp:      { w: 380,  h: 360 },
     files:    { w: 520,  h: 560, onOpen: ctxOpen, onClose: ctxClosePanel },
+    convos:   { w: 540,  h: 600, onOpen: () => convosLoad() },
   };
   const wm = { z: 20, focused: null, order: [] };   // order: open apps, oldest first
   const winGeo = loadPref('fc-win-geo');
@@ -4159,7 +4347,7 @@
 
   // ── Menu bar task pills ──
   const APP_LABEL = { browser: 'Browser', files: 'Files', settings: 'Settings',
-                      appstore: 'App Store', developer: 'Developer', schedule: 'Tasks' };
+                      appstore: 'App Store', developer: 'Developer', schedule: 'Tasks', convos: 'Conversations' };
   function renderTasks() {
     tasksEl.innerHTML = '';
     for (const app of wm.order) {
