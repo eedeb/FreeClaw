@@ -19,6 +19,16 @@ child dumps its logins and they're filed in the user's profile here.
 
 Nothing here touches playwright, so it's cheap to import from Flask and holds
 no browser state of its own: when the child goes, so does its feed.
+
+What goes down to a child goes through its _Outbox: queued under _lock,
+written by a thread of the outbox's own, never by the caller. A write to the
+child's stdin blocks once the pipe is full (the child busy loading a page,
+say), and it used to happen with _lock held: every request that touched this
+module (the person's next keystrokes, the status and control polls, and the
+thread passing the child's frames up, for every user) waited behind it, each
+on a thread of its own, and the child, its frames not being read, stopped
+reading its input. The threads piled up until none could be made
+(2026-11-10, "can't start new thread", the Browser app hung).
 """
 
 import collections
@@ -44,8 +54,82 @@ RELEASE_WAIT = 35.0
 # shown newest-first, so these are mostly cursor moves.
 BACKLOG = 64
 
+# At most this many messages wait for one child; past it, input is refused
+# (a child that far behind isn't reading). Mouse moves don't pile up: a move
+# behind another move replaces it.
+OUTBOX_MAX = 500
+INPUT = "notifications/freeclaw/input"
+
 _lock = threading.Lock()
 _feeds = {}                       # FreeClaw user -> _Feed
+_outboxes = {}                    # child -> _Outbox
+
+
+class _Outbox:
+    """Messages for one child, in order, written by a thread of its own."""
+
+    def __init__(self, proc):
+        self.proc = proc
+        self.items = collections.deque()
+        self.cond = threading.Condition(threading.Lock())
+        self.closed = False
+        threading.Thread(target=self._run, daemon=True, name="browser-live-out").start()
+
+    def put(self, method, params):
+        """Queue one message; False if the child is gone or too far behind."""
+        with self.cond:
+            if self.closed:
+                return False
+            last = self.items[-1] if self.items else None
+            if (method == INPUT and isinstance(params, dict) and params.get("kind") == "move"
+                    and last is not None and last[0] == INPUT and last[1].get("kind") == "move"):
+                self.items[-1] = (method, params)
+            elif len(self.items) >= OUTBOX_MAX:
+                return False
+            else:
+                self.items.append((method, params))
+            self.cond.notify()
+            return True
+
+    def close(self):
+        with self.cond:
+            self.closed = True
+            self.items.clear()
+            self.cond.notify()
+
+    def backlog(self):
+        with self.cond:
+            return len(self.items)
+
+    def _run(self):
+        while True:
+            with self.cond:
+                while not self.items and not self.closed:
+                    self.cond.wait(30)
+                    alive = getattr(self.proc, "alive", None)
+                    if not self.items and callable(alive) and not alive():
+                        self.closed = True
+                if self.closed:
+                    return
+                method, params = self.items.popleft()
+            if not self.proc.notify(method, params):
+                self.close()
+                return
+
+
+def _outbox(proc):
+    """Called with _lock held."""
+    box = _outboxes.get(proc)
+    if box is None or box.closed:
+        box = _outboxes[proc] = _Outbox(proc)
+    return box
+
+
+def _drop_outbox(proc):
+    """Called with _lock held."""
+    box = _outboxes.pop(proc, None)
+    if box is not None:
+        box.close()
 
 
 class _Feed:
@@ -83,12 +167,12 @@ def _watching(feed):
 
 
 def _send_lease(feed):
-    """Called with _lock held; the write itself is a quick pipe write."""
+    """Called with _lock held; queued, never written here (_Outbox)."""
     proc = feed.proc
     if proc is None:
         return
     feed.lease_sent = time.monotonic()
-    proc.notify("notifications/freeclaw/watch", {"seconds": LEASE})
+    _outbox(proc).put("notifications/freeclaw/watch", {"seconds": LEASE})
 
 
 # ── what mcp_client calls ────────────────────────────────────
@@ -100,6 +184,8 @@ def publish(user, proc, kind, params):
         if feed.proc is not proc:
             # A new child for this user (the last one was dropped after a
             # login was saved, or crashed): what it shows starts fresh.
+            if feed.proc is not None:
+                _drop_outbox(feed.proc)
             feed.proc = proc
             feed.frame = None
             feed.meta = {}
@@ -152,6 +238,7 @@ def gone(user, proc):
         feed = _feeds.get(user)
         if feed is None or feed.proc is not proc:
             return
+        _drop_outbox(proc)
         feed.proc = None
         feed.frame = None
         feed.meta = {}
@@ -243,7 +330,7 @@ def take(user):
         now = time.monotonic()
         feed.asked = now
         feed.viewers = now
-        feed.proc.notify("notifications/freeclaw/control", {"seconds": CONTROL_LEASE})
+        _outbox(feed.proc).put("notifications/freeclaw/control", {"seconds": CONTROL_LEASE})
         _send_lease(feed)
         return True
 
@@ -262,8 +349,9 @@ def send_input(user, commands):
         feed = _feeds.get(user)
         if feed is None or not _holding(feed):
             return False
+        box = _outbox(feed.proc)
         for command in commands:
-            if not feed.proc.notify("notifications/freeclaw/input", command):
+            if not box.put(INPUT, command):
                 return False
         return True
 
@@ -278,7 +366,7 @@ def release(user, timeout=RELEASE_WAIT):
             return None
         before = feed.handbacks
         feed.asked = 0.0
-        feed.proc.notify("notifications/freeclaw/control", {"seconds": 0})
+        _outbox(feed.proc).put("notifications/freeclaw/control", {"seconds": 0})
         if not feed.ready.wait_for(lambda: feed.handbacks != before, timeout):
             return None
         return dict(feed.control)
