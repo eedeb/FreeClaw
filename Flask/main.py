@@ -165,6 +165,13 @@ def logged_in():
 # own the homepage shows (src/subagents.py). Before the tool list below is
 # built: the spawn tool's description depends on it.
 agent.set_subagent_launcher(subagents.launch)
+# Code the Developer app runs can use the agent's connected apps
+# (src/workbench.py); the socket it goes through is served from here.
+try:
+    import src.workbench as workbench
+    workbench.start()
+except OSError:
+    logger.exception("The workbench socket couldn't start; runs won't reach connected apps")
 
 try:
     agent.refresh_tools()

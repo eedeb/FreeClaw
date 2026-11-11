@@ -42,6 +42,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -92,6 +93,16 @@ OUTPUT_TAIL = 3000
 # ceiling is 600s — so MAX_TIMEOUT is that less the headroom.
 DEFAULT_TIMEOUT = 45
 MAX_TIMEOUT = 580
+
+# Background jobs (start_job / check_job / stop_job): runs the agent starts
+# and comes back to. A job nobody has checked on for JOB_IDLE_SECONDS is
+# stopped (a job nobody is watching is a job nobody needs), and every job
+# ends at JOB_MAX_SECONDS and with this process.
+JOB_IDLE_SECONDS = int(os.environ.get("FC_DEV_JOB_IDLE_SECONDS", "1800"))
+JOB_MAX_SECONDS = int(os.environ.get("FC_DEV_JOB_MAX_SECONDS", str(6 * 3600)))
+JOB_MAX_RUNNING = int(os.environ.get("FC_DEV_JOB_MAX_RUNNING", "3"))
+JOB_OUTPUT_LINES = 2000
+JOB_WAIT_MAX = 300
 
 # Folders nobody wants listed or searched: version control, dependencies,
 # virtualenvs, caches and build output. A large node_modules alone would eat
@@ -527,10 +538,112 @@ def shell_argv(command):
     return shell.bash_argv(command)
 
 
+# The folder holding freeclaw_tools.py, put first on a run's PYTHONPATH.
+RUN_HELPERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_helpers")
+
+
+class RunTools:
+    """One run's way to the agent's connected apps (src/workbench.py): a Unix
+    socket of its own, handed to the program as FREECLAW_TOOLS. Every request
+    through it is stamped here with the user this Developer process serves
+    (FC_DEV_USER, from FreeClaw), whatever the request says, and passed on to
+    FreeClaw's workbench socket (FC_DEV_TOOLS_SOCKET). Gone with the run."""
+
+    MAX_REQUEST = 1024 * 1024
+
+    def __init__(self, user, target):
+        import tempfile
+        self.user, self.target = user, target
+        self.folder = tempfile.mkdtemp(prefix="fc-run-tools-")
+        os.chmod(self.folder, 0o700)
+        self.path = os.path.join(self.folder, "tools.sock")
+        self.server = socket.socket(socket.AF_UNIX)
+        self.server.bind(self.path)
+        self.server.listen(8)
+        self.closed = False
+        threading.Thread(target=self._accept, daemon=True, name="run-tools").start()
+
+    def _accept(self):
+        while not self.closed:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn):
+        try:
+            conn.settimeout(30)
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = conn.recv(65536)
+                if not chunk:
+                    return
+                data += chunk
+                if len(data) > self.MAX_REQUEST:
+                    return
+            try:
+                request = json.loads(data.decode("utf-8"))
+            except ValueError:
+                request = None
+            if not isinstance(request, dict):
+                conn.sendall(b'{"ok": false, "error": "Bad request."}\n')
+                return
+            request = {"op": request.get("op"), "tool": request.get("tool"),
+                       "arguments": request.get("arguments"), "user": self.user}
+            up = socket.socket(socket.AF_UNIX)
+            up.settimeout(150)
+            try:
+                up.connect(self.target)
+                up.sendall(json.dumps(request).encode() + b"\n")
+                reply = b""
+                while not reply.endswith(b"\n"):
+                    chunk = up.recv(65536)
+                    if not chunk:
+                        break
+                    reply += chunk
+            except OSError:
+                reply = b'{"ok": false, "error": "Connected apps are unavailable right now."}\n'
+            finally:
+                up.close()
+            conn.settimeout(60)
+            conn.sendall(reply if reply.endswith(b"\n") else reply + b"\n")
+        except Exception:                                    # noqa: BLE001 — one request
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def close(self):
+        self.closed = True
+        try:
+            self.server.close()
+        except OSError:
+            pass
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+
+def run_tools():
+    """A RunTools for the run about to start, or None where there's no
+    workbench to reach (no user, no socket, no Unix sockets)."""
+    user = (os.environ.get("FC_DEV_USER") or "").strip()
+    target = (os.environ.get("FC_DEV_TOOLS_SOCKET") or "").strip()
+    if not user or not target or not hasattr(socket, "AF_UNIX") or os.name == "nt":
+        return None
+    try:
+        return RunTools(user, target)
+    except OSError as e:
+        _log(f"no connected apps for this run: {e}")
+        return None
+
+
 def spawn(argv, cwd, popen_kwargs=None):
     """Start a run with stdout and stderr merged, stdin closed, and on POSIX
     in a session of its own so a timeout or Stop ends everything it started,
-    not just the shell."""
+    not just the shell. The program can reach the agent's connected apps
+    (freeclaw_tools, RunTools) for as long as it runs."""
     kwargs = dict(popen_kwargs or {})
     if os.name == "nt":
         kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -539,11 +652,28 @@ def spawn(argv, cwd, popen_kwargs=None):
         kwargs["start_new_session"] = True
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     # The workspace is this process's business, not the program's; the GitHub
-    # token is git's (src/dev_git.py), never the program's.
-    env.pop("FC_DEV_WORKSPACE", None)
-    env.pop("FC_DEV_GITHUB_TOKEN", None)
-    return subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, env=env, **kwargs)
+    # token is git's (src/dev_git.py), never the program's; the workbench's
+    # own socket and user are RunTools', which the program gets instead.
+    for key in ("FC_DEV_WORKSPACE", "FC_DEV_GITHUB_TOKEN", "FC_DEV_USER", "FC_DEV_TOOLS_SOCKET"):
+        env.pop(key, None)
+    tools = run_tools()
+    if tools is not None:
+        env["FREECLAW_TOOLS"] = tools.path
+        env["PYTHONPATH"] = RUN_HELPERS + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, env=env, **kwargs)
+    except BaseException:
+        if tools is not None:
+            tools.close()
+        raise
+    if tools is not None:
+        def close_when_done():
+            while proc.returncode is None:
+                time.sleep(0.5)
+            tools.close()
+        threading.Thread(target=close_when_done, daemon=True, name="run-tools-close").start()
+    return proc
 
 
 def kill(proc):
@@ -679,6 +809,161 @@ def run(root, args):
         except OSError:
             pass
     return result + ("\n" + report if report else "")
+
+
+# ── background jobs ──────────────────────────────────────────
+
+def _clock(seconds):
+    seconds = int(seconds)
+    if seconds >= 3600:
+        return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+    return f"{seconds // 60}m{seconds % 60:02d}s" if seconds >= 60 else f"{seconds}s"
+
+
+class Job:
+    """One background run: its output kept (the last JOB_OUTPUT_LINES lines)
+    as it comes, and when it was last looked at."""
+
+    def __init__(self, jid, command, proc):
+        self.id, self.command, self.proc = jid, command, proc
+        self.started = self.touched = time.monotonic()
+        self.lines, self.partial, self.dropped = [], "", 0
+        self.ended = None
+        self.why = None
+        self.lock = threading.Lock()
+        threading.Thread(target=self._read, daemon=True, name=f"job-{jid}").start()
+
+    def _read(self):
+        read = getattr(self.proc.stdout, "read1", self.proc.stdout.read)
+        try:
+            for chunk in iter(lambda: read(4096), b""):
+                text = self.partial + chunk.decode("utf-8", "replace")
+                *done, self.partial = text.split("\n")
+                with self.lock:
+                    self.lines.extend(done)
+                    over = len(self.lines) - JOB_OUTPUT_LINES
+                    if over > 0:
+                        del self.lines[:over]
+                        self.dropped += over
+        except (OSError, ValueError):
+            pass
+        self.proc.wait()
+        with self.lock:
+            if self.partial:
+                self.lines.append(self.partial)
+                self.partial = ""
+            self.ended = time.monotonic()
+        try:
+            self.proc.stdout.close()
+        except OSError:
+            pass
+
+    def running(self):
+        return self.ended is None
+
+    def stop(self, why):
+        if self.running():
+            self.why = why
+            kill(self.proc)
+
+    def report(self, lines=40):
+        self.touched = time.monotonic()
+        try:
+            lines = max(1, min(int(lines or 40), 400))
+        except (TypeError, ValueError):
+            lines = 40
+        with self.lock:
+            tail = self.lines[-lines:]
+            dropped = self.dropped + max(len(self.lines) - len(tail), 0)
+        took = (self.ended or time.monotonic()) - self.started
+        if self.running():
+            state = f"running for {_clock(took)}"
+        else:
+            state = f"exit {self.proc.returncode} after {_clock(took)}" + (f" ({self.why})" if self.why else "")
+        head = f"Job {self.id} · {state} · {self.command[:120]}"
+        if dropped:
+            head += f"\n(… {dropped} earlier lines not shown)"
+        return head + ("\n" + "\n".join(tail) if tail else "\n(no output yet)")
+
+
+class Jobs:
+    """This process's background jobs, and the watch that ends the ones
+    nobody's looking at, or that have run too long."""
+
+    def __init__(self, idle=None, longest=None):
+        self.jobs = {}
+        self.next = 1
+        self.idle = JOB_IDLE_SECONDS if idle is None else idle
+        self.longest = JOB_MAX_SECONDS if longest is None else longest
+        self.lock = threading.Lock()
+        threading.Thread(target=self._watch, daemon=True, name="job-watch").start()
+
+    def start(self, shown, launch):
+        with self.lock:
+            running = [j for j in self.jobs.values() if j.running()]
+            if len(running) >= JOB_MAX_RUNNING:
+                raise ToolError(f"{len(running)} jobs are already running ({', '.join(j.id for j in running)}), "
+                                "the most at once. Check on one or stop it first.")
+            try:
+                proc = launch()
+            except OSError as e:
+                raise ToolError(f"Couldn't start it: {e}")
+            jid = f"j{self.next}"
+            self.next += 1
+            self.jobs[jid] = job = Job(jid, shown, proc)
+        return (f"Started job {job.id}: {shown[:160]}\nIt runs in the background. check_job {job.id} shows "
+                f"its output (and can wait up to {JOB_WAIT_MAX}s for it to finish); it's stopped if nobody "
+                f"checks on it for {self.idle // 60} minutes, and after {_clock(self.longest)} whatever happens.")
+
+    def get(self, jid):
+        job = self.jobs.get(str(jid or "").strip())
+        if job is None:
+            raise ToolError(f"No job {jid!r}. Jobs: {', '.join(self.jobs) or 'none'}.")
+        return job
+
+    def check(self, jid, wait=0, lines=None):
+        if not str(jid or "").strip():
+            if not self.jobs:
+                return "No background jobs."
+            return "\n\n".join(j.report(lines=5) for j in self.jobs.values())
+        job = self.get(jid)
+        try:
+            wait = max(0, min(int(wait or 0), JOB_WAIT_MAX))
+        except (TypeError, ValueError):
+            wait = 0
+        deadline = time.monotonic() + wait
+        while job.running() and time.monotonic() < deadline:
+            job.touched = time.monotonic()
+            time.sleep(0.25)
+        return job.report(lines)
+
+    def stop(self, jid):
+        job = self.get(jid)
+        job.stop("stopped on request")
+        for _ in range(40):
+            if not job.running():
+                break
+            time.sleep(0.05)
+        return job.report(lines=10)
+
+    def _watch(self):
+        while True:
+            time.sleep(max(min(20, self.idle / 3, self.longest / 3), 0.1))
+            self.sweep()
+
+    def sweep(self):
+        now = time.monotonic()
+        for job in list(self.jobs.values()):
+            if not job.running():
+                continue
+            if now - job.touched > self.idle:
+                job.stop(f"stopped: nobody checked on it for {max(self.idle // 60, 1)} minutes")
+            elif now - job.started > self.longest:
+                job.stop(f"stopped: jobs run at most {_clock(self.longest)}")
+
+    def stop_all(self, why):
+        for job in list(self.jobs.values()):
+            job.stop(why)
 
 
 # ── preview ──────────────────────────────────────────────────
@@ -821,6 +1106,32 @@ TOOLS = [
             "timeout": {"type": "integer", "description": f"Seconds; default {DEFAULT_TIMEOUT}, max {MAX_TIMEOUT}."},
         }},
     },
+    {
+        "name": "start_job",
+        "description": "Run a long command or .py/.sh file in the background, without waiting. Returns "
+                       "a job id; stopped if unchecked for 30 min.",
+        "inputSchema": {"type": "object", "properties": {
+            "command": {"type": "string"},
+            "file": _PATH,
+            "path": {"type": "string", "description": "Folder to run in (default: the workspace)."},
+            "args": {"type": "array", "items": {"type": "string"}},
+        }},
+    },
+    {
+        "name": "check_job",
+        "description": "A background job's state and latest output (no id: all). wait: seconds (max 300) "
+                       "to let it finish first.",
+        "inputSchema": {"type": "object", "properties": {
+            "id": {"type": "string"},
+            "wait": {"type": "integer", "description": "Seconds to wait for it to finish (0-300)."},
+            "lines": {"type": "integer", "description": "Output lines to show (default 40)."},
+        }},
+    },
+    {
+        "name": "stop_job",
+        "description": "Stop a background job.",
+        "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+    },
     # Git, for a GitHub repo cloned into the workspace (src/dev_git.py).
     # `repo` is the repo's folder in the workspace.
     {
@@ -904,6 +1215,7 @@ TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
 class Tools:
     def __init__(self):
         self.preview = Preview()
+        self.jobs = Jobs()
 
     def call(self, name, args):
         if name not in TOOL_NAMES:
@@ -1142,6 +1454,22 @@ class Tools:
     def t_run(self, root, args):
         return run(root, args)
 
+    # background jobs
+
+    def t_start_job(self, root, args):
+        args = {k: v for k, v in dict(args or {}).items() if k != "timeout"}
+        shown, invalid = command_line(args)
+        if invalid:
+            raise ToolError(invalid)
+        argv, popen_kwargs = argv_for(root, args)
+        return self.jobs.start(shown, lambda: spawn(argv, files_top(root), popen_kwargs))
+
+    def t_check_job(self, root, args):
+        return self.jobs.check(args.get("id"), args.get("wait"), args.get("lines"))
+
+    def t_stop_job(self, root, args):
+        return self.jobs.stop(args.get("id"))
+
     # git
 
     def _repo(self, root, args):
@@ -1316,6 +1644,7 @@ class Server:
             if isinstance(message, dict) and message.get("method") and "id" in message:
                 self.request(message)
         self.tools.preview.stop()
+        self.tools.jobs.stop_all("stopped: the Developer app closed")
 
 
 def main():

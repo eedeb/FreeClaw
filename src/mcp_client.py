@@ -197,7 +197,12 @@ def _with_workspace(server, user):
     if not prefs_path(user):
         return server
     path = os.path.join(STATIC_ROOT, user, "files", "projects")
-    env = {**(server.get("env") or {}), "FC_DEV_WORKSPACE": path}
+    import src.workbench as workbench
+    # FC_DEV_USER and FC_DEV_TOOLS_SOCKET: so a run can use this user's
+    # connected apps through src/workbench.py, as this user and no other
+    # (dev_server.RunTools stamps every request with it).
+    env = {**(server.get("env") or {}), "FC_DEV_WORKSPACE": path, "FC_DEV_USER": user,
+           "FC_DEV_TOOLS_SOCKET": workbench.socket_path()}
     token = github_token(user)
     if token:
         # For the Developer server's git tools only (src/dev_git.py); it
