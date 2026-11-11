@@ -1936,11 +1936,68 @@ def _pings_block():
     return "\nScheduled pings (ping.md, soonest first):" + shown + tail
 
 
+# The Developer app's toolbox: projects/toolbox/, scripts that worked before,
+# kept to be used again. Listed in the live context (name and its first line,
+# what it does) so a workaround found once is a tool from then on.
+TOOLBOX_FOLDER = "toolbox"
+TOOLBOX_SHOWN = 40
+
+
+def _first_line(path):
+    """What a script says it does: its first comment or docstring line."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for _ in range(8):
+                line = f.readline()
+                if not line:
+                    break
+                text = line.strip().lstrip("#").strip().strip('"').strip("'").strip()
+                if text and not text.startswith("!") and not text.startswith("-*-"):
+                    return text[:100]
+    except OSError:
+        pass
+    return ""
+
+
+def _toolbox_line(workspace):
+    """The live-context line about the toolbox in `workspace`, or ""."""
+    if not workspace or not os.path.isdir(workspace):
+        return ""
+    box = os.path.join(workspace, TOOLBOX_FOLDER)
+    entries = []
+    if os.path.isdir(box):
+        for name in sorted(os.listdir(box)):
+            full = os.path.join(box, name)
+            if name.startswith(".") or os.path.islink(full) or not os.path.isfile(full):
+                continue
+            desc = _first_line(full)
+            entries.append(name + (f" ({desc})" if desc else ""))
+    if not entries:
+        return ("\nToolbox (projects/toolbox/): empty. A script that solved something is worth saving "
+                "there, its first line a comment saying what it does, to use again.")
+    more = f"; +{len(entries) - TOOLBOX_SHOWN} more" if len(entries) > TOOLBOX_SHOWN else ""
+    return ("\nToolbox (projects/toolbox/, scripts that worked before): "
+            + "; ".join(entries[:TOOLBOX_SHOWN]) + more)
+
+
+def _toolbox_block():
+    """The toolbox line for this conversation, while the Developer app is on."""
+    sess = _sess()
+    user = approvals.current_user() or sess.name
+    if not user or sess.depth or not _developer_on(user):
+        return ""
+    try:
+        return _toolbox_line(mcp_client.developer_workspace(user))
+    except Exception:                                        # noqa: BLE001 — the tail stands
+        return ""
+
+
 def _volatile_tail():
     """Everything below _VOLATILE_HEADER, rebuilt on every request: the clock,
-    the schedule, what was saved this conversation, and this turn's notes."""
+    the schedule, what was saved this conversation, the toolbox, and this
+    turn's notes."""
     return (_now_line() + _pings_block() + _new_sections_line()
-            + _live_context_block() + _sess().turn_notes + "\n")
+            + _live_context_block() + _toolbox_block() + _sess().turn_notes + "\n")
 
 
 def _refresh_volatile():
@@ -3125,7 +3182,7 @@ def _is_developer_entry(entry):
 
 # The Developer server's tools that ask first: running code, and pushing to
 # someone's GitHub repo.
-DEVELOPER_GATED = ("run", "git_push")
+DEVELOPER_GATED = ("run", "git_push", "start_job")
 
 
 def _is_developer_run(command_name):
