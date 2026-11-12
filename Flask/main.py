@@ -1536,7 +1536,9 @@ def api_browser_agent_control():
         # that finds it gone knows the user was deleted meanwhile.
         if not browser_profiles.ensure_dir(name):
             return jsonify({'error': "That user name can't have a browser profile."}), 400
-        if not browser_live.take(name):
+        # `away`: the page is being hidden with control held, and can't renew
+        # for a while (browser_live.AWAY_LEASE).
+        if not browser_live.take(name, away=bool(data.get('away'))):
             return jsonify({'error': "The agent's browser isn't open."}), 409
         return jsonify({'ok': True, 'control': True})
     handed = browser_live.release(name)

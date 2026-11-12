@@ -66,6 +66,25 @@ class TestOutbox(unittest.TestCase):
     def inputs(self):
         return [p for m, p in self.child.sent if m == live.INPUT]
 
+    def test_control_outlasts_a_trip_away(self):
+        """Hidden, the Browser app can't renew: the lease it takes on the way
+        out lasts the trip, and the next ordinary renewal is short again."""
+        real = time.monotonic
+        try:
+            self.assertTrue(live.take(self.user, away=True))
+            time.monotonic = lambda: real() + live.CONTROL_LEASE + 60
+            self.assertTrue(live.holding(self.user))
+            time.monotonic = lambda: real() + live.AWAY_LEASE + 5
+            self.assertFalse(live.holding(self.user))
+            time.monotonic = real
+            self.assertTrue(live.take(self.user))
+            time.monotonic = lambda: real() + live.CONTROL_LEASE + 5
+            self.assertFalse(live.holding(self.user))
+        finally:
+            time.monotonic = real
+        self.assertTrue(wait_for(lambda: any(
+            m.endswith("/control") and p == {"seconds": live.AWAY_LEASE} for m, p in self.child.sent)))
+
     def test_in_order(self):
         live.send_input(self.user, [{"kind": "text", "text": "pass"}, {"kind": "key", "key": "Enter"}])
         self.assertTrue(wait_for(lambda: len(self.inputs()) == 2))

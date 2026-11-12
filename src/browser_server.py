@@ -357,7 +357,9 @@ PURGE_AFTER_IDLE = 10.0
 # The person taking the wheel (notifications/freeclaw/control): FreeClaw
 # renews this lease while their Browser app holds control, so a closed tab
 # hands the browser back by itself.
-MAX_CONTROL_LEASE = 30.0
+MAX_CONTROL_LEASE = 300.0
+# The longest one thing the person does may take (a navigation allows itself 30).
+INPUT_SECONDS = 40.0
 # How long an agent tool call waits for the person to hand the browser back
 # before it gives up and says so. Under mcp_client's CALL_READ_TIMEOUT (60s),
 # with room for the screenshot after: a call that outlasts that is treated
@@ -1154,9 +1156,12 @@ class Browser:
         except (TypeError, ValueError):
             seconds = 10.0
         seconds = min(max(seconds, 0.0), MAX_WATCH_LEASE)
-        was = self.watched()
         self.watch_until = time.monotonic() + seconds
-        if seconds and not was:
+        # Every renewal, not only the first: if the loop ever ended early (an
+        # error from a page going away at the wrong moment), a viewer that
+        # kept renewing never let the lease lapse, so nothing started it
+        # again and the picture stayed frozen. A no-op while it's running.
+        if seconds:
             self._start_watching()
 
     def _start_watching(self):
@@ -1994,8 +1999,11 @@ class Server:
                 if self.browser.controlled():
                     # The lock, so a tool call already under way finishes
                     # before the person's first click lands on its page.
+                    # Bounded: a click on a page that has stopped answering
+                    # otherwise never returns, and with it go everything they
+                    # do next and every agent call waiting on this lock.
                     async with self._tool_lock:
-                        await self._apply(command)
+                        await asyncio.wait_for(self._apply(command), INPUT_SECONDS)
             except Exception as e:                           # noqa: BLE001 — see _apply
                 lines = str(e).strip().splitlines()
                 _log(f"input {command.get('kind')!r} failed: {lines[0] if lines else e}")
