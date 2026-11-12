@@ -670,31 +670,66 @@ def _headers(server, session_id=None):
     return headers
 
 
-def _extract_message(resp):
-    """Pull the JSON-RPC response object out of `resp`, whether it came back
-    as a plain JSON body or as an SSE stream. Returns the dict, or None."""
-    ctype = resp.headers.get("Content-Type", "")
-    if "text/event-stream" in ctype:
-        found = None
+def _sse_message(lines):
+    """The JSON-RPC response among an SSE stream's `data:` lines, or None."""
+    for raw in lines:
         # Always UTF-8 (the SSE spec says so). resp.text guessed ISO-8859-1
         # for a text/* type with no charset, so every non-ASCII character a
         # server sent (curly quotes, accents, emoji: Composio's results)
         # reached the agent garbled: "shouldn't" as "shouldnât".
-        for line in resp.content.decode("utf-8", "replace").splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[len("data:"):].strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                obj = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            # Keep the last message that actually carries a result/error.
-            if isinstance(obj, dict) and ("result" in obj or "error" in obj):
-                found = obj
-        return found
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        line = raw.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:"):].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        # The first message that carries a result/error is the answer to the
+        # one request this POST made; anything before it is a notification.
+        if isinstance(obj, dict) and ("result" in obj or "error" in obj):
+            return obj
+    return None
+
+
+def _extract_message(resp):
+    """Pull the JSON-RPC response object out of `resp`, whether it came back
+    as a plain JSON body or as an SSE stream. Returns the dict, or None.
+
+    An SSE reply is read as it arrives and left the moment the response is in
+    hand. A server may keep the stream open after answering (the spec only
+    says it SHOULD close it), and reading the body to its end then sat out
+    the whole read timeout and reported a tool that had answered as hung."""
+    ctype = resp.headers.get("Content-Type", "")
+    if "text/event-stream" in ctype:
+        # Only a chunked body can be followed line by line as it arrives,
+        # which is how every server that streams sends one. Anything else has
+        # a known length (or ends with the connection) and is read whole.
+        raw = getattr(resp, "raw", None)
+        streamed = (raw is not None and not resp._content_consumed
+                    and getattr(raw, "chunked", False))
+        if not streamed:
+            return _sse_message(resp.content.splitlines())
+        deadline = time.monotonic() + MAX_READ_TIMEOUT
+
+        def lines():
+            for line in resp.iter_lines():
+                yield line
+                if time.monotonic() > deadline:
+                    raise requests.Timeout("the event stream never carried a response")
+        try:
+            return _sse_message(lines())
+        except requests.ConnectionError as e:
+            # How requests reports a read timeout once the body has started.
+            if "timed out" in str(e).lower():
+                raise requests.Timeout(str(e))
+            raise
+        finally:
+            resp.close()
     try:
         return resp.json()
     except ValueError:
@@ -739,11 +774,15 @@ def _raise_for_status(resp):
 def _rpc(server, method, params, session_id=None, timeout=(6, 20)):
     payload = {"jsonrpc": "2.0", "id": str(uuid.uuid4()),
                "method": method, "params": params}
+    # stream=True so an SSE reply can be read as it arrives (_extract_message).
     resp = _http.post(server["url"], headers=_headers(server, session_id),
-                       json=payload, timeout=timeout)
-    _raise_for_status(resp)
-    new_session = resp.headers.get("Mcp-Session-Id") or session_id
-    return _extract_message(resp), new_session
+                       json=payload, timeout=timeout, stream=True)
+    try:
+        _raise_for_status(resp)
+        new_session = resp.headers.get("Mcp-Session-Id") or session_id
+        return _extract_message(resp), new_session
+    finally:
+        resp.close()
 
 
 def _notify(server, method, session_id=None, timeout=(6, 20)):
@@ -780,16 +819,31 @@ def _open_session(server, force=False):
     return session_id
 
 
+# What a server answers when the session id it was sent is one it no longer
+# knows: 404 by the spec, 400 from servers that treat it as a malformed request.
+_STALE_SESSION_STATUS = (400, 404)
+
+
 def _call_with_session(server, method, params, timeout=(6, 20)):
     """Run an RPC call against `server` using its cached session. If the
-    session has gone stale server-side (surfaces as an HTTP error, typically
-    404, on the session id), transparently reopen it and retry once instead
-    of failing the whole tool call."""
+    session has gone stale server-side (an HTTP 404, or 400, on the session
+    id), transparently reopen it and retry once instead of failing the whole
+    tool call.
+
+    A tool call is only sent again for one of those two answers, which mean
+    the server never ran it. Any other failure (a 500, a gateway's 502 or 504)
+    can arrive after the tool has done its work, and sending it again would
+    send the email, or place the order, twice. Listing tools and the
+    handshake change nothing, so they are retried on any HTTP error as
+    before."""
     sig = _sig(server)
     session_id = _open_session(server)
     try:
         return _rpc(server, method, params, session_id=session_id, timeout=timeout)
-    except requests.HTTPError:
+    except requests.HTTPError as e:
+        status = getattr(e.response, "status_code", None)
+        if method == "tools/call" and status not in _STALE_SESSION_STATUS:
+            raise
         _session_cache.pop(sig, None)
         session_id = _open_session(server, force=True)
         return _rpc(server, method, params, session_id=session_id, timeout=timeout)
@@ -905,6 +959,13 @@ class _StdioServer:
         # *and its reply*: a notification (the live view's watch lease) has to
         # reach the child while a tool call is still waiting on its answer.
         self._write_lock = threading.Lock()
+        # Set once the handshake is done. A second caller that finds this
+        # child in the registry while the first is still starting it (two
+        # requests a moment apart: a double click, a turn and the Browser
+        # app) waits for this rather than sending its call ahead of
+        # `initialize`, which a server is free to refuse.
+        self._ready = threading.Event()
+        self._start_error = None
         self._next_id = 0
 
         try:
@@ -1053,6 +1114,11 @@ class _StdioServer:
                 return msg
 
     def rpc(self, method, params, timeout):
+        if method != "initialize":
+            if not self._ready.wait(STDIO_STARTUP_TIMEOUT):
+                raise StdioUnavailable("the process never finished starting")
+            if self._start_error is not None:
+                raise StdioUnavailable(f"the process didn't start: {self._start_error}")
         with self._lock:
             self._next_id += 1
             self._send({"jsonrpc": "2.0", "id": self._next_id,
@@ -1067,6 +1133,7 @@ class _StdioServer:
             raise RuntimeError(_err_text(msg["error"]))
         # A notification gets no reply and isn't worth failing over.
         self.notify("notifications/initialized")
+        self._ready.set()
 
     def shutdown(self):
         try:
@@ -1136,10 +1203,14 @@ def _get_stdio(server, force=False):
     # first connect behind this one.
     try:
         proc.initialize()
-    except Exception:
+    except Exception as e:
         with _stdio_registry_lock:
             if _stdio_procs.get(sig) is proc:
                 _stdio_procs.pop(sig, None)
+        # Anyone already waiting on this child is told now, not after the
+        # whole start-up timeout.
+        proc._start_error = e
+        proc._ready.set()
         proc.shutdown()
         raise
     return proc
