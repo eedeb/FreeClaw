@@ -806,7 +806,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    #file-preview-status { position: relative; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+    #file-preview-status { position: relative; font-size: 11.5px; color: var(--muted); white-space: nowrap; max-width: 62%; overflow: hidden; text-overflow: ellipsis; }
     #file-remove-btn {
       position: relative;
       background: none; border: none;
@@ -2695,6 +2695,8 @@
 
     fileName.textContent = file.name;
     fileStatus.textContent = 'uploading…';
+    fileStatus.title = '';
+    fileBar.style.background = '';
     fileBar.style.width = '0%';
     filePreview.classList.add('visible');
     uploading = true;
@@ -2709,7 +2711,10 @@
       const data = await res.json();
 
       if (data.error) {
-        fileStatus.textContent = 'error';
+        // The reason, not just "error": too big, out of space, not what its
+        // name says. In full on hover, since the bar is narrow.
+        fileStatus.textContent = String(data.error);
+        fileStatus.title = String(data.error);
         fileBar.style.background = 'var(--err-soft)';
         fileBar.style.width = '100%';
         pendingFile = null;
@@ -2724,7 +2729,11 @@
     }
 
     uploading = false;
-    sendBtn.disabled = false;
+    // Back to whatever the turn says: a file picked while the agent is
+    // working must not mark the page idle. That let a second message go out
+    // mid-turn, and had the poller start following this page's own turn as
+    // if it had come from somewhere else.
+    sendBtn.disabled = turnRunning;
     if (!isStandalone) inputEl.focus();
   });
 
@@ -2733,8 +2742,10 @@
   // Swaps the composer between "ready to send" and "a turn is running".
   // sendBtn.disabled stays the single source of truth for whether a turn is in
   // flight — the file-drop handler and the ping poller both already read it.
+  let turnRunning = false;
   function setBusy(busy) {
-    sendBtn.disabled = busy;
+    turnRunning = busy;
+    sendBtn.disabled = busy || uploading;
     stopBtn.classList.toggle('visible', busy);
     sendBtn.style.display = busy ? 'none' : 'flex';
     subTextEl.textContent = busy ? 'Working…' : 'Agent ready';
@@ -2758,7 +2769,10 @@
   async function sendMessage() {
     const text = inputEl.value.trim();
     if (!text && !pendingFile) return;
-    if (uploading) return;
+    // One turn at a time. Enter reaches here even while the button is hidden,
+    // and a second /chat stream drawing into the same thread as the first
+    // leaves both garbled. What was typed stays in the box for when it's done.
+    if (uploading || turnRunning) return;
 
     let agentMessage = text;
     let displayImageUrl = null;

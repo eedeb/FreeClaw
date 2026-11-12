@@ -3614,6 +3614,11 @@ def _run_tool(command_name, args_dict, bash_approved=False):
                 return f.read()
         except FileNotFoundError:
             return "File not found."
+        except IsADirectoryError:
+            return f"{filename} is a folder — list_files shows what's in it."
+        except UnicodeDecodeError:
+            return (f"{filename} isn't a text file, so it can't be read this way. "
+                    "For a picture, use get_image_description.")
 
     if command_name == 'search_context':
         # 'header' is what this argument was called before it took keywords
@@ -3816,6 +3821,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         if error:
             return error
         contents = args_dict.get('contents') or ''
+        if not isinstance(contents, str):
+            # A model writing a .json file often sends the object itself
+            # rather than its text.
+            contents = json.dumps(contents, indent=2, ensure_ascii=False)
         path = static_dir + filename
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # "w" truncates, which on context.md would silently destroy every fact
@@ -3916,6 +3925,11 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         try:
             proc = subprocess.Popen(
                 args,
+                # Nothing to read from: a command that waits on input (a
+                # prompt, `cat` with no file) sees end-of-file straight away
+                # instead of holding the turn open for an answer nobody can
+                # type.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -3932,6 +3946,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
                 # nothing about.
                 encoding="utf-8", errors="replace",
                 creationflags=NO_WINDOW,
+                # A session of its own on POSIX, so Stop ends everything the
+                # command started and not just the shell around it.
+                **({} if os.name == "nt" else {"start_new_session": True}),
                 **spawn_kwargs,
             )
         except OSError as e:
@@ -3940,9 +3957,36 @@ def _run_tool(command_name, args_dict, bash_approved=False):
             # shell=True can't get here, so POSIX behaviour is unchanged.
             logger.exception("Couldn't start a shell for a bash command")
             return f"Error: couldn't start a shell to run the command: {e}"
-        stdout, stderr = proc.communicate()
+        # Waited for in short steps so Stop reaches it. A plain communicate()
+        # sat until the command ended by itself, and one that never does (a
+        # server left in the foreground, `tail -f`) held the turn, and the
+        # conversation's lock with it, until FreeClaw was restarted.
+        stopped, after_stop = False, 0
+        try:
+            while True:
+                try:
+                    stdout, stderr = proc.communicate(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    if stopped:
+                        # Killed, but something it started still holds its
+                        # output open (Windows has no process group to end).
+                        after_stop += 1
+                        if after_stop >= 10:
+                            stdout = stderr = ""
+                            break
+                    elif cancellation.is_stopped():
+                        stopped = True
+                        dev_server.kill(proc)
+        except BaseException:
+            # Ctrl+C in the CLI, or anything else on the way out: the command
+            # is in a session of its own now and wouldn't get the signal.
+            dev_server.kill(proc)
+            raise
         print(stdout,stderr)
         output = (stdout + "\n" + stderr).strip()
+        if stopped:
+            return (output + "\n" if output else "") + "(Stopped before it finished.)"
         if not output:
             output = 'Command was run successfully, Report back to the user.'
         return output
@@ -4338,6 +4382,50 @@ def _prune_history_images(messages):
         return
     for m in attached[:-_KEEP_HISTORY_IMAGES]:
         m.pop("images", None)
+
+
+# The most of one tool result that's kept, in characters (about 20,000
+# tokens). A result is sent again on every request for as long as it stays in
+# the window, and one bigger than a provider's limit (a multi-megabyte file
+# read whole, a command that printed a log) made every request after it fail
+# as too large, for turn after turn, until it scrolled out.
+TOOL_RESULT_CHAR_LIMIT = 80_000
+
+CUT_OFF_NOTICE = (
+    "'{name}' was NOT run: your reply reached its length limit before the call's arguments "
+    "were finished, so they arrived incomplete. Call it again with less in one call: a long "
+    "file in parts (create it, then add to it), a shorter message, fewer items.")
+
+
+def _clip_tool_result(result):
+    """`result` as it's kept: whole when it fits TOOL_RESULT_CHAR_LIMIT, else
+    its start and its end around a note saying how much was left out. Any
+    images it carries stay on it (mcp_client.ToolText)."""
+    if len(result) <= TOOL_RESULT_CHAR_LIMIT:
+        return result
+    head = result[:TOOL_RESULT_CHAR_LIMIT * 3 // 4]
+    tail = result[len(result) - TOOL_RESULT_CHAR_LIMIT // 4:]
+    left_out = len(result) - len(head) - len(tail)
+    clipped = (f"{head}\n\n[… {left_out:,} characters left out here: this result was too long "
+               f"to keep whole. If you need that part, ask for less at a time (one page, a "
+               f"smaller range, a narrower search).]\n\n{tail}")
+    images = getattr(result, "images", ())
+    return mcp_client.ToolText(clipped, images) if images else clipped
+
+
+def _whole_tool_call(tc):
+    """Whether a streamed tool call arrived complete: it has a name, and its
+    arguments are a JSON object as they stand (no arguments at all counts)."""
+    fn = tc.get("function") or {}
+    if not fn.get("name"):
+        return False
+    raw = fn.get("arguments") or ""
+    if not raw.strip():
+        return True
+    try:
+        return isinstance(json.loads(raw), dict)
+    except ValueError:
+        return False
 
 
 def _append_tool_response(call_id, name, content):
@@ -5198,6 +5286,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         reasoning_buffer = ""
         reasoning_items = []
         tool_calls_acc = {}
+        # The provider's own number for a call -> the slot its pieces go in.
+        tool_slots = {}
+        finish_reason = None
         usage_seen = None
         stream_error = None
         started = time.monotonic()
@@ -5228,6 +5319,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     reasoning_items = chunk_items
                 if not chunk.choices:
                     continue
+                finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
                 delta = chunk.choices[0].delta
                 if delta is None:
                     continue
@@ -5245,7 +5337,19 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     yield {"type": "reasoning", "text": reasoning_delta}
                 if getattr(delta, "tool_calls", None):
                     for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
+                        key = tc_delta.index
+                        idx = tool_slots.setdefault(key, key if isinstance(key, int) else 0)
+                        slot = tool_calls_acc.get(idx)
+                        # Some endpoints number every call 0, or not at all,
+                        # and send each one whole under its own id (Google's
+                        # OpenAI-compatible API does). Filed by number alone,
+                        # two calls became one with both names run together.
+                        # A new id arriving with a name, on a slot that already
+                        # has both, is the next call.
+                        if (slot is not None and tc_delta.id and slot["id"]
+                                and tc_delta.id != slot["id"] and tc_delta.function
+                                and tc_delta.function.name and slot["function"]["name"]):
+                            idx = tool_slots[key] = max(tool_calls_acc) + 1
                         if idx not in tool_calls_acc:
                             tool_calls_acc[idx] = {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
                         if tc_delta.id:
@@ -5290,6 +5394,16 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     "Stream from provider '%s' broke mid-response: %d chars buffered, %d tool call(s) in progress",
                     provider, len(buffer), len(tool_calls_acc),
                 )
+                # A call that was still arriving has only the front of its
+                # arguments. Run as it stands it would write half a file or
+                # send half a message, so only the calls that came through
+                # whole are kept; with none left and no text, the request is
+                # asked again below.
+                whole = {i: tc for i, tc in tool_calls_acc.items() if _whole_tool_call(tc)}
+                if len(whole) != len(tool_calls_acc):
+                    logger.warning("Dropping %d tool call(s) the broken stream cut short",
+                                   len(tool_calls_acc) - len(whole))
+                    tool_calls_acc = whole
 
         # Whatever already reached the user is kept rather than thrown away:
         # partial text is on screen, and a tool call that finished streaming
@@ -5516,7 +5630,17 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             args_dict = None
             result = None
             try:
-                args_dict = json.loads(repair_json(tc["function"]["arguments"]))
+                if i == last and finish_reason == "length" and not _whole_tool_call(tc):
+                    # The reply hit its output limit part-way through this
+                    # call. What arrived could be patched into valid JSON, and
+                    # would then run with whatever happened to make it out.
+                    raise ValueError("the arguments were cut off before they finished")
+                # No arguments at all is a call with none, which some
+                # providers send as an empty string rather than "{}". That
+                # isn't JSON, so the call was refused as unparseable and a
+                # tool that takes nothing (or only optional things) never ran.
+                raw_args = tc["function"]["arguments"] or ""
+                args_dict = json.loads(repair_json(raw_args)) if raw_args.strip() else {}
                 # MCP (and malformed) tool calls can arrive with a
                 # non-object payload; keep _run_tool, which assumes a dict,
                 # crash-free.
@@ -5524,6 +5648,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     args_dict = {}
             except Exception as e:
                 result = f"Error: couldn't parse arguments for '{command_name}': {e}"
+                if i == last and finish_reason == "length":
+                    result = CUT_OFF_NOTICE.format(name=command_name)
                 logger.warning(
                     "Tool call args unparseable for '%s': %.500r",
                     command_name, tc["function"]["arguments"], exc_info=True,
@@ -5616,6 +5742,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         result = f"Error running tool '{command_name}': {e}"
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
+            result = _clip_tool_result(result)
             if i < last:
                 yield {"type": "tool_result", "name": command_name, "result": result}
                 _append_tool_response(tc["id"], command_name, result)

@@ -206,7 +206,7 @@ class TestActivityApi(unittest.TestCase):
 
         with mock.patch.object(self.main, "list_users", return_value=[self.user]), \
                 mock.patch.object(self.agent, "agent_stream", fake_stream):
-            self.main._fire_due_pings()
+            self.main._fire_due_pings(wait=True)
         entries = self.activity.read(self.activity.path_for(self.user))
         self.assertEqual(len(entries), 1)
         self.assertEqual((entries[0]["title"], entries[0]["status"], entries[0]["summary"], entries[0]["apps"]),

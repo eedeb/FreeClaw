@@ -1007,6 +1007,15 @@ def open_chat():
     return render_template('chat.html', developer=not dev_server.disabled())
 
 
+# How long the /chat stream stays quiet before a keep-alive goes out. A turn
+# can say nothing for minutes (a slow tool, a page loading, an approval card
+# waiting on the person), and a proxy in front of FreeClaw drops a response
+# that has been silent too long: Cloudflare after 100 seconds, nginx after its
+# proxy_read_timeout. The page then showed "Connection error" for a turn that
+# was still running, and the hang-up refused the approval it was waiting on.
+_CHAT_KEEPALIVE = 15.0
+
+
 @app.route('/chat', methods=['POST'])
 def chat():
     if not logged_in():
@@ -1016,8 +1025,8 @@ def chat():
     if not name:
         return jsonify({'error': 'No active conversation selected'}), 400
 
-    data = request.get_json()
-    user_input = data.get('message', '').strip()
+    data = request.get_json(silent=True)
+    user_input = str((data.get('message') if isinstance(data, dict) else None) or '').strip()
     if not user_input:
         return jsonify({'error': 'Empty message'}), 400
     helping = subagents.info(name)
@@ -1123,7 +1132,12 @@ def chat():
     def relay():
         try:
             while True:
-                event = events.get()
+                try:
+                    event = events.get(timeout=_CHAT_KEEPALIVE)
+                except queue.Empty:
+                    # A comment line, which every reader of this stream skips.
+                    yield ": keep-alive\n\n"
+                    continue
                 if event is finished:
                     return
                 yield f"data: {json.dumps(event)}\n\n"
@@ -3458,39 +3472,103 @@ def _note_failed_ping(name, action, repeat, error):
         logger.exception("Couldn't record failed ping for user=%s", name)
 
 
-def _fire_due_pings():
-    """One scheduler pass: deliver every due ping for every user."""
+# How many users' scheduled tasks run at the same time. Each is a whole agent
+# turn (a model, tools, perhaps a browser), so when a lot of them fall due
+# together (everybody's "every morning at 8:00") they take turns rather than
+# all starting at once. FC_PING_WORKERS changes it.
+try:
+    PING_WORKERS = max(1, int((os.getenv("FC_PING_WORKERS") or "3").strip()))
+except ValueError:
+    PING_WORKERS = 3
+_ping_slots = threading.BoundedSemaphore(PING_WORKERS)
+# Users whose due pings are being delivered right now.
+_ping_delivering = set()
+_ping_delivering_lock = threading.Lock()
+
+
+def _fire_due_pings(wait=False):
+    """One scheduler pass: take every user's due pings and hand each user's
+    to a thread of its own to deliver.
+
+    The pass itself waits on nobody. It used to deliver in line, holding each
+    user's conversation lock in turn, so everything behind one user waited
+    with it: a chat turn that ran for ten minutes (or sat on an approval
+    card) delayed every later user's reminders by as long, and so did a
+    scheduled task that took its time. Now a user who is mid-turn is passed
+    over until the next pass (their ping stays in ping.md, still due), and a
+    delivery runs beside the scheduler instead of inside it.
+
+    `wait` blocks until the deliveries this pass started are done (tests)."""
     now = datetime.now()
+    started = []
     for name in list_users():
-        # Hold this user's conversation lock across pop+deliver: it serialises
-        # the scheduler against their live chat turns and against add_ping
-        # writing the same ping.md. Only theirs, so a burst of pings for one
-        # user no longer blocks everybody else's chat — and the lock is still
-        # released between users.
-        #
-        # `sessions.use()` rather than a bare activate_session(): this is a
-        # long-lived background thread that walks every user in turn, so the
-        # binding has to be scoped to each delivery instead of being left
-        # behind on the thread for the next user to inherit.
-        sess = sessions.for_user(name)
-        with sess.lock, sessions.use(sess):
+        with _ping_delivering_lock:
+            if name in _ping_delivering:
+                continue
+        if not _ping_slots.acquire(blocking=False):
+            # Every worker is busy. Nothing has been taken out of ping.md for
+            # the users not reached, so the next pass picks them up.
+            break
+        handed = False
+        try:
+            sess = sessions.for_user(name)
+            # Their conversation lock, for the pop: it serialises this against
+            # add_ping writing the same ping.md from a turn of theirs. Held by
+            # a turn in progress, it would be a wait of unknown length.
+            if not sess.lock.acquire(blocking=False):
+                continue
             try:
-                due = _pop_due_pings(name, now)
+                # `sessions.use()`: this thread walks every user in turn, so
+                # the binding is scoped to each rather than left behind for
+                # the next one to inherit.
+                with sessions.use(sess):
+                    due = _pop_due_pings(name, now)
             except Exception:
                 logger.exception("Couldn't read pings for user=%s", name)
                 continue
+            finally:
+                sess.lock.release()
+            due = [entry for entry in due if entry[2]]
+            if not due:
+                continue
+            with _ping_delivering_lock:
+                _ping_delivering.add(name)
+            worker = threading.Thread(target=_deliver_pings, args=(name, due),
+                                      daemon=True, name=f"ping:{name}")
+            worker.start()
+            handed = True
+            started.append(worker)
+        finally:
+            if not handed:
+                _ping_slots.release()
+    if wait:
+        for worker in started:
+            worker.join()
+
+
+def _deliver_pings(name, due):
+    """Run `name`'s due pings, one agent turn each, on this thread. They are
+    already out of ping.md (_pop_due_pings)."""
+    try:
+        sess = sessions.for_user(name)
+        # Their conversation lock across the deliveries: a chat turn of theirs
+        # that started meanwhile finishes first, and none starts in the middle.
+        with sess.lock, sessions.use(sess), app.app_context():
             for stamp, repeat, action in due:
-                if not action:
-                    continue
                 try:
                     activate_session(name)
+                    # Armed for Stop, like a turn typed into the chat: a page
+                    # watching this run has the same button.
+                    cancellation.begin_turn(sess)
                     # Injected as a user turn, so the model acts on it and the
                     # bubble shows in the UI, and flagged ping=True so it skips
                     # the intent classifier (see agent._PING_SETTINGS). The
                     # header says when it was due as well as when it fired: a
                     # server that was asleep delivers late, and "your 8:00
                     # reminder" at 11:40 should say so rather than pretend.
-                    fired = now.strftime(agent.PING_TIME_FORMAT)
+                    # Read here, with the user bound, so a host that gives
+                    # each account a clock of its own compares like with like.
+                    fired = datetime.now().strftime(agent.PING_TIME_FORMAT)
                     when = (f"due {stamp}, fired {fired}" if stamp != fired
                             else f"due {stamp}")
                     if repeat:
@@ -3517,6 +3595,14 @@ def _fire_due_pings():
                     # someone not to rely on reminders.
                     logger.exception("Ping delivery failed for user=%s scheduled=%s", name, stamp)
                     _note_failed_ping(name, action, repeat, e)
+                finally:
+                    cancellation.end_turn(sess)
+    except Exception:
+        logger.exception("Ping deliveries for user=%s ended early", name)
+    finally:
+        with _ping_delivering_lock:
+            _ping_delivering.discard(name)
+        _ping_slots.release()
 
 
 # ── The Tasks window: scheduled tasks ────────────────────────
