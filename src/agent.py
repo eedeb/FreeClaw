@@ -5635,7 +5635,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                     # call. What arrived could be patched into valid JSON, and
                     # would then run with whatever happened to make it out.
                     raise ValueError("the arguments were cut off before they finished")
-                args_dict = json.loads(repair_json(tc["function"]["arguments"]))
+                # No arguments at all is a call with none, which some
+                # providers send as an empty string rather than "{}". That
+                # isn't JSON, so the call was refused as unparseable and a
+                # tool that takes nothing (or only optional things) never ran.
+                raw_args = tc["function"]["arguments"] or ""
+                args_dict = json.loads(repair_json(raw_args)) if raw_args.strip() else {}
                 # MCP (and malformed) tool calls can arrive with a
                 # non-object payload; keep _run_tool, which assumes a dict,
                 # crash-free.

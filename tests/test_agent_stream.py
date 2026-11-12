@@ -86,6 +86,11 @@ class TestStream(unittest.TestCase):
         _, ran, _ = self.run_turn([first, [chunk(content="done", finish="stop")]])
         self.assertEqual(ran, [("create_file", {"filename": "a.txt", "contents": "hi"})])
 
+    def test_a_call_with_no_arguments_runs(self):
+        first = [chunk(calls=[call(0, "a", "get_time", "")], finish="tool_calls")]
+        _, ran, _ = self.run_turn([first, [chunk(content="done", finish="stop")]])
+        self.assertEqual(ran, [("get_time", {})])
+
     def test_a_call_cut_off_by_a_broken_stream_is_not_run(self):
         first = breaking([chunk(calls=[call(0, "a", "create_file", '{"filename": "a.txt", "contents": "half of the')])])
         events, ran, _ = self.run_turn([first, [chunk(content="sorry, again", finish="stop")]])
