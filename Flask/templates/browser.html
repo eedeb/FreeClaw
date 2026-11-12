@@ -199,6 +199,10 @@
     .viewport { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
     #screen { display: block; width: 100%; height: 100%; object-fit: contain; cursor: default; }
     #screen:focus { outline: none; }
+    /* What a phone's keyboard types into (a canvas can't raise one). Out of
+       sight, and 16px so iOS doesn't zoom the page to it. */
+    #kbd { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0;
+           opacity: 0; font-size: 16px; resize: none; pointer-events: none; background: transparent; }
 
     /* Nothing open: a new-tab page. */
     .overlay {
@@ -389,6 +393,8 @@
 
   <div class="viewport">
     <canvas id="screen" width="1280" height="800" tabindex="0" aria-label="The agent's browser"></canvas>
+    <textarea id="kbd" aria-hidden="true" tabindex="-1" autocapitalize="off" autocomplete="off"
+              autocorrect="off" spellcheck="false"></textarea>
     <div class="overlay" id="overlay">
       <div class="ntp-logo"><img src="https://freeclaw.eedeb.dev/eagle.png" alt=""/></div>
       <div id="overlay-icon"></div>
@@ -735,6 +741,9 @@
     if (!held || e.pointerId !== held.pointerId) return;
     e.preventDefault();
     release(toPage(e, true));
+    // A finger, not a mouse: bring the phone's keyboard up for what was
+    // tapped (it has to be asked for inside the tap).
+    if (controlling && e.pointerType === 'touch') openKeyboard();
   });
   // The press ending some other way — a system gesture, the window losing
   // focus mid-hold — still lets go, at the last place it was.
@@ -779,6 +788,46 @@
     if (text) { e.preventDefault(); send({ kind: 'text', text: text }); }
   });
 
+  // ── a phone's keyboard ──
+  // A canvas can't raise the on-screen keyboard, so on a phone or tablet
+  // nothing could be typed into the agent's browser at all: no username, no
+  // password. A hidden text box takes the keyboard instead, and what changes
+  // in it is passed on: letters as text, a deletion as Backspace, a new line
+  // as Enter. Compared whole each time rather than key by key, because phone
+  // keyboards compose, autocorrect and swipe whole words in. It always holds
+  // one space, so a Backspace with nothing typed still registers.
+  const kbd = el('kbd');
+  const KBD_REST = ' ';
+  let kbdShadow = KBD_REST;
+  function openKeyboard() {
+    kbd.value = kbdShadow = KBD_REST;
+    try { kbd.focus({ preventScroll: true }); } catch (e) { kbd.focus(); }
+  }
+  kbd.addEventListener('input', () => {
+    if (!controlling) { kbd.value = kbdShadow = KBD_REST; return; }
+    const now = kbd.value;
+    let same = 0;
+    while (same < now.length && same < kbdShadow.length && now[same] === kbdShadow[same]) same++;
+    for (let i = kbdShadow.length - same; i > 0; i--) send({ kind: 'key', key: 'Backspace' });
+    const added = now.slice(same).split('\n');
+    added.forEach((part, i) => {
+      if (i) send({ kind: 'key', key: 'Enter' });
+      if (part) send({ kind: 'text', text: part });
+    });
+    kbdShadow = now;
+    // Emptied, sent, or grown long: back to the one space (never mid-word,
+    // where it would cut the keyboard's composition off).
+    if (!now || now.includes('\n') || (now.length > 200 && /\s$/.test(now))) {
+      kbd.value = kbdShadow = KBD_REST;
+    }
+  });
+  kbd.addEventListener('keydown', (e) => {
+    // Keys that change nothing in the box (Tab, the arrows) go as themselves.
+    if (!controlling || !NAMED_KEYS.has(e.key) || e.key === 'Enter' || e.key === 'Backspace') return;
+    e.preventDefault();
+    send({ kind: 'key', key: e.key });
+  });
+
   // ── chrome ──
   // Opens the agent's browser at `url`, starting it if it isn't running
   // (/api/browser/agent/open), and takes control. False if it couldn't.
@@ -799,9 +848,12 @@
 
   // One address bar: with the browser open it takes control (if need be)
   // and goes there; with it closed it opens it there.
+  let opening = false;           // the browser is being started for an address
   async function go() {
     const url = el('addr').value.trim();
-    if (!url) return;
+    // One at a time: Enter pressed again while the browser was still starting
+    // asked for it to be started again, each one waiting on the last.
+    if (!url || opening) return;
     if (!controlling && agentLive && !(await takeControl())) return;
     if (controlling) {
       send({ kind: 'nav', url: url });
@@ -812,7 +864,10 @@
       navState('Loading…');
       return;
     }
-    if (await openAt(url)) addrDirty = false;
+    opening = true;
+    try {
+      if (await openAt(url)) addrDirty = false;
+    } finally { opening = false; }
   }
 
   el('addr').addEventListener('keydown', (e) => {
@@ -1020,7 +1075,11 @@
   async function renewControl() {
     if (!controlling) return;
     try {
-      await api('agent/control', { method: 'POST', body: JSON.stringify({ take: true }) });
+      // Hidden, this page may not get to run again for a while (a phone on
+      // another app runs none of its timers): say so, and the lease is long
+      // enough to fetch a password or a sign-in code and come back.
+      await api('agent/control', { method: 'POST',
+                                   body: JSON.stringify({ take: true, away: document.hidden }) });
     } catch (e) {
       if (controlling) lostControl(e.message);
     }
@@ -1159,13 +1218,28 @@
     clearTimeout(stall);
     if (agentCtl !== ctl) return;
     agentCtl = null;
-    setTimeout(() => { if (!agentCtl) openAgentStream(); }, 1500);
+    setTimeout(() => { if (!agentCtl && !document.hidden) openAgentStream(); }, 1500);
   }
+
+  // Nobody is looking at a hidden tab. Its stream is what tells the server
+  // someone is watching, which keeps the agent's browser sending frames and
+  // keeps it from closing when idle: a tab left open in the background held
+  // a browser open for as long as it stayed there. So the stream stops when
+  // the page is hidden and starts again when it's shown, and control held
+  // across that is renewed for the time away (renewControl).
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (agentCtl) { const ctl = agentCtl; agentCtl = null; ctl.abort(); }
+    } else if (!agentCtl) {
+      openAgentStream();
+    }
+    renewControl();
+  });
 
   document.body.classList.add('watching');
   showOverlay("Connecting to your agent's browser…", true);
   syncControls();
-  openAgentStream();
+  if (!document.hidden) openAgentStream();   // a tab opened in the background waits to be shown
   poll();
 
   // The chat button opened this in a tab of its own, and the chat is still

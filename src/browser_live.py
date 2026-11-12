@@ -47,6 +47,13 @@ VIEWER_TIMEOUT = 12.0
 # Control works the same way: the Browser app renews it while the person has
 # the wheel, and a closed tab hands the browser back within this long.
 CONTROL_LEASE = 20.0
+# The lease while the Browser app says the person has stepped away from it
+# with control (its tab hidden, the phone on another app). A browser stops a
+# hidden page's timers, on a phone at once, so the 20-second lease lapsed
+# while they fetched a password or a sign-in code, and the agent took its
+# browser back in the middle of their login. Long enough for that trip; a
+# tab that is closed still hands back at once (it says so as it goes).
+AWAY_LEASE = 180.0
 # How long `release` waits for the child to save the logins and say so.
 RELEASE_WAIT = 35.0
 
@@ -319,18 +326,21 @@ def _file_logins(user, params):
     return result
 
 
-def take(user):
+def take(user, away=False):
     """The person takes (or keeps) control of `user`'s agent browser. Call
     every few seconds for as long as they have it. False if there's no
-    browser to take."""
+    browser to take. `away`: their Browser app is about to stop being able to
+    call (see AWAY_LEASE), so this one has to last."""
     with _lock:
         feed = _feeds.get(user)
         if feed is None or feed.proc is None:
             return False
         now = time.monotonic()
-        feed.asked = now
+        seconds = AWAY_LEASE if away else CONTROL_LEASE
+        # _holding measures CONTROL_LEASE from `asked`: put it that far ahead.
+        feed.asked = now + (seconds - CONTROL_LEASE)
         feed.viewers = now
-        _outbox(feed.proc).put("notifications/freeclaw/control", {"seconds": CONTROL_LEASE})
+        _outbox(feed.proc).put("notifications/freeclaw/control", {"seconds": seconds})
         _send_lease(feed)
         return True
 
