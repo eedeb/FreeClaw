@@ -145,6 +145,48 @@ def _tools_to_responses(tools):
     return out
 
 
+# ── one tool list for the whole conversation ─────────────────
+#
+# A provider caches a request from its first token, and the tool definitions
+# sit at the front of it. A turn that sends only the tools it was routed to
+# therefore starts with a different list from the turn before, and nothing
+# after the change can be read from the cache: measured on gpt-6-luna, 42 of
+# 49 new messages read 0 tokens from it, and every load_tools mid-turn threw
+# the whole prefix away again (38% of one long conversation's uncached input).
+#
+# OpenAI's allowed_tools fixes it: send every tool, in one stable order, and
+# name the ones this request may call in tool_choice. tool_choice isn't part of
+# the cached prefix, so the allowed set can change from turn to turn — and step
+# to step — and the whole prefix still matches (measured: 14,395 of 14,398
+# tokens read from cache after the allowed set changed; the model only ever
+# called allowed tools). A turn with no tools sends tool_choice "none", which
+# keeps the prefix just the same.
+#
+# The caller passes the full list under TOOL_UNIVERSE_KEY (agent.py does,
+# only to providers speaking Responses — and drops it for one that refuses it).
+
+TOOL_UNIVERSE_KEY = "tool_universe"
+# Past this many, the full list goes unused and the turn's own tools are sent
+# instead: 300 were accepted in testing, and a list that long is mostly cost.
+MAX_UNIVERSE_TOOLS = 256
+
+
+def _allowed_tools_universe(universe, tools):
+    """The full tool list to send with an allowed_tools choice, or None to
+    send just `tools` the old way.
+
+    Sorted by name so the same set always serializes the same, whatever order
+    a catalogue was rebuilt in. None when there's no list, when it's too long,
+    or when the turn has a tool the list lacks (a caller added one of its own):
+    allowing a tool the request doesn't define would be a 400."""
+    if not universe:
+        return None
+    full = {t["name"]: t for t in _tools_to_responses(universe)}
+    if len(full) > MAX_UNIVERSE_TOOLS or any(t["name"] not in full for t in tools):
+        return None
+    return [full[name] for name in sorted(full)]
+
+
 def _messages_to_input(messages):
     """The conversation as a flat Responses `input` list.
 
@@ -214,7 +256,13 @@ def build_request(call_kwargs):
         "reasoning": {"effort": REASONING_EFFORT, "summary": REASONING_SUMMARY},
     }
     tools = _tools_to_responses(call_kwargs.get("tools"))
-    if tools:
+    universe = _allowed_tools_universe(call_kwargs.get(TOOL_UNIVERSE_KEY), tools)
+    if universe is not None:
+        request["tools"] = universe
+        request["tool_choice"] = ({"type": "allowed_tools", "mode": "auto",
+                                   "tools": [{"type": "function", "name": t["name"]} for t in tools]}
+                                  if tools else "none")
+    elif tools:
         request["tools"] = tools
     if call_kwargs.get("max_tokens"):
         request["max_output_tokens"] = call_kwargs["max_tokens"]

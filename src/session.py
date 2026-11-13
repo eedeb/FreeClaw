@@ -58,6 +58,7 @@ import contextlib
 import contextvars
 import os
 import threading
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -124,6 +125,16 @@ class Session:
         # conversation; a child spawned by agent.spawn_subagent gets parent + 1.
         # agent.MAX_SUBAGENT_DEPTH is what stops that recursing without end.
         self.depth = depth
+
+        # What the last routed turn sent, kept past its end so the next
+        # message can re-send the same thing and read it from the provider's
+        # cache instead of a fresh pick (agent._append_or_trim). None until a
+        # routed turn ends, and dropped whenever the system message is
+        # rebuilt, since nothing after it is cached then.
+        self.last_layout = None
+        # How many requests each recent turn made, newest last: how many times
+        # the coming turn is likely to re-read what it sends.
+        self.recent_requests = []
 
         # ── per-turn state ──
         self.turn_usage = new_turn_usage()
@@ -217,6 +228,20 @@ class Session:
         }
 
     def clear_turn_prefix(self):
+        prefix = self.turn_prefix
+        if prefix:
+            self.recent_requests = (self.recent_requests + [self.turn_usage.get("requests", 0)])[-8:]
+            self.last_layout = None
+            if prefix.get("picked") is not None:
+                start, end = prefix["start"], len(self.messages)
+                picked = list(prefix["picked"])
+                self.last_layout = {
+                    "start": start, "picked": picked, "end": end, "at": time.monotonic(),
+                    # The very message objects it covered, so a history
+                    # edited since (a message deleted, the conversation
+                    # replaced) is noticed rather than re-sent wrong.
+                    "ids": _layout_ids(self.messages, start, end, picked),
+                }
         self.turn_prefix = {}
         # Same lifecycle as the prefix: both belong to one user turn. Cleared
         # after the assistant message that ends the turn has been appended, so
@@ -346,3 +371,17 @@ def discard(name):
     holding it keeps running against the object it has."""
     with _registry_lock:
         return _registry.pop(name, None)
+
+
+def _layout_ids(messages, start, end, picked):
+    """Identity of the messages a layout covers: the picked ones and
+    everything from `start` to `end`."""
+    return tuple(id(messages[i]) for i, _kind in picked if i < len(messages)) + tuple(
+        id(m) for m in messages[start:end])
+
+
+def layout_intact(messages, layout):
+    """Whether `messages` still holds, at the same places, the messages
+    `layout` was taken over."""
+    return (len(messages) >= layout["end"]
+            and _layout_ids(messages, layout["start"], layout["end"], layout["picked"]) == layout["ids"])
