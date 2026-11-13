@@ -2393,7 +2393,7 @@ def build_file_tools():
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "Lists a folder of their files (default: the top); folders end in /.",
+                "description": "Lists a folder of their files (default: the top) and what's in its folders, a few levels down; folders end in /. A folder shown with only a count, like (550 files), opens when you list it.",
                 "parameters": { "type": "object", "properties": {
                     "path": { "type": "string", "description": "A folder, as the tools show it." } } }
             }
@@ -3229,6 +3229,92 @@ _PROTECTED_FILES = {
 }
 
 
+# list_files shows what's under a folder a few levels down, not just the folder
+# itself. One level at a time, a file three folders deep took four calls in a
+# row to the same tool, and the third is the one the repeat guard holds back
+# (TOOL_CALL_RUN_LIMIT) — so an agent looking for a video it had made found
+# projects/, then drafts/, was stopped, and told the person the file wasn't
+# there (2026-11-12). Folders open breadth-first while LIST_NESTED_LINES lasts,
+# whole or not at all; one that doesn't fit, or sits LIST_DEPTH levels down,
+# says how much is in it instead, and listing it shows the rest. The folder
+# asked for is always shown in full, as before.
+LIST_DEPTH = 4
+LIST_NESTED_LINES = 80
+
+
+def _folder_entries(path):
+    """[(name, is_folder, can_open)] in `path`, or None if it can't be read.
+    A link is shown as what it points at but never opened, so the listing
+    never walks out of the person's files."""
+    try:
+        with os.scandir(path) as it:
+            found = []
+            for e in it:
+                try:
+                    found.append((e.name, e.is_dir(), e.is_dir(follow_symlinks=False)))
+                except OSError:
+                    found.append((e.name, False, False))
+    except OSError:
+        return None
+    return sorted(found, key=lambda x: x[0].lower())
+
+
+def _how_much(entries):
+    if entries is None:
+        return ""
+    files = sum(not d for _, d, _ in entries)
+    folders = len(entries) - files
+    parts = [f"{n} {w}{'s' if n != 1 else ''}" for n, w in ((files, "file"), (folders, "folder")) if n]
+    return f" ({', '.join(parts) if parts else 'empty'})"
+
+
+def _list_folder(here, folder):
+    """What list_files answers for the folder at `here` (`folder` as the tools
+    show it, "" for the top)."""
+    where = folder + "/" if folder else "their files"
+    top = _folder_entries(here) or []
+    opened = {"": top}
+    queue = [(name, 1) for name, _, real in top if real]
+    budget = LIST_NESTED_LINES
+    while queue:
+        rel, depth = queue.pop(0)
+        entries = _folder_entries(os.path.join(here, rel))
+        if depth < LIST_DEPTH and entries is not None and len(entries) <= budget:
+            opened[rel] = entries
+            budget -= len(entries)
+            queue += [(rel + "/" + name, depth + 1) for name, _, real in entries if real]
+        else:
+            opened[rel] = ("closed", entries)
+    prefix = folder + "/" if folder else ""
+
+    def label(rel):
+        got = opened.get(rel)
+        if isinstance(got, list):
+            return prefix + rel + "/" + ("" if got else " (empty)")
+        return prefix + rel + "/" + _how_much(got[1] if got else None)
+
+    if not any(isinstance(opened.get(n), list) and opened[n] for n, d, _ in top if d):
+        # Nothing below this folder's own: the one-line answer, as it always was.
+        shown = [label(n)[len(prefix):] if d else n
+                 for n, d, _ in sorted(top, key=lambda x: (not x[1], x[0].lower()))]
+        return f"In {where}: " + (", ".join(shown) if shown else "nothing")
+    lines = [f"In {where}:"]
+
+    def show(rel, indent):
+        entries = opened[rel]
+        files = [n for n, d, _ in entries if not d]
+        lines.extend("  " * indent + n for n in files)
+        for name, is_dir, _ in entries:
+            if not is_dir:
+                continue
+            sub = (rel + "/" + name) if rel else name
+            lines.append("  " * indent + label(sub))
+            if isinstance(opened.get(sub), list):
+                show(sub, indent + 1)
+    show("", 0)
+    return "\n".join(lines)
+
+
 def _filename_arg(args_dict, take_basename=False, root=None):
     """The tool call's `filename` argument as (path, error) — exactly one of
     the two is set. The path is relative to the person's files and may go
@@ -3808,10 +3894,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         here = os.path.join(static_dir, folder) if folder else static_dir
         if not os.path.isdir(here):
             return f"{folder}: not a folder." if os.path.exists(here) else f"{folder}: not found."
-        names = sorted(os.listdir(here), key=lambda n: (not os.path.isdir(os.path.join(here, n)), n.lower()))
-        shown = [n + "/" if os.path.isdir(os.path.join(here, n)) else n for n in names]
-        where = folder + "/" if folder else "their files"
-        return f"In {where}: " + (", ".join(shown) if shown else "nothing")
+        return _list_folder(here, folder)
 
     if command_name == 'read_web':
         return scraper.scrape(parameter)
