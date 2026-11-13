@@ -61,13 +61,51 @@ class FilePaths(unittest.TestCase):
         self.put("projects/drafts/a.md", "x")
         self.put("ping.md", "")
         top = self.tool("list_files")
-        self.assertTrue(top.startswith("In their files: "), top)
-        self.assertIn("projects/", top)
+        self.assertEqual(top, "In their files:\nping.md\nprojects/\n  projects/drafts/\n    a.md")
         self.assertIn("ping.md", top)
-        self.assertEqual(self.tool("list_files", path="projects"), "In projects/: drafts/")
+        self.assertEqual(self.tool("list_files", path="projects"), "In projects/:\nprojects/drafts/\n  a.md")
         self.assertEqual(self.tool("list_files", path="projects/drafts/"), "In projects/drafts/: a.md")
         self.assertIn("not found", self.tool("list_files", path="nope"))
         self.assertIn("not a folder", self.tool("list_files", path="ping.md"))
+
+    def test_list_files_finds_a_file_folders_down_in_one_call(self):
+        # 2026-11-12: one level a call, the third call (drafts/ → million_short/)
+        # was the one the repeat guard held, and the agent said the video wasn't there.
+        self.put("projects/drafts/million_short/what_if.mp4", "v")
+        self.put("projects/drafts/million_short/frames/0001.jpg", "f")
+        self.put("ping.md", "")
+        top = self.tool("list_files")
+        self.assertIn("projects/drafts/million_short/\n", top)
+        self.assertIn("\n      what_if.mp4", top)
+        self.assertIn("projects/drafts/million_short/frames/ (1 file)", top)  # 4 down: a count
+        self.assertTrue(top.startswith("In their files:\nping.md\nprojects/\n"), top)
+
+    def test_list_files_big_folder_is_a_count(self):
+        for i in range(agent.LIST_NESTED_LINES + 1):
+            self.put(f"out/frames/{i:04}.jpg", "f")
+        self.put("out/video.mp4", "v")
+        top = self.tool("list_files")
+        self.assertIn(f"out/frames/ ({agent.LIST_NESTED_LINES + 1} files)", top)
+        self.assertIn("  video.mp4", top)
+        self.assertNotIn("0000.jpg", top)
+        self.assertIn("0000.jpg", self.tool("list_files", path="out/frames"))  # listing it opens it
+
+    def test_list_files_empty_and_flat(self):
+        os.makedirs(os.path.join(self.files, "a", "empty"))
+        self.put("a/x.txt", "x")
+        self.assertEqual(self.tool("list_files"), "In their files:\na/\n  x.txt\n  a/empty/ (empty)")
+        self.assertEqual(self.tool("list_files", path="a/empty"), "In a/empty/: nothing")
+
+    def test_list_files_never_opens_a_link(self):
+        outside = os.path.join(self.base, "elsewhere")
+        os.makedirs(outside)
+        with open(os.path.join(outside, "secret.txt"), "w") as f:
+            f.write("no")
+        self.put("p/a.txt", "x")
+        os.symlink(outside, os.path.join(self.files, "p", "link"))
+        top = self.tool("list_files")
+        self.assertIn("p/link/", top)
+        self.assertNotIn("secret.txt", top)
 
     def test_stays_inside(self):
         outside = os.path.join(self.base, "secret.txt")
