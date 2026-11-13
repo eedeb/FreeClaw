@@ -1057,6 +1057,9 @@ def _prepare_kwargs(kwargs, model_override, extra_body, api="chat", images=False
     # semantics null means the same as omitting the key, but Google's
     # Gemini shim 400s on any optional field sent as JSON null.
     call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
+    # The full tool list is layered on in _create_completion, as an extra a
+    # provider may refuse; the plain request never carries it.
+    call_kwargs.pop(responses_api.TOOL_UNIVERSE_KEY, None)
     if "messages" in call_kwargs:
         messages = (_with_tool_images(call_kwargs["messages"]) if images
                     else _without_tool_images(call_kwargs["messages"]))
@@ -1177,6 +1180,14 @@ def _create_completion(exclude=(), **kwargs):
             if image_kwargs is not None:
                 call_kwargs = image_kwargs
                 applied.append("images")
+            # Every tool, with the turn's own named in tool_choice, so the
+            # cached prefix survives a new message and a load_tools — see
+            # responses_api's note on it. Responses-only: that's where
+            # allowed_tools exists.
+            universe = kwargs.get(responses_api.TOOL_UNIVERSE_KEY)
+            if api == "responses" and universe:
+                call_kwargs = {**call_kwargs, responses_api.TOOL_UNIVERSE_KEY: universe}
+                applied.append("allowed_tools")
             # stream_options and the cache_control breakpoints are
             # chat-completions fields; build_request assembles the Responses
             # equivalents itself, so there is nothing to add for those.
@@ -2045,6 +2056,8 @@ def refresh_context():
     # Every request of a turn re-sends a pinned prefix that starts at this
     # message, and it no longer says what it said when it was pinned.
     _clear_turn_prefix()
+    # The system message is rebuilt: nothing after it is cached any more.
+    _sess().last_layout = None
     messages[0]["content"] = (_session_instructions(sess) + _context_block()
                               + _VOLATILE_HEADER + _volatile_tail())
     return True
@@ -2149,6 +2162,8 @@ def reset(tts=False, refresh=True, subagent=False):
     # that no longer exists. Cleared before the tail is rendered below, so the
     # old turn's notes aren't written into the new conversation's first message.
     _clear_turn_prefix()
+    # The system message is rebuilt: nothing after it is cached any more.
+    _sess().last_layout = None
     # In place, not rebound — see set_messages() for why.
     sess.messages[:] = [{"role": "system", "content":
                          _instructions(tts, subagent or sess.depth > 0)
@@ -4734,6 +4749,108 @@ def _jev_picked(messages, end, route):
     return [(i, "full" if i in full else "text") for i in sorted(full | text)]
 
 
+# ── re-send the last message's context, or Jev's fresh pick ──
+#
+# A provider caches a request from the front, so what a new message sends
+# decides what it pays twice over: once now, writing whatever doesn't match the
+# last request into the cache (at more than plain input price), and again on
+# every step of the turn, reading what does (at a small fraction of it).
+#
+# Jev's pick for each message is the smallest context that serves it, but it's
+# a different selection from the last one, so everything after the first
+# message that differs is written again. Re-sending exactly what the last turn
+# sent, plus what's happened since, writes almost nothing — but carries the
+# last turn's tool output along and gets longer every time. Neither wins
+# always: replayed over 71 real conversations, never re-picking cost 17% more
+# on gpt-6-luna than re-picking every message, and choosing per message by the
+# arithmetic below cost less than either.
+#
+# The choice, per routed message, in units of one cached read of one token:
+#   re-pick: k * picked + ratio * (picked - shared prefix)
+#   re-send: k * resent + ratio * new since the last request
+# where k is the requests the turn will probably make (this conversation's
+# recent turns), and ratio is what writing a token costs over reading it — a
+# property of the model, so a host running several gives each its own
+# (_write_read_ratio). Re-sending is also off when Jev wants something the
+# last context lacks (it knows what the message needs; the arithmetic doesn't),
+# past APPEND_MAX_TOKENS (a long context costs attention as well as money),
+# and when the cache has likely gone cold (_cache_warm), when there's nothing
+# left to save by it.
+
+APPEND_TURNS = os.environ.get("FC_APPEND_TURNS", "1") != "0"
+CACHE_WRITE_READ_RATIO = float(os.environ.get("FC_CACHE_WRITE_READ_RATIO") or 12.5)
+# OpenAI keeps an unused prefix for 5-10 minutes by default; a host that asks
+# for longer retention raises this.
+CACHE_WARM_SECONDS = float(os.environ.get("FC_CACHE_WARM_SECONDS") or 300)
+APPEND_MAX_TOKENS = int(os.environ.get("FC_APPEND_MAX_TOKENS") or 64_000)
+EXPECTED_REQUESTS = 6
+
+
+def _write_read_ratio(sess):
+    """Cache write price over cache read price for the model this turn runs on."""
+    return CACHE_WRITE_READ_RATIO
+
+
+def _append_max_tokens(sess):
+    """The longest context a message re-sends rather than re-picks."""
+    return APPEND_MAX_TOKENS
+
+
+def _cache_warm(sess, layout):
+    """Whether the provider likely still holds what the last turn sent."""
+    return time.monotonic() - layout["at"] < CACHE_WARM_SECONDS
+
+
+def _expected_requests(sess):
+    recent = [n for n in (sess.recent_requests or [])[-5:] if n]
+    return sum(recent) / len(recent) if recent else EXPECTED_REQUESTS
+
+
+def _token_estimate(messages):
+    """Roughly how many tokens `messages` is, by characters. Only ever
+    compared with another estimate made the same way."""
+    n = 0
+    for m in messages:
+        n += len(str(m.get("content") or ""))
+        for tc in m.get("tool_calls") or ():
+            n += len(json.dumps(tc.get("function") or {}))
+        for item in m.get("reasoning_items") or ():
+            n += len(str(item.get("encrypted_content") or "")) // 2
+    return n // 4
+
+
+def _append_or_trim(sess, messages, full_start, picked):
+    """(full_start, picked) for this routed turn: Jev's fresh pick as given, or
+    the last turn's, re-sent with everything since. See the note above."""
+    layout = sess.last_layout
+    if (not APPEND_TURNS or not layout or not sessions.layout_intact(messages, layout)
+            or layout["start"] > full_start or not _cache_warm(sess, layout)):
+        return full_start, picked, None
+    kept = dict(layout["picked"])
+    kept.update({i: "full" for i in range(layout["start"], full_start)})
+    if any(i not in kept or (kind == "full" and kept[i] != "full") for i, kind in picked):
+        return full_start, picked, None
+    resent = _history_for_request(messages, layout["start"], layout["start"], layout["picked"])
+    fresh = _history_for_request(messages, full_start, full_start, picked)
+    a, t = _token_estimate(resent), _token_estimate(fresh)
+    if a > _append_max_tokens(sess):
+        return full_start, picked, None
+    shared = 0
+    for x, y in zip(resent, fresh):
+        if x is not y and x != y:
+            break
+        shared += _token_estimate([x])
+    new = _token_estimate(messages[layout["end"] - 1:])
+    k, ratio = _expected_requests(sess), _write_read_ratio(sess)
+    repick = k * t + ratio * (t - shared)
+    resend = k * a + ratio * new
+    choice = {"resend": resend < repick, "k": round(k, 1), "ratio": ratio,
+              "tokens": {"resend": a, "repick": t}}
+    if choice["resend"]:
+        return layout["start"], layout["picked"], choice
+    return full_start, picked, choice
+
+
 def _jev_sections_block(names, sections):
     """The memory sections Jev opened for this turn, for the live tail, within
     CONTEXT_INLINE_BUDGET. Returns (block, names actually opened)."""
@@ -4756,7 +4873,15 @@ LOAD_TOOLS_NAME = "load_tools"
 
 def _load_tools_tool(withheld):
     """The tool a routed turn asks for a withheld group with — offered only
-    while something is withheld."""
+    while something is withheld.
+
+    `withheld` None is the copy in the conversation's full tool list
+    (_tool_universe): it has to read the same on every request, so it names no
+    groups — the live context lists the ones that can be loaded, and
+    _load_tools answers a wrong name with that list."""
+    groups = {"type": "array", "items": {"type": "string"}}
+    if withheld is not None:
+        groups["items"]["enum"] = list(withheld)
     return {
         "type": "function",
         "function": {
@@ -4766,12 +4891,22 @@ def _load_tools_tool(withheld):
                            "Never call it first. Use it rather than saying you can't do something.",
             "parameters": {
                 "type": "object",
-                "properties": {"groups": {"type": "array",
-                                          "items": {"type": "string", "enum": list(withheld)}}},
+                "properties": {"groups": groups},
                 "required": ["groups"],
             },
         },
     }
+
+
+def _tool_universe(sess):
+    """Every tool this conversation could be allowed, sent whole on every
+    request so the cached prefix never changes with the turn's own choice
+    (see responses_api's allowed_tools note): the user's catalogue, less what
+    this depth may not have, plus load_tools when Jev routes."""
+    tools = _apply_depth_limit(list(tools_for(_tools_user())), sess) or []
+    if jev.enabled():
+        tools.append(_load_tools_tool(None))
+    return tools
 
 
 def _short_tool_name(t, gid):
@@ -5164,6 +5299,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             # goes verbatim; before it, exactly what Jev picked.
             full_start = len(agent_messages) - 1
             picked = _jev_picked(agent_messages, full_start, route)
+            # …or the last turn's context again, when that's cheaper.
+            full_start, picked, reuse = _append_or_trim(sess, agent_messages, full_start, picked)
             included = {i for i, _kind in picked}
             skipped = [m for n, m in enumerate(agent_messages[:full_start])
                        if n and n not in included]
@@ -5183,6 +5320,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             sess.turn_route = _jev_route_details(
                 route, groups, agent_messages, full_start, picked, eco_messages,
                 check_tools, opened, digest_items, sess)
+            # Whether the last message's context was re-sent, and why.
+            sess.turn_route["reuse"] = reuse
             yield {"type": "route", "route": sess.turn_route}
         else:
             # Normalised to an index either way (1 is "everything after the system
@@ -5313,6 +5452,9 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
     # Waits used up on this request (_RESUME_WAITS), shared by both places a
     # request can fail below.
     resumes = 0
+    # The conversation's full tool list, the same on every call this request
+    # makes, retries included (responses_api's allowed_tools note).
+    universe = {responses_api.TOOL_UNIVERSE_KEY: _tool_universe(sess)}
     while True:
         try:
             stream, provider = _create_completion(
@@ -5322,6 +5464,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 tools=check_tools,
                 top_p=1,
                 stream=True,
+                **universe,
             )
             break
         except AllProvidersFailedError as e:
@@ -5524,6 +5667,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 top_p=1,
                 stream=True,
                 exclude=dead_streams,
+                **universe,
             )
         except AllProvidersFailedError as e:
             # Nothing else to fall through to — but if what broke the stream
@@ -5549,6 +5693,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         top_p=1,
                         stream=True,
                         exclude=dead_streams,
+                        **universe,
                     )
                 except AllProvidersFailedError as again:
                     e = again
@@ -5577,6 +5722,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         tools=check_tools,
                         top_p=1,
                         stream=True,
+                        **universe,
                     )
                 except AllProvidersFailedError as again:
                     e = again
