@@ -1965,7 +1965,7 @@
       : `Routed by Jev · ${route.ms}ms · ${route.questions} questions · ${route.style}, temp ${route.temperature}`));
     const servers = Object.entries(route.servers || {});
     if (servers.length) {
-      panel.appendChild(rpEl('div', 'rp-none', 'Way chosen: ' + servers
+      panel.appendChild(rpEl('div', 'rp-none', 'Servers needed: ' + servers
         .map(([g, share]) => rpGroup(g) + (share != null ? ` ${Math.round(share * 100)}%` : '')).join(' · ')));
     }
     const section = title => {
