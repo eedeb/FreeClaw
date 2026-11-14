@@ -7,8 +7,9 @@ that one turn is sent:
   * which tools — each one on its own, built-in and MCP alike, so a turn that
     only needs to read a file gets read_file and not the other eight file
     tools, and a browser turn gets navigate and click but not drag;
-  * which MCP server is the way to do it, as one choice between them — see
-    PATH_SHARE;
+  * which MCP servers the request needs, each asked on its own, so one
+    message can need several ("check my inbox, put it on a site, and send me
+    the link") — see SERVER_THRESHOLD;
   * which earlier messages, picked individually — message 2 and message 4 and
     nothing in between is a valid answer — and for each picked reply, whether
     the tool results behind it come too;
@@ -84,16 +85,18 @@ MESSAGE_THRESHOLD = 0.3
 RAW_THRESHOLD = 0.5
 SECTION_THRESHOLD = 0.3
 
-# Which MCP server the request goes through is asked once, as a choice between
-# them, not server by server. Asked one at a time, "could the browser do it?"
-# and "could Composio do it?" are both fair yeses for "what are my recent
-# emails" — Gmail is a website too — so both went out, and they are the two
-# most expensive tool sets there are. A choice has to put its weight
-# somewhere. The winner always goes; a runner-up only with at least this
-# share, for requests that genuinely need two ("send me those prices on
-# Discord"), or where Jev is torn.
-PATH_SHARE = 0.2
-PATH_NONE = "none"
+# Which MCP servers go is asked server by server, each its own yes/no: a
+# request is often several jobs ("check my inbox, put it on a site, send me the
+# link" is the connected apps, the Developer app and the phone), and a single
+# choice between servers had to put its weight on one of them — it sent all of
+# a turn's tools for one job and none for the others (20/30 on a set of mixed
+# requests, every miss a request that needed two or more; 2026-11-14). Asked
+# one at a time, Jev splits them cleanly: 42/45 with every needed server, an
+# unneeded one in 9 of 45 (mostly the browser beside the connected apps).
+# Higher than TOOL_THRESHOLD: a server is a dozen tools at once, and at 0.3
+# "could the browser do it?" is a fair yes for anything with a website behind
+# it. A server's tools still each get their own question once it goes.
+SERVER_THRESHOLD = 0.4
 
 # The one-word label shown on the reply. Nothing else reads it.
 TAG_CRITERIA = {
@@ -255,6 +258,10 @@ def _state(user_input, cands, units, sections, servers=()):
     return "\n".join(parts)
 
 
+def _server_qid(gid):
+    return "srv_" + _qid(gid)
+
+
 def _questions(cands, units, sections, servers=()):
     qs = {
         "tag": {"type": "choice",
@@ -264,13 +271,11 @@ def _questions(cands, units, sections, servers=()):
                   "instructions": "How exact does the answer to the CURRENT REQUEST have to be?",
                   "criteria": dict(STYLE_CRITERIA)},
     }
-    if servers:
-        criteria = {_qid(gid): about for gid, about in servers}
-        criteria[PATH_NONE] = ("None of the MCP servers: built-in tools only (files, memory, "
-                               "web search, links) or no tools at all.")
-        qs["path"] = {"type": "choice",
-                      "instructions": "Which MCP server is the way to handle the CURRENT REQUEST?",
-                      "criteria": criteria}
+    for gid, _about in servers:
+        qs[_server_qid(gid)] = {
+            "type": "noul",
+            "instructions": f"Does any part of the CURRENT REQUEST need the [{_qid(gid)}] MCP "
+                            f"server? A request can need several servers, or none."}
     for qid, _label, _names in units:
         qs[qid] = {"type": "noul",
                    "instructions": f"Could fully handling the CURRENT REQUEST need tool [{qid}]?"}
@@ -336,7 +341,7 @@ class Route:
         self.tag, self.style = tag, style
         # Routed without a Jev call (_local_route).
         self.local = local
-        # {server group: share of the path choice} for the servers that went.
+        # {server group: Jev's probability it's needed} for the servers that went.
         self.servers = servers or {}
         self.tools, self.messages, self.sections = tools, messages, sections
         self.ms, self.questions = ms, questions
@@ -359,7 +364,7 @@ def route(user_input, messages, end, tools, sections, servers=()):
     message first. `tools` is [(name, group, description)] for every tool Jev
     may choose; `sections` is [(name, body)] of the memory sections that
     aren't always sent; `servers` is [(group, what it's for)] of the MCP
-    servers, whose tools are only sent if the server wins the path choice.
+    servers, whose tools are only sent if Jev says the request needs that server.
     Returns a Route, or None when there's no key or Jev didn't answer in time
     — the caller's cue to route the old way."""
     key = api_key()
@@ -384,14 +389,13 @@ def route(user_input, messages, end, tools, sections, servers=()):
     if style not in STYLE_CRITERIA:
         style = "balanced"
 
-    # The servers that go. Unanswered, every one does: leaning wide.
-    chosen = {gid: None for gid, _about in servers}
-    path = answers.get("path") or {}
-    shares = path.get("probabilities") or {}
-    if servers and shares:
-        chosen = {gid: round(float(shares.get(_qid(gid)) or 0), 2) for gid, _about in servers
-                  if _qid(gid) == path.get("choice")
-                  or float(shares.get(_qid(gid)) or 0) >= PATH_SHARE}
+    # The servers that go, each on its own answer. Unanswered, it goes:
+    # leaning wide.
+    chosen = {}
+    for gid, _about in servers:
+        p = _p(answers, _server_qid(gid))
+        if p is None or p >= SERVER_THRESHOLD:
+            chosen[gid] = None if p is None else round(p, 2)
     server_groups = {gid for gid, _about in servers}
 
     picked_tools = set()

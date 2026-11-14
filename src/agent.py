@@ -4594,7 +4594,7 @@ def _tool_name(t):
 def _jev_tool_groups(user):
     """([(group_id, short name for the model, tools)], [(group_id, what the
     server is for)]) for `user`: the built-in groups, then one per MCP server
-    they have on; and, for Jev's choice between servers, a line on each."""
+    they have on; and, for Jev's question on each server, a line on what it is for."""
     groups = [(gid, short, globals()[builder]())
               for gid, builder, short in _JEV_BUILTIN_GROUPS]
     registry = registry_for(user)
@@ -5015,7 +5015,7 @@ def _jev_route_details(route, groups, messages, full_start, picked, eco_messages
         "ms": route.ms,
         "questions": len(route.questions),
         "label": route.tag,
-        # Each MCP server that went, with its share of Jev's choice between them.
+        # Each MCP server that went, with Jev's probability that the request needs it.
         "servers": route.servers,
         "style": route.style,
         "temperature": route.temperature,
