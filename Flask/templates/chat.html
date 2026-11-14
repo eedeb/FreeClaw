@@ -928,6 +928,13 @@
     .tool-section:last-child { border-bottom: none; }
     .tool-section-label { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
     .tool-name { color: var(--accent-text); font-family: var(--mono); font-size: 11.5px; font-weight: 500; }
+
+    /* A finished message's steps, folded into one pill (stepsFolder). Open,
+       the steps sit indented under it, each still its own pill. */
+    .steps-body { display: none; margin: 4px 0 0 12px; padding-left: 10px;
+                  border-left: 1px solid var(--border); }
+    .steps-body.open { display: flex; flex-direction: column; gap: 2px; }
+    .steps-body > .tool-group { margin-left: 0; max-width: 100%; opacity: 1; animation: none; }
     .tool-code {
       font-family: var(--mono);
       font-size: 11.5px;
@@ -2165,7 +2172,7 @@
   }
 
   // ── Render a collapsible tool-call + result block ────────
-  function addToolBlock(toolName, argsStr, resultStr, isError) {
+  function addToolBlock(toolName, argsStr, resultStr, isError, parent) {
     removeEmpty();
 
     const group = document.createElement('div');
@@ -2212,7 +2219,7 @@
 
     group.appendChild(toggle);
     group.appendChild(details);
-    messagesEl.appendChild(group);
+    (parent || messagesEl).appendChild(group);
     return group;
   }
 
@@ -2224,7 +2231,7 @@
   //
   // Not counted in the token estimate below on purpose — it's stripped from
   // the history before any request goes out, so it never costs context.
-  function addReasoningBlock(text, live) {
+  function addReasoningBlock(text, live, parent) {
     removeEmpty();
 
     const group = document.createElement('div');
@@ -2252,7 +2259,7 @@
 
     group.appendChild(toggle);
     group.appendChild(details);
-    messagesEl.appendChild(group);
+    (parent || messagesEl).appendChild(group);
 
     return {
       wrap: group,
@@ -2338,6 +2345,68 @@
     };
   }
 
+  // ── A finished message's steps, folded ───────────────────
+  // Live, every tool call and reasoning block shows as it happens, so the
+  // person can follow along. Once the message is in, they're history: the
+  // re-render folds each unbroken run of them (between what the person said
+  // and what the agent said) into one pill, "Used 6 tools", that opens onto
+  // the same blocks as before — each still opening onto its call and result.
+  // Sign-in, captcha and approval cards are never folded: they can ask for
+  // something, and a run is broken around them. A run of reasoning alone,
+  // no tools, stays as it is (it's one pill already).
+  function stepsFolder() {
+    const group = document.createElement('div');
+    group.className = 'tool-group steps-group';
+    const toggle = document.createElement('div');
+    toggle.className = 'tool-toggle steps-toggle';
+    toggle.setAttribute('role', 'button');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.tabIndex = 0;
+    toggle.innerHTML = '<i class="tool-toggle-arrow">▶</i><span class="steps-label"></span>';
+    const body = document.createElement('div');
+    body.className = 'steps-body';
+    const flip = () => {
+      const open = body.classList.toggle('open');
+      toggle.classList.toggle('open', open);
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    toggle.addEventListener('click', flip);
+    toggle.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
+    });
+    group.appendChild(toggle);
+    group.appendChild(body);
+    messagesEl.appendChild(group);
+    const names = [];
+    let tools = 0;
+    return {
+      body,
+      tool(name) { tools++; if (name && !names.includes(name)) names.push(name); },
+      close() {
+        if (!tools) {
+          // Nothing but reasoning: put it back where it was, unfolded.
+          while (body.firstChild) group.before(body.firstChild);
+          group.remove();
+          return;
+        }
+        const shown = names.slice(0, 3).map(stepName).join(', ') + (names.length > 3 ? '…' : '');
+        group.querySelector('.steps-label').textContent =
+          `Used ${tools} tool${tools === 1 ? '' : 's'}` + (shown ? ` · ${shown}` : '');
+      },
+    };
+  }
+
+  // A tool's name as the pill lists it: an MCP tool without its
+  // mcp_<server>_ prefix, underscores as spaces.
+  function stepName(name) {
+    let servers = [];
+    try { servers = mcpServers || []; } catch { /* not loaded yet */ }
+    const s = servers.find(x => name.startsWith(`mcp_${x.name}_`));
+    // Before the server list has loaded, any mcp_<one word>_ prefix goes.
+    return (s ? name.slice(`mcp_${s.name}_`.length) : name.replace(/^mcp_[^_]+_/, ''))
+      .replace(/_/g, ' ').toLowerCase();
+  }
+
   // ── Render full conversation returned by the agent ───────
   // opts.keepLiveUsage: don't recompute the token totals from the saved
   // messages. Set when re-rendering right after a turn we streamed, because
@@ -2380,10 +2449,16 @@
     let lastUserIdx = -1;
     conversation.forEach((m, i) => { if (m.role === 'user' && !m.auto) lastUserIdx = i; });
 
+    // The run of steps being folded, opened on its first step (stepsFolder).
+    let steps = null;
+    const stepsHere = () => (steps = steps || stepsFolder()).body;
+    const endSteps = () => { if (steps) steps.close(); steps = null; };
+
     for (const [i, msg] of conversation.entries()) {
       // Skip system messages and tool result messages (rendered inline)
       if (msg.role === 'system' || msg.role === 'tool') continue;
 
+      if (msg.role === 'user') endSteps();
       if (msg.role === 'user' && msg.auto) {
         // A follow-through nudge FreeClaw sent on its own — not the user's words.
         addSystemNote(FOLLOW_NOTE);
@@ -2397,7 +2472,7 @@
       } else if (msg.role === 'assistant') {
         // Thinking first — it streamed ahead of everything else this message
         // produced, so it renders in the same order it was seen live.
-        if (msg.reasoning) addReasoningBlock(msg.reasoning, false);
+        if (msg.reasoning) addReasoningBlock(msg.reasoning, false, stepsHere());
         // Tool calls next (if any)
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const tc of msg.tool_calls) {
@@ -2408,15 +2483,20 @@
             if (fn.name === 'request_sign_in' && !isError) {
               let target = '';
               try { target = (JSON.parse(fn.arguments || '{}') || {}).url || ''; } catch { /* malformed */ }
-              if (target && addSignInCard(String(target), i > lastUserIdx)) continue;
+              if (target) {
+                endSteps();
+                if (addSignInCard(String(target), i > lastUserIdx)) continue;
+              }
             }
             if (isCaptchaTool(fn.name) && !isError && !/^(error|nothing to hand)/i.test(resultText)) {
               let reason = '';
               try { reason = (JSON.parse(fn.arguments || '{}') || {}).reason || ''; } catch { /* malformed */ }
+              endSteps();
               addCaptchaCard(String(reason), i > lastUserIdx);
               continue;
             }
-            addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError);
+            addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError, stepsHere());
+            steps.tool(fn.name || '');
           }
         }
         // Then the assistant's text reply (if any)
@@ -2424,6 +2504,7 @@
           ? msg.content
           : (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
         if (text && text.trim()) {
+          endSteps();
           addMessage('agent', text, null,
                      { countTokens: false, provider: msg.provider, usage: msg.usage,
                        intent: msg.intent, sourced: msg.sourced, route: msg.route });
@@ -2431,6 +2512,7 @@
       }
     }
 
+    endSteps();
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
