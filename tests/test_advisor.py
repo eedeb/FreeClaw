@@ -154,6 +154,56 @@ class TestTriggers(Base):
         self.assertEqual(len(asked), 1)
         self.assertEqual(len(sent), 2)
 
+    def test_a_sure_give_up_calls_it_with_the_tools_it_had(self):
+        fix = {"verdict": "fix", "advice": "save_from_link the video, then upload it."}
+        events, sent, asked, msgs = self.run_turn(
+            [answer("I can't upload that."), answer("Uploaded.")],
+            follow={"nudge": False, "status": "cant", "shares": {"cant": 0.9}, "advisor": False},
+            verdicts=[fix])
+        self.assertEqual([k for k, _ in asked], ["reply"])
+        self.assertIn("can't do this", asked[0][1])
+        self.assertIn("TOOLS IT HAD:", asked[0][1])
+        self.assertIn("- read_file:", asked[0][1])
+        self.assertNotIn("- ask_advisor:", asked[0][1])
+        self.assertEqual(len(sent), 2)
+
+    def test_an_unsure_give_up_or_a_question_back_does_not(self):
+        for follow in ({"nudge": False, "status": "cant", "shares": {"cant": 0.5}},
+                       {"nudge": False, "status": "needs_user", "shares": {"needs_user": 0.9}}):
+            _, _, asked, _ = self.run_turn([answer("Hmm.")], follow=follow)
+            self.assertEqual(asked, [])
+
+    def test_tool_lines_and_describe_tool(self):
+        advisor = self.advisor
+        sess = self.sessions.Session(name="advisortools")
+        long = {"type": "function", "function": {"name": "upload", "description": "Uploads. " + "x" * 500
+                                                 + " Put {local_file} in a file field.",
+                                                 "parameters": {"properties": {"file": {}}}}}
+        sess.turn_prefix = {"tools": [long, advisor.ask_tool()]}
+        sess.turn_withheld = {"search": ("search", [{"type": "function", "name": "web_search",
+                                                     "description": "Searches the web."}])}
+        lines = advisor.tool_lines(sess)
+        self.assertTrue(lines[0].startswith("- upload: Uploads."))
+        self.assertLess(len(lines[0]), advisor.TOOL_LINE_CLIP + 20)
+        self.assertIn("load_tools", lines[1])
+        self.assertEqual(lines[2], "- web_search: Searches the web.")
+        self.assertFalse(any("ask_advisor" in x for x in lines))
+        full = advisor.describe_tool(sess, "upload")
+        self.assertIn("local_file", full)
+        self.assertIn('"file"', full)
+        self.assertIn("loadable", advisor.describe_tool(sess, "web_search"))
+        self.assertIn("no tool named", advisor.describe_tool(sess, "nope"))
+
+    def test_checkup_message_is_marked_after_its_turn(self):
+        advisor = self.advisor
+        msg = advisor.CHECKUP_PREFIX + " fix it"
+        msgs = [{"role": "user", "content": "hi"}, {"role": "user", "content": msg},
+                {"role": "assistant", "content": "Fixed."}]
+        self.assertTrue(advisor.mark_checkup(msgs, msg))
+        self.assertIs(msgs[1]["auto"], True)
+        self.assertEqual(msgs[1]["auto_kind"], "advisor_checkup")
+        self.assertNotIn("auto", msgs[0])
+
     def test_reply_after_unseen_trouble_without_jev(self):
         _, _, asked, _ = self.run_turn(
             [tool_step(i) for i in range(1, 26)] + [answer()])
@@ -261,7 +311,8 @@ class TestPieces(Base):
         self.assertTrue(sent[0][advisor.ADVISOR_KEY])
         self.assertIn("- a", json.dumps(sent[1]["messages"]))
         names = {t["function"]["name"] for t in advisor.TOOLS}
-        self.assertEqual(names, {"read_memory", "read_file", "search_history", "list_scheduled"})
+        self.assertEqual(names, {"read_memory", "read_file", "search_history", "list_scheduled",
+                                 "describe_tool"})
 
     def test_ask_tool_once_a_turn(self):
         advisor = self.advisor

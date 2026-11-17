@@ -14,8 +14,9 @@ It is called:
     third failed tool result, or the turn passing STEP_TRIGGER tool calls.
     The advice rides on the tool result the agent reads next.
   * **after the reply** (`after_reply()`): when the reply check (src/jev.py
-    follow_through) says a reviewer would likely find a problem, or, with no
-    Jev, when the turn had trouble the advisor didn't already see. Advice that
+    follow_through) says a reviewer would likely find a problem or is sure the
+    reply gives up ("can't"), or, with no Jev, when the turn had trouble the
+    advisor didn't already see. Advice that
     needs acting on comes back as a note and the turn carries on, the way a
     follow-through nudge does.
   * **when the agent asks** (the ask_advisor tool), once a turn.
@@ -26,9 +27,10 @@ It is called:
     happens with the agent's own edit_file.
 
 What it sees is a digest of the turn, not the conversation: the request, each
-tool call with its arguments and result cut short, the reply. Its tools only
+tool call with its arguments and result cut short, the reply, and the tools the
+agent had (a line each), so it can see a way the agent missed. Its tools only
 read, and only inside the agent's own folder: the memory file, a file, past
-conversations, the schedule. At most one round of them, then it answers.
+conversations, the schedule, one of the agent's tools in full. At most one round of them, then it answers.
 
 At most TURN_MAX calls a turn (one more when a loop was caught). Off unless
 FC_ADVISOR is set; FC_ADVISOR_MODEL names its model (blank: each provider's
@@ -56,6 +58,7 @@ TURN_MAX = 1            # advisor calls a turn
 LOOP_EXTRA = 1          # one more when the trouble was a loop
 FAIL_TRIGGER = 3        # failed tool results in a turn that call it in
 STEP_TRIGGER = 25       # tool calls in a turn that call it in
+CANT_THRESHOLD = 0.7    # the reply check's certainty a reply gives up ("cant") that calls it in
 CHECKUP_EVERY = 20 * 3600
 STATE_FILE = ".advisor.json"
 
@@ -67,9 +70,12 @@ ACTIONS_SHOWN = 40
 MEMORY_CLIP = 24000
 TOOL_RESULT_CLIP = 6000
 QUESTION_CLIP = 1000
+TOOL_LINE_CLIP = 110    # each of the agent's tools in the digest: its name and this much of its description
+TOOLS_SHOWN = 80
 
 NOTE_PREFIX = "[Advisor check, not typed by the user]"
 CHECKUP_PREFIX = "[Advisor memory check-up, not typed by the user]"
+CHECKUP_KIND = "advisor_checkup"
 MID_TURN_PREFIX = "[Advisor, a second model checking this turn — not the user]"
 
 
@@ -104,13 +110,13 @@ Check the work against what was asked and what the tools actually returned:
 - Is it repeating itself: the same call, or the same note saved again in other words?
 - Did it save something wrong, duplicated or contradictory to memory, or schedule something wrong or twice?
 - Did it send, post, buy or change anything the person didn't ask for?
-- When it is stuck: is there a different way to do it with the tools it has, or should it stop and tell the person?
+- When it is stuck or says it can't: is there a different way to do it with the tools it has (listed in the digest), or should it stop and tell the person?
 
 Be brief and concrete. Name the problem and the smallest fix the agent can make with its own tools (for example: edit_file on context.md to remove two duplicate lines, cancel_ping on the duplicate, tell the person the email was not sent). If the work is fine, say so and stop: most work is fine, and inventing problems costs the person money. Don't restate the work, don't add new tasks, and don't ask for anything the person didn't want.
 
 Only call something a problem when the digest or your checks show it. The agent knows things you don't (its own name and addresses, what the person told it before), so a claim you can't check is not a mistake: check it with a tool, or let it stand. Judge the work by what this request needed, not by how much more could be done.
 
-You have read-only tools for checking: the agent's memory file, its files, past conversations and its schedule. Use one only when the digest isn't enough to judge, at most one round.
+You have read-only tools for checking: the agent's memory file, its files, past conversations, its schedule, and the full description of any of its tools. Use one only when the digest isn't enough to judge, at most one round.
 
 Answer with JSON only:
 {"verdict": "fine" | "fix", "advice": "what the agent should do, one to five short lines; empty when fine"}"""
@@ -147,6 +153,11 @@ TOOLS = [
         "name": "list_scheduled",
         "description": "The agent's scheduled tasks and reminders.",
         "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "describe_tool",
+        "description": "One of the agent's tools in full: its whole description and its parameters.",
+        "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
+                       "required": ["name"]}}},
 ]
 
 
@@ -252,8 +263,50 @@ def _content(m):
     return str(c or "")
 
 
-def digest(messages, reply=None, trouble=None, question=None):
-    """The turn as the advisor reads it."""
+def _agent_tools(sess):
+    """[(tool, loadable)] the agent had this turn: what was sent, then what a
+    routed turn withheld and the agent could still load with load_tools."""
+    prefix = getattr(sess, "turn_prefix", None) or {}
+    out = [(t, False) for t in prefix.get("tools") or ()]
+    for entry in (getattr(sess, "turn_withheld", None) or {}).values():
+        try:
+            out += [(t, True) for t in entry[1]]
+        except (IndexError, TypeError):
+            pass
+    return [(t, loadable) for t, loadable in out
+            if isinstance(t, dict) and _tool_fn(t).get("name") not in (TOOL_NAME, "load_tools")]
+
+
+def _tool_fn(t):
+    return t.get("function") if isinstance(t.get("function"), dict) else t
+
+
+def tool_lines(sess):
+    """The agent's tools as the digest lists them, a line each."""
+    sent, loadable = [], []
+    for t, can_load in _agent_tools(sess)[:TOOLS_SHOWN]:
+        fn = _tool_fn(t)
+        line = f"- {fn.get('name')}: {_clip(fn.get('description'), TOOL_LINE_CLIP)}"
+        (loadable if can_load else sent).append(line)
+    if loadable:
+        sent.append("Not sent this turn, but it could load them with load_tools:")
+        sent += loadable
+    return sent
+
+
+def describe_tool(sess, name):
+    for t, can_load in _agent_tools(sess):
+        fn = _tool_fn(t)
+        if fn.get("name") == name:
+            params = json.dumps((fn.get("parameters") or {}).get("properties") or {})
+            return (f"{name}{' (loadable with load_tools)' if can_load else ''}\n"
+                    f"{fn.get('description') or ''}\nParameters: {params}")[:TOOL_RESULT_CLIP]
+    return f"The agent had no tool named {name} this turn."
+
+
+def digest(messages, reply=None, trouble=None, question=None, tools=None):
+    """The turn as the advisor reads it. `tools`: tool_lines(), the tools the
+    agent had."""
     start = next((i for i in range(len(messages) - 1, 0, -1)
                   if messages[i].get("role") == "user" and not messages[i].get("auto")), 0)
     request = _content(messages[start]) if start else ""
@@ -272,6 +325,8 @@ def digest(messages, reply=None, trouble=None, question=None):
              "WHAT IT DID THIS TURN:\n" + ("\n".join(lines) or "(no tool calls)")]
     if reply is not None:
         parts.append("ITS REPLY:\n" + (str(reply)[-REPLY_CLIP:] or "(empty)"))
+    if tools:
+        parts.append("TOOLS IT HAD:\n" + "\n".join(tools))
     if trouble:
         parts.append("WHY YOU WERE CALLED: " + trouble)
     if question:
@@ -293,6 +348,8 @@ def _run_advisor_tool(name, args):
                 return f.read()[:TOOL_RESULT_CLIP] or "(nothing scheduled)"
         except OSError:
             return "(nothing scheduled)"
+    if name == "describe_tool":
+        return describe_tool(sess, str((args or {}).get("name") or "") if isinstance(args, dict) else "")
     if name in ("read_file", "search_history"):
         return str(agent._run_tool(name, args if isinstance(args, dict) else {}))[:TOOL_RESULT_CLIP]
     return f"No tool named {name}."
@@ -400,7 +457,8 @@ def _review(sess, user, kind, messages, reply=None, trouble=None, question=None)
     state["calls"] += 1
     if trouble:
         state["trouble_seen"] = True
-    out = call(user, kind, digest(messages, reply=reply, trouble=trouble, question=question))
+    out = call(user, kind, digest(messages, reply=reply, trouble=trouble, question=question,
+                                  tools=tool_lines(sess)))
     if out:
         state["results"].append(out)
         logger.info("Advisor (%s): %s in %sms", kind, out["verdict"], out["ms"])
@@ -445,6 +503,9 @@ def after_reply(sess, user, messages, reply, follow):
     why = None
     if follow and follow.get("advisor"):
         why = "the reply check flagged this turn for review"
+    elif gave_up(follow):
+        why = ("the reply says it can't do this; check whether a tool it had (or could load) "
+               "would have done it")
     elif had_trouble(sess):
         why = "this turn had trouble: " + ", ".join(
             w for w, on in (("a loop was held back", _turn(sess)["loop"]),
@@ -453,6 +514,16 @@ def after_reply(sess, user, messages, reply, follow):
     if not why:
         return None
     return _review(sess, user, "reply", messages, reply=reply, trouble=why)
+
+
+def gave_up(follow):
+    """The reply check is sure the reply gives up on the request."""
+    if not follow or follow.get("status") != "cant":
+        return False
+    try:
+        return float((follow.get("shares") or {}).get("cant", 0.0)) >= CANT_THRESHOLD
+    except (TypeError, ValueError):
+        return False
 
 
 def results(sess):
@@ -537,6 +608,19 @@ def checkup(user, static_dir, memory):
             _checkups.discard(user)
 
 
+def mark_checkup(messages, message):
+    """Mark the check-up's message, once its turn is over, as FreeClaw's own
+    (auto, auto_kind "advisor_checkup"), so the chat shows a note rather than
+    the person's bubble. Not before: during the turn it is the request the
+    reply is checked against."""
+    for m in reversed(messages):
+        if m.get("role") == "user" and m.get("content") == message:
+            m["auto"] = True
+            m["auto_kind"] = CHECKUP_KIND
+            return True
+    return False
+
+
 def start_checkup(user, static_dir):
     """Run the memory check-up on a thread of its own, once `user`'s current
     turn has finished (it waits for the Session's lock, as a sub-agent's
@@ -571,6 +655,7 @@ def _checkup_turn(user, static_dir):
                 with live_turns.turn(user, message, "advisor") as live:
                     for _event in live.watch(agent.agent_stream(user_input=message, ping=True)):
                         pass
+                    mark_checkup(agent.get_messages(), message)
                     save_conversation(user, agent.get_messages())
             finally:
                 cancellation.end_turn(sess)

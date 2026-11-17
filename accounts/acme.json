@@ -1,0 +1,10 @@
+{
+  "providers": [],
+  "servers": [],
+  "profile_locks": {
+    "acme__Alice": {
+      "hash": "scrypt:32768:8:1$aRsz1veKlnjGxcyU$b171cf92081e83a3672909aa396b3cd8427049fc7aeba5aea1c52ac0d6eb5b9cd195dd036d19705663c553eb591ae9661721af463b1d220f915c3459a9569566",
+      "v": 1
+    }
+  }
+}
