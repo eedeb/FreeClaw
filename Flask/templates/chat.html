@@ -2472,7 +2472,7 @@
       if (msg.role === 'user' && msg.auto) {
         // A follow-through nudge or the advisor's note, sent by FreeClaw on
         // its own — not the user's words.
-        addSystemNote(msg.auto === 'advisor' ? ADVISOR_NOTE : FOLLOW_NOTE);
+        addSystemNote(msg.auto_kind === 'advisor' ? ADVISOR_NOTE : FOLLOW_NOTE);
       } else if (msg.role === 'user') {
         // user content can be string or array
         const rawText = typeof msg.content === 'string'

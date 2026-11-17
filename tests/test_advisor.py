@@ -138,9 +138,11 @@ class TestTriggers(Base):
             follow={"nudge": False, "advisor": True}, verdicts=[fix])
         self.assertEqual([k for k, _ in asked], ["reply"])
         self.assertIn("Sent it!", asked[0][1])
-        notes = [m for m in msgs if m.get("auto") == "advisor"]
+        notes = [m for m in msgs if m.get("auto_kind") == "advisor"]
         self.assertEqual(len(notes), 1)
         self.assertTrue(notes[0]["content"].startswith(self.advisor.NOTE_PREFIX))
+        # A plain true, so apps that read "auto" as a boolean still load the chat.
+        self.assertIs(notes[0]["auto"], True)
         self.assertEqual(len(sent), 2)
         self.assertTrue(any(e.get("type") == "advisor" and e.get("resume") for e in events))
 

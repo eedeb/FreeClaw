@@ -683,7 +683,7 @@ def _cache_breakpoint_messages(messages):
 # "ts" is when a user message was sent or a reply finished, so search_history
 # and the digest of older messages can say *when* something was said.
 _INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items",
-                          "intent", "sourced", "images", "ts", "route", "auto", "follow")
+                          "intent", "sourced", "images", "ts", "route", "auto", "auto_kind", "follow", "advisor")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -6065,7 +6065,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             sess.turn_route["advisor"] = advisor.results(sess)
     if verdict and verdict["verdict"] == "fix":
         agent_messages.append({"role": "user", "content": f"{advisor.NOTE_PREFIX} {verdict['advice']}",
-                               "auto": "advisor", "ts": datetime.now().strftime(PING_TIME_FORMAT)})
+                               "auto": True, "auto_kind": "advisor", "ts": datetime.now().strftime(PING_TIME_FORMAT)})
         logger.info("Advisor: the reply needs work; carrying on")
         yield {"type": "advisor", "kind": verdict["kind"], "advice": verdict["advice"], "resume": True}
         yield from agent_stream(resume=True)
