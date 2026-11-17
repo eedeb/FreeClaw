@@ -2022,6 +2022,12 @@
           `${f.status || '?'} — done ${pct('done')} · partway ${pct('partway')} · `
           + `needs you ${pct('needs_user')} · can't ${pct('cant')}`);
     }
+    if ((route.advisor || []).length) {
+      const a = section('Advisor');
+      route.advisor.forEach(v => row(a, v.kind || 'check',
+        (v.verdict === 'fix' ? 'suggested: ' + (v.advice || '') : 'looks fine')
+        + (v.ms ? ` · ${(v.ms / 1000).toFixed(1)}s` : '')));
+    }
     const c = route.chars || {};
     panel.appendChild(rpEl('div', 'rp-foot',
       `Request ${rpTokens((c.system || 0) + (c.history || 0) + (c.tools || 0))} tokens — `
@@ -2117,6 +2123,9 @@
     return note;
   }
   const FOLLOW_NOTE = '↻ Jev: that looked unfinished — nudged the agent to carry on';
+  // The advisor (src/advisor.py): a second model that checked the turn.
+  const ADVISOR_NOTE = '✓ Advisor: checked this turn and suggested a fix — the agent is carrying on';
+  const ADVISOR_STEP_NOTE = '✓ Advisor: checked this step and gave the agent a suggestion';
 
   // ── Render a single user/agent text bubble ──────────────
   // opts.countTokens (default true) controls whether this call bumps the
@@ -2461,8 +2470,9 @@
 
       if (msg.role === 'user') endSteps();
       if (msg.role === 'user' && msg.auto) {
-        // A follow-through nudge FreeClaw sent on its own — not the user's words.
-        addSystemNote(FOLLOW_NOTE);
+        // A follow-through nudge or the advisor's note, sent by FreeClaw on
+        // its own — not the user's words.
+        addSystemNote(msg.auto === 'advisor' ? ADVISOR_NOTE : FOLLOW_NOTE);
       } else if (msg.role === 'user') {
         // user content can be string or array
         const rawText = typeof msg.content === 'string'
@@ -3125,11 +3135,15 @@
           let evt;
           try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
-          if (evt.type === 'follow_through') {
+          if (evt.type === 'follow_through' || (evt.type === 'advisor' && evt.resume)) {
             // The reply so far stays; the agent carries on below it.
             finishReasoning();
             liveWrap = null; liveBubble = null; liveText = '';
-            addSystemNote(FOLLOW_NOTE);
+            addSystemNote(evt.type === 'advisor' ? ADVISOR_NOTE : FOLLOW_NOTE);
+            if (!thinking.parentNode) thinking = addThinking();
+
+          } else if (evt.type === 'advisor') {
+            addSystemNote(ADVISOR_STEP_NOTE);
             if (!thinking.parentNode) thinking = addThinking();
 
           } else if (evt.type === 'reconnecting') {
