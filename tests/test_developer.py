@@ -447,6 +447,28 @@ class TestProjectsKnown(unittest.TestCase):
             self.assertIn("The user's own projects here: Home-web, minecraft.", line)
 
 
+class TestSubagentWorkspace(TestProjectsKnown):
+    """A sub-agent works in its main agent's projects folder, the one its file
+    tools use, so the project it was sent to look at is there."""
+
+    def info(self, parents):
+        import src.subagents as subagents
+        return mock.patch.object(subagents, "info", lambda n: {"parent": parents[n]} if n in parents else None)
+
+    def test_child_sees_the_parent_projects(self):
+        with self.info({"alice-subagent-1": "alice"}):
+            self.assertEqual(self.mc.developer_projects("alice-subagent-1"), ["Home-web", "minecraft"])
+            env = self.mc._with_workspace({"workspace": True}, "alice-subagent-1")["env"]
+        self.assertEqual(env["FC_DEV_WORKSPACE"], os.path.join(self.static, "alice", "files", "projects"))
+        self.assertEqual(env["FC_DEV_USER"], "alice-subagent-1")
+
+    def test_only_a_parent_its_name_came_from(self):
+        with self.info({"mallory-subagent-1": "alice", "alice-subagent-2": "../x", "bob": "alice"}):
+            for name in ("mallory-subagent-1", "alice-subagent-2", "bob"):
+                self.assertEqual(self.mc.developer_projects(name), [], name)
+        self.assertEqual(self.mc.developer_projects("alice"), ["Home-web", "minecraft"])
+
+
 class TestPreview(Workspace):
     def test_serves_workspace_only(self):
         self.put("site/index.html", "<h1>hi</h1>")

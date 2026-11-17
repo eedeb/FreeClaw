@@ -58,6 +58,9 @@ MAX_RUNNING = max(1, int(os.environ.get("FC_MAX_SUBAGENTS") or 3))
 # The message that brings a result back to the main agent starts with this,
 # and the spawn tool's description tells the model so.
 RESULT_PREFIX = "SUB-AGENT RESULT"
+# And is marked with this (auto_kind), so the chat shows it as a note that
+# opens to the result, not as the person's own message.
+RESULT_KIND = "subagent"
 
 # How a user's name is shown, to the person and to the agents. A hosted
 # install replaces it to leave out the account prefix.
@@ -236,7 +239,8 @@ def _deliver(parent, child, task, outcome, reply):
             activate_session(parent)
             cancellation.begin_turn(sess)
             with live_turns.turn(parent, message, "subagent") as live:
-                for _event in live.watch(agent.agent_stream(user_input=message, ping=True)):
+                for _event in live.watch(agent.agent_stream(user_input=message, ping=True,
+                                                            auto_kind=RESULT_KIND)):
                     pass
                 save_conversation(parent, agent.get_messages())
             logger.info("Delivered sub-agent %s's result to %s", child, parent)

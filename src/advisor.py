@@ -653,7 +653,8 @@ def _checkup_turn(user, static_dir):
             cancellation.begin_turn(sess)
             try:
                 with live_turns.turn(user, message, "advisor") as live:
-                    for _event in live.watch(agent.agent_stream(user_input=message, ping=True)):
+                    for _event in live.watch(agent.agent_stream(user_input=message, ping=True,
+                                                                auto_kind=CHECKUP_KIND)):
                         pass
                     mark_checkup(agent.get_messages(), message)
                     save_conversation(user, agent.get_messages())
