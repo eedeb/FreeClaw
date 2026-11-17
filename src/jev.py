@@ -445,11 +445,18 @@ FOLLOW_CRITERIA = {
 }
 
 
-def follow_through(request, actions, reply):
+# Jev's estimate, asked only when the advisor (src/advisor.py) could be called,
+# that a careful reviewer would find a real problem with the turn, at or above
+# which the advisor is called in.
+REVIEW_THRESHOLD = 0.7
+
+
+def follow_through(request, actions, reply, review=False):
     """Did `reply` finish `request`? Returns {"status", "shares", "promise",
     "nudge", "ms"} — `nudge` True only when Jev is confident the reply
     stopped partway on work the agent can do, and sees no sign it is waiting
-    on the user or blocked — or None when Jev isn't available."""
+    on the user or blocked — or None when Jev isn't available. With `review`,
+    also "review" (Jev's estimate) and "advisor" (True at REVIEW_THRESHOLD)."""
     if not enabled():
         return None
     state = ("REQUEST:\n" + one_line(request, 1200)
@@ -463,6 +470,13 @@ def follow_through(request, actions, reply):
                     "instructions": "Does the REPLY say it will do something next (\"I'll check…\", "
                                     "\"Next, I'll…\", \"Let me…\") that it has not done?"},
     }
+    if review:
+        questions["review"] = {
+            "type": "noul",
+            "instructions": "Would a careful reviewer find a real problem here: the REPLY claims something "
+                            "the ACTIONS show failed, was refused or never ran; an action failed and the REPLY "
+                            "doesn't say so; the same action or note was repeated; or something was sent, "
+                            "saved or scheduled that the REQUEST didn't ask for?"}
     started = time.monotonic()
     answers = ask(state, questions)
     ms = int((time.monotonic() - started) * 1000)
@@ -476,8 +490,13 @@ def follow_through(request, actions, reply):
     nudge = ((status == "partway" and shares.get("partway", 0.0) >= PARTWAY_THRESHOLD)
              or (promise >= PROMISE_THRESHOLD and blocked < BLOCKED_CEILING)) \
         and blocked < BLOCKED_CEILING
-    return {"status": status, "shares": {k: round(v, 2) for k, v in shares.items()},
-            "promise": round(promise, 2), "nudge": bool(nudge), "ms": ms}
+    out = {"status": status, "shares": {k: round(v, 2) for k, v in shares.items()},
+           "promise": round(promise, 2), "nudge": bool(nudge), "ms": ms}
+    if review:
+        p = _p(answers, "review") or 0.0
+        out["review"] = round(p, 2)
+        out["advisor"] = p >= REVIEW_THRESHOLD
+    return out
 
 
 # ── browser steps: the fast loop's next move (src/fast_browser.py) ──

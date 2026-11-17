@@ -16,6 +16,7 @@ from dotenv import dotenv_values, load_dotenv
 from json_repair import repair_json
 from openai import OpenAI, APIConnectionError
 
+import src.advisor as advisor
 import src.approvals as approvals
 import src.browser_handoff as browser_handoff
 import src.browser_setup as browser_setup
@@ -682,7 +683,7 @@ def _cache_breakpoint_messages(messages):
 # "ts" is when a user message was sent or a reply finished, so search_history
 # and the digest of older messages can say *when* something was said.
 _INTERNAL_MESSAGE_KEYS = ("provider", "usage", "reasoning", "reasoning_items",
-                          "intent", "sourced", "images", "ts", "route", "auto", "follow")
+                          "intent", "sourced", "images", "ts", "route", "auto", "auto_kind", "follow", "advisor")
 
 # Optional request extras that most OpenAI-compatible endpoints accept and some
 # reject outright:
@@ -1051,6 +1052,15 @@ def _prepare_kwargs(kwargs, model_override, extra_body, api="chat", images=False
     on in _create_completion for the providers worth trying it on, so the
     version without them is always available to retry with."""
     call_kwargs = kwargs if model_override is None else {**kwargs, "model": model_override}
+    # The advisor's requests (src/advisor.py) go to its own model when one is
+    # set. The marker stays on a Responses request, whose translation builds
+    # the payload key by key (so it can't leak) and a host may look for it;
+    # anything else would send it over the wire, so it goes.
+    if call_kwargs.get(advisor.ADVISOR_KEY):
+        if advisor.model():
+            call_kwargs = {**call_kwargs, "model": advisor.model()}
+        if api != "responses":
+            call_kwargs = {k: v for k, v in call_kwargs.items() if k != advisor.ADVISOR_KEY}
     if extra_body:
         call_kwargs = {**call_kwargs, "extra_body": extra_body}
     # Strip params passed as None (stop, tools, ...). Per OpenAI
@@ -2382,7 +2392,7 @@ def build_context_tools():
                 }
             }
         }
-    ]
+    ] + ([advisor.ask_tool()] if advisor.enabled() else [])
 
 
 def build_file_tools():
@@ -3746,6 +3756,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     if command_name == 'search_history':
         return _search_history(args_dict.get('query'))
 
+    if command_name == advisor.TOOL_NAME:
+        return advisor.ask(sess, _tools_user(), sess.messages,
+                           str(args_dict.get('question') or '').strip())
+
     if command_name == 'add_context':
         entry = (args_dict.get('string') or '').strip()
         if not entry:
@@ -4572,7 +4586,7 @@ _JEV_BUILTIN_GROUPS = (
 # Sent on every routed turn, never put to Jev. add_context because the prompt
 # tells the model to save what it learns on every turn, whatever the turn is
 # about; get_time for the reason build_time_tools() gives.
-_JEV_ALWAYS = ("add_context", "get_time")
+_JEV_ALWAYS = ("add_context", "get_time", advisor.TOOL_NAME)
 
 # Keep the previous exchange whatever Jev says. Off: Jev is asked about it
 # like any other message, and reliably keeps it when the request leans on it.
@@ -5162,7 +5176,8 @@ def _follow_through(reply):
         return None
     actions, request = _turn_actions(sess.messages)
     try:
-        return jev.follow_through(request, actions, text)
+        return jev.follow_through(request, actions, text,
+                                  review=advisor.can_call(sess, _tools_user()))
     except Exception:
         logger.exception("Follow-through check failed")
         return None
@@ -5858,6 +5873,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             command_name = tc["function"]["name"]
             args_dict = None
             result = None
+            held = None
             try:
                 if i == last and finish_reason == "length" and not _whole_tool_call(tc):
                     # The reply hit its output limit part-way through this
@@ -5972,6 +5988,16 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
             result = _clip_tool_result(result)
+            # The advisor (src/advisor.py), called in when the turn is in
+            # trouble: a loop held back, failures piling up, a very long turn.
+            # Its advice rides on this result, the next thing the model reads.
+            trouble = advisor.note_tool(sess, command_name, result,
+                                        held_back=held)
+            if trouble:
+                advice = advisor.mid_turn(sess, _tools_user(), agent_messages, trouble)
+                if advice:
+                    result += f"\n\n{advisor.MID_TURN_PREFIX}\n{advice['advice']}"
+                    yield {"type": "advisor", "kind": advice["kind"], "advice": advice["advice"]}
             if i < last:
                 yield {"type": "tool_result", "name": command_name, "result": result}
                 _append_tool_response(tc["id"], command_name, result)
@@ -6028,6 +6054,26 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
         yield {"type": "follow_through", "follow": follow}
         yield from agent_stream(resume=True)
         return
+    # The advisor's look (src/advisor.py), when the reply check flagged the
+    # turn or it had trouble. Advice to act on comes back as a note and the
+    # turn carries on, as a follow-through nudge does.
+    verdict = advisor.after_reply(sess, _tools_user(), agent_messages, buffer, follow) \
+        if not cancellation.is_stopped() and sess.turn_prefix else None
+    if advisor.results(sess):
+        final_msg["advisor"] = advisor.results(sess)
+        if sess.turn_route is not None:
+            sess.turn_route["advisor"] = advisor.results(sess)
+    if verdict and verdict["verdict"] == "fix":
+        agent_messages.append({"role": "user", "content": f"{advisor.NOTE_PREFIX} {verdict['advice']}",
+                               "auto": True, "auto_kind": "advisor", "ts": datetime.now().strftime(PING_TIME_FORMAT)})
+        logger.info("Advisor: the reply needs work; carrying on")
+        yield {"type": "advisor", "kind": verdict["kind"], "advice": verdict["advice"], "resume": True}
+        yield from agent_stream(resume=True)
+        return
+    # Once a day at most, on a day memory changed: the advisor's memory
+    # check-up, delivered after this turn as a turn of its own.
+    if not sess.depth and advisor.checkup_due(_tools_user(), sess.static_dir):
+        advisor.start_checkup(_tools_user(), sess.static_dir)
     # Which MCP servers this request was answered with, for Jev's next choice
     # between them (_jev_server_about). Kept whichever router ran the turn.
     if jev.enabled():
