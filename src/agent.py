@@ -3651,6 +3651,32 @@ def _hand_over_page(result, reason):
             f"when they're done. Then call screenshot: your browser is on the page they left.")
 
 
+EDIT_MISS_LINE = 300
+
+
+def _edit_miss(filename, contents, old_str):
+    """edit_file's answer when old_str isn't in the file: nothing changed, and
+    what the file has now where old_str's start is (it may have been edited
+    already), or how to read its current text."""
+    out = f"String not found in {filename}; nothing was changed."
+    at = -1
+    for n in (40, 20):                   # its start, then a shorter one
+        probe = str(old_str or "").strip()[:n]
+        at = contents.find(probe) if len(probe) >= 12 else -1
+        if at >= 0:
+            break
+    if at >= 0:
+        start = contents.rfind("\n", 0, at) + 1
+        end = contents.find("\n", at)
+        line = contents[start:end if end >= 0 else len(contents)]
+        if len(line) > EDIT_MISS_LINE:
+            line = line[:EDIT_MISS_LINE] + "…"
+        return out + f" Its line starting the same way reads now: {line}"
+    if filename.lower() == "context.md":
+        return out + " To see the current text, open its section with search_context."
+    return out + " read_file shows its current text."
+
+
 def _run_tool(command_name, args_dict, bash_approved=False):
     """Execute a single tool call and return its result as a string.
 
@@ -3983,7 +4009,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         if not contents.strip():
             return "File is empty — use create_file to write its first contents."
         if old_str not in contents:
-            return "String not found in file."
+            return _edit_miss(filename, contents, old_str)
         updated = contents.replace(old_str, new_str, 1)
         with open(static_dir + filename, "w", encoding="utf-8") as f:
             f.write(updated)
@@ -5202,7 +5228,7 @@ def _wait_to_resume(seconds):
 
 
 def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=None, tool_name=None,
-                 ping=False, resume=False):
+                 ping=False, resume=False, auto_kind=None):
     """Generator version of the agent loop. Yields small dict events as the
     model produces output, so callers (e.g. the Flask route) can stream
     them to the browser in real time:
@@ -5214,6 +5240,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
 
     `resume=True` carries the turn in flight on after a follow-through nudge
     (see _follow_through), from its pinned prefix.
+
+    `auto_kind` marks `user_input` as a message FreeClaw wrote itself (a
+    sub-agent's result: "subagent"; the advisor's check-up:
+    "advisor_checkup"), so the chat shows it as a note that opens to the text
+    rather than as the person's bubble. It is still this turn's request.
 
     `ping=True` marks `user_input` as a scheduled ping firing rather than
     something the user just typed: it skips the classifier, and is routed by
@@ -5301,6 +5332,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
 
         agent_messages.append({"role": "user", "content": user_input,
                                "ts": datetime.now().strftime(PING_TIME_FORMAT)})
+        if auto_kind:
+            agent_messages[-1]["auto_kind"] = auto_kind
         try:
             _attach_upload(agent_messages[-1], sess.static_dir)
             if agent_messages[-1].get("images"):

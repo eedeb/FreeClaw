@@ -187,6 +187,24 @@ def for_user(server, user):
     return {**server, "env": env}
 
 
+def _workspace_owner(user):
+    """Whose projects folder `user` works in: a sub-agent's is its main
+    agent's (src/subagents.py), the same folder its file tools use, so the
+    projects it was started to look at are there. Anyone else's is their own."""
+    try:
+        import src.subagents as subagents
+        parent = ((subagents.info(user) or {}).get("parent") or "").strip()
+    except Exception:                                    # noqa: BLE001 — its own, when unsure
+        return user
+    # And only a parent its name was made from (subagents._child_name), so a
+    # marker can never lend one agent another's folder.
+    m = re.match(r"^(.+?)-subagent-\d+$", user)
+    if not (parent and m and parent != user and parent.startswith(m.group(1).rstrip())
+            and prefs_path(parent)):
+        return user
+    return parent
+
+
 def _with_workspace(server, user):
     """The Developer server bound to `user`'s projects folder,
     static/<user>/files/projects/. A child per user for the same reason as the
@@ -196,7 +214,7 @@ def _with_workspace(server, user):
     user = (user or "").strip()
     if not prefs_path(user):
         return server
-    path = os.path.join(STATIC_ROOT, user, "files", "projects")
+    path = os.path.join(STATIC_ROOT, _workspace_owner(user), "files", "projects")
     import src.workbench as workbench
     # FC_DEV_USER and FC_DEV_TOOLS_SOCKET: so a run can use this user's
     # connected apps through src/workbench.py, as this user and no other

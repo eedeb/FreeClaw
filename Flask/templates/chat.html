@@ -685,6 +685,24 @@
       border-radius: 999px; background: var(--surface-2);
     }
 
+    /* A note that opens: a sub-agent's report, the advisor's advice, a
+       follow-through nudge. Its text is the message FreeClaw sent the agent. */
+    details.sys-note-open { align-self: center; max-width: 88%; margin: 6px 0; }
+    details.sys-note-open > summary.sys-note {
+      display: block; max-width: none; margin: 0; cursor: pointer; list-style: none;
+    }
+    details.sys-note-open > summary.sys-note::-webkit-details-marker { display: none; }
+    details.sys-note-open > summary.sys-note::after { content: ' ▸'; }
+    details.sys-note-open[open] > summary.sys-note::after { content: ' ▾'; }
+    details.sys-note-open > summary.sys-note:hover { color: var(--text); }
+    details.sys-note-open > summary.sys-note:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .sys-note-body {
+      margin-top: 6px; padding: 10px 12px; border-radius: 12px;
+      background: var(--surface-2); color: var(--text);
+      font-size: 13px; line-height: 1.5; text-align: left;
+      white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow-y: auto;
+    }
+
     /* Empty state — still how the script marks an empty thread, but the
        welcome screen draws the placeholder, so it takes no room here. */
     #empty-state { display: none; }
@@ -2127,6 +2145,53 @@
   const ADVISOR_NOTE = '✓ Advisor: checked this turn and suggested a fix — the agent is carrying on';
   const ADVISOR_CHECKUP_NOTE = '✓ Advisor: checked the agent\'s memory and suggested changes';
   const ADVISOR_STEP_NOTE = '✓ Advisor: checked this step and gave the agent a suggestion';
+  const ADVISOR_MID_TURN = '[Advisor, a second model checking this turn — not the user]';
+
+  // A note that opens to `body` (plain text: a sub-agent's report or the
+  // advisor's advice, never markup). No body: a plain note.
+  function addOpenNote(title, body, parent) {
+    body = String(body || '').trim();
+    if (!body) return addSystemNote(title);
+    removeEmpty();
+    const wrap = document.createElement('details');
+    wrap.className = 'sys-note-open';
+    const summary = document.createElement('summary');
+    summary.className = 'sys-note';
+    summary.textContent = title;
+    const text = document.createElement('div');
+    text.className = 'sys-note-body';
+    text.textContent = body;
+    wrap.append(summary, text);
+    (parent || messagesEl).appendChild(wrap);
+    if (!parent) messagesEl.scrollTop = messagesEl.scrollHeight;
+    return wrap;
+  }
+
+  // What kind of message FreeClaw wrote itself `msg` is, or null for the
+  // person's own: auto_kind when it says, else (chats saved before it did)
+  // the sub-agent result's and the check-up's openings.
+  function autoKindOf(msg, text) {
+    if (msg.auto_kind) return msg.auto_kind;
+    if (msg.auto) return 'follow';
+    if (text.startsWith('SUB-AGENT RESULT')) return 'subagent';
+    if (text.startsWith('[Advisor memory check-up')) return 'advisor_checkup';
+    return null;
+  }
+
+  // The note for one of those messages: [title, the text it opens to].
+  function autoNote(kind, text) {
+    const after = (prefix) => text.startsWith(prefix) ? text.slice(prefix.length).trim() : text;
+    if (kind === 'advisor') return [ADVISOR_NOTE, after('[Advisor check, not typed by the user]')];
+    if (kind === 'advisor_checkup') {
+      const cut = text.indexOf('\n\n');
+      return [ADVISOR_CHECKUP_NOTE, cut > 0 ? text.slice(cut + 2) : text];
+    }
+    if (kind === 'subagent') {
+      const m = text.match(/^SUB-AGENT RESULT from "([^"]*)", which ([^.]*)\./);
+      return [m ? `↩ Sub-agent “${m[1]}” ${m[2]}` : '↩ A sub-agent reported back', text];
+    }
+    return [FOLLOW_NOTE, text];
+  }
 
   // ── Render a single user/agent text bubble ──────────────
   // opts.countTokens (default true) controls whether this call bumps the
@@ -2470,11 +2535,13 @@
       if (msg.role === 'system' || msg.role === 'tool') continue;
 
       if (msg.role === 'user') endSteps();
-      if (msg.role === 'user' && msg.auto) {
-        // A follow-through nudge or the advisor's note, sent by FreeClaw on
-        // its own — not the user's words.
-        addSystemNote(msg.auto_kind === 'advisor' ? ADVISOR_NOTE
-          : msg.auto_kind === 'advisor_checkup' ? ADVISOR_CHECKUP_NOTE : FOLLOW_NOTE);
+      const ownText = msg.role === 'user' && typeof msg.content === 'string' ? msg.content : '';
+      const kind = msg.role === 'user' ? autoKindOf(msg, ownText) : null;
+      if (kind) {
+        // Sent by FreeClaw on its own — a sub-agent's report, the advisor,
+        // a follow-through nudge — not the user's words. Opens to the text.
+        const [title, body] = autoNote(kind, ownText);
+        addOpenNote(title, body);
       } else if (msg.role === 'user') {
         // user content can be string or array
         const rawText = typeof msg.content === 'string'
@@ -2510,6 +2577,10 @@
             }
             addToolBlock(fn.name || tc.id, fn.arguments || '', resultText, isError, stepsHere());
             steps.tool(fn.name || '');
+            const midTurn = typeof resultText === 'string' ? resultText.indexOf(ADVISOR_MID_TURN) : -1;
+            if (midTurn >= 0) {
+              addOpenNote(ADVISOR_STEP_NOTE, resultText.slice(midTurn + ADVISOR_MID_TURN.length), stepsHere());
+            }
           }
         }
         // Then the assistant's text reply (if any)
@@ -3058,7 +3129,10 @@
     discord: 'From Discord', teams: 'From Microsoft Teams', call: 'On a phone call',
     chat: 'From another device', schedule: 'A scheduled task', api: 'Through the API',
     task: 'From the main agent', subagent: 'A sub-agent reported back',
+    advisor: 'The advisor checked the agent\'s memory',
   };
+  // Live turns that start with a message FreeClaw wrote, not a person.
+  const LIVE_KIND = { subagent: 'subagent', advisor: 'advisor_checkup' };
 
   // Draws one turn as its events stream in: this page's own message (/chat),
   // or with `live`, a turn started somewhere else that the page is following
@@ -3141,11 +3215,12 @@
             // The reply so far stays; the agent carries on below it.
             finishReasoning();
             liveWrap = null; liveBubble = null; liveText = '';
-            addSystemNote(evt.type === 'advisor' ? ADVISOR_NOTE : FOLLOW_NOTE);
+            if (evt.type === 'advisor') addOpenNote(ADVISOR_NOTE, evt.advice);
+            else addSystemNote(FOLLOW_NOTE);
             if (!thinking.parentNode) thinking = addThinking();
 
           } else if (evt.type === 'advisor') {
-            addSystemNote(ADVISOR_STEP_NOTE);
+            addOpenNote(ADVISOR_STEP_NOTE, evt.advice);
             if (!thinking.parentNode) thinking = addThinking();
 
           } else if (evt.type === 'reconnecting') {
@@ -3344,8 +3419,15 @@
             // a note saying where it came from. Everything after it is the
             // same events this page's own turn would get.
             if (thinking.parentNode) thinking.remove();
-            addSystemNote(LIVE_FROM[evt.source] || 'From a connected app');
-            addMessage('user', evt.message || '');
+            const liveKind = LIVE_KIND[evt.source];
+            if (liveKind) {
+              // FreeClaw's own message, as it'll show once saved.
+              const [title, body] = autoNote(liveKind, evt.message || '');
+              addOpenNote(title, body);
+            } else {
+              addSystemNote(LIVE_FROM[evt.source] || 'From a connected app');
+              addMessage('user', evt.message || '');
+            }
             thinking = addThinking();
 
           } else if (evt.type === 'live_end') {
