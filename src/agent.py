@@ -1816,16 +1816,28 @@ DEVELOPER_INSTRUCTION = (
     "README and manifests, so don't read those after it), then outline the folder, and outline a "
     "big file before reading any of it. Use find for a name you know and search for text, then "
     "read only the lines those point to. Change files with edit (exact replacement), not write. "
-    "Check your work with run (path: the folder to run in) and with git_diff, not a printed diff. "
+    "Check your work with run (path: the folder to run in). "
     "For a web page, test it with check (steps and eval let you play it and read its state) and "
-    "fix what it finds before you preview it and give the link. A GitHub repo: "
-    "git_clone it, change it, then git_diff, git_commit and git_push, in that order: a push sends "
-    "only committed work (on a branch of its own unless they said otherwise); open the pull "
-    "request with the GitHub tools if they have them. Changing an existing feature: outline the "
-    "file first and read only around the lines it points to, not big slices.")
+    "fix what it finds before you preview it and give the link. Changing an existing feature: "
+    "outline the file first and read only around the lines it points to, not big slices.\n"
+    "Code is also how you solve what no tool does. When none of your tools does what's asked, or "
+    "doing it by hand would take many repetitive steps (going through many items, transforming "
+    "or combining data, computing, checking something repeatedly), write a small program in "
+    "projects/ and run it, rather than giving up or grinding through tool calls one at a time. "
+    "Check its output before you rely on it, and fix and re-run it until it's right. When one "
+    "solved something that could come up again, save it in projects/toolbox/ with a first line "
+    "saying what it does and a Usage: line saying how to run it, and use it next time.")
+
+# Added to the instructions while the Developer app's GitHub repos are on
+# (mcp_client.repos_on): the git tools are offered only then.
+REPOS_INSTRUCTION = (
+    " A GitHub repo: git_clone it, change it, then git_diff (not a printed diff), git_commit and "
+    "git_push, in that order: a push sends only committed work (on a branch of its own unless "
+    "they said otherwise); open the pull request with the GitHub tools if they have them.")
 
 
-def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False):
+def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False,
+                  repos=False):
     """The instruction half of the stable prefix, for this kind of conversation.
     Nothing here may change inside a turn: a different byte anywhere in it and
     the provider's cache matches nothing of the request (see _projects_block)."""
@@ -1836,6 +1848,8 @@ def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False,
         prompt += "\n\n" + FAST_BROWSER_INSTRUCTION
     if coding:
         prompt += "\n\n" + DEVELOPER_INSTRUCTION
+        if repos:
+            prompt += REPOS_INSTRUCTION
     if tts:
         prompt += "\n\nYou are speaking through text-to-speech — write for clear, natural speech."
     if subagent:
@@ -1851,7 +1865,8 @@ def _session_instructions(sess):
     user = approvals.current_user() or sess.name
     return _instructions(tts=sess.tts, subagent=sess.depth > 0,
                          browsing=_browser_on(user), fast_browser=_fast_browser_on(user),
-                         coding=_developer_on(user))
+                         coding=_developer_on(user),
+                         repos=_developer_on(user) and mcp_client.repos_on(user))
 
 
 def _browser_on(user):
@@ -1975,6 +1990,26 @@ def _first_line(path):
     return ""
 
 
+_USAGE = re.compile(r"""^[\s#/*"'-]*usage\s*:\s*(.+?)[\s"']*$""", re.I)
+
+
+def _usage_line(path):
+    """How a toolbox script says to run it: its "Usage: ..." line near the
+    top (a comment or the docstring), so it's called the same way each time."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for _ in range(30):
+                line = f.readline()
+                if not line:
+                    break
+                m = _USAGE.match(line.strip())
+                if m:
+                    return m.group(1).strip()[:160]
+    except OSError:
+        pass
+    return ""
+
+
 def _toolbox_line(workspace):
     """The live-context line about the toolbox in `workspace`, or ""."""
     if not workspace or not os.path.isdir(workspace):
@@ -1987,13 +2022,18 @@ def _toolbox_line(workspace):
             if name.startswith(".") or os.path.islink(full) or not os.path.isfile(full):
                 continue
             desc = _first_line(full)
-            entries.append(name + (f" ({desc})" if desc else ""))
+            usage = _usage_line(full)
+            if usage and usage.lower() in desc.lower():
+                desc = ""
+            about = "; ".join(x for x in (desc, f"usage: {usage}" if usage else "") if x)
+            entries.append(name + (f" ({about})" if about else ""))
     if not entries:
         return ("\nToolbox (projects/toolbox/): empty. A script that solved something is worth saving "
-                "there, its first line a comment saying what it does, to use again.")
+                "there, its first line a comment saying what it does and a Usage: line how to run it, "
+                "to use again.")
     more = f"; +{len(entries) - TOOLBOX_SHOWN} more" if len(entries) > TOOLBOX_SHOWN else ""
-    return ("\nToolbox (projects/toolbox/, scripts that worked before): "
-            + "; ".join(entries[:TOOLBOX_SHOWN]) + more)
+    return ("\nToolbox (projects/toolbox/, scripts that worked before; run one with run, "
+            "path projects/toolbox): " + " | ".join(entries[:TOOLBOX_SHOWN]) + more)
 
 
 def _toolbox_block():
@@ -2038,7 +2078,7 @@ def _volatile_tail():
     and this turn's notes."""
     return (_now_line() + _pings_block() + _new_sections_line()
             + _live_context_block() + _projects_block() + _toolbox_block()
-            + _sess().turn_notes + "\n")
+            + _plan_block() + _sess().turn_notes + "\n")
 
 
 def _refresh_volatile():
@@ -2361,6 +2401,58 @@ def sort_ping_lines(lines):
     return sorted(lines, key=key)
 
 
+# A checklist for a long task, kept for the turn and shown in the live tail
+# on every request, so twenty steps in the agent still sees what's done and
+# what's left (the way a coding agent keeps its to-do list).
+PLAN_TOOL_NAME = "update_plan"
+PLAN_STATUSES = ("todo", "doing", "done")
+PLAN_MAX_STEPS = 20
+PLAN_STEP_CHARS = 160
+PLAN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": PLAN_TOOL_NAME,
+        "description": ("Keeps your plan for a task of many steps: send the whole list each time, "
+                        "each step todo, doing or done. Shown back to you on every step. Skip it "
+                        "for anything quick."),
+        "parameters": {"type": "object", "properties": {
+            "steps": {"type": "array", "items": {"type": "object", "properties": {
+                "step": {"type": "string"},
+                "status": {"type": "string", "enum": list(PLAN_STATUSES)}},
+                "required": ["step", "status"]}}},
+            "required": ["steps"]},
+    },
+}
+
+
+def _update_plan(sess, steps):
+    """The plan tool: keep `steps` as this turn's plan. Its answer."""
+    if not isinstance(steps, list) or not steps:
+        return "Error: steps must be a list of {step, status}; nothing was changed."
+    plan = []
+    for item in steps[:PLAN_MAX_STEPS]:
+        if not isinstance(item, dict):
+            continue
+        text = " ".join(str(item.get("step") or "").split())[:PLAN_STEP_CHARS]
+        status = str(item.get("status") or "todo").strip().lower()
+        if text:
+            plan.append({"step": text, "status": status if status in PLAN_STATUSES else "todo"})
+    if not plan:
+        return "Error: none of the steps had any text; nothing was changed."
+    sess.turn_plan = plan
+    done = sum(p["status"] == "done" for p in plan)
+    return f"Plan kept: {done} of {len(plan)} done."
+
+
+def _plan_block():
+    """This turn's plan for the live tail, or ""."""
+    plan = getattr(_sess(), "turn_plan", None) or []
+    if not plan:
+        return ""
+    mark = {"done": "[x]", "doing": "[>]", "todo": "[ ]"}
+    return "\nYour plan for this task: " + "; ".join(f"{mark[p['status']]} {p['step']}" for p in plan)
+
+
 def build_context_tools():
     """Memory and recall. The system prompt carries as much of context.md as
     fits and the names of the rest; these read the rest, write to it, and reach
@@ -2412,7 +2504,7 @@ def build_context_tools():
                 }
             }
         }
-    ] + ([advisor.ask_tool()] if advisor.enabled() else [])
+    ] + [PLAN_TOOL] + ([advisor.ask_tool()] if advisor.enabled() else [])
 
 
 def build_file_tools():
@@ -3802,6 +3894,9 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     if command_name == 'search_history':
         return _search_history(args_dict.get('query'))
 
+    if command_name == PLAN_TOOL_NAME:
+        return _update_plan(sess, args_dict.get("steps"))
+
     if command_name == advisor.TOOL_NAME:
         return advisor.ask(sess, _tools_user(), sess.messages,
                            str(args_dict.get('question') or '').strip())
@@ -4632,7 +4727,7 @@ _JEV_BUILTIN_GROUPS = (
 # Sent on every routed turn, never put to Jev. add_context because the prompt
 # tells the model to save what it learns on every turn, whatever the turn is
 # about; get_time for the reason build_time_tools() gives.
-_JEV_ALWAYS = ("add_context", "get_time", advisor.TOOL_NAME)
+_JEV_ALWAYS = ("add_context", "get_time", PLAN_TOOL_NAME, advisor.TOOL_NAME)
 
 # Keep the previous exchange whatever Jev says. Off: Jev is asked about it
 # like any other message, and reliably keeps it when the request leans on it.

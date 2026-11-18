@@ -117,8 +117,8 @@ BUILTIN_SERVERS = [
         # FreeClaw's own (src/dev_server.py): files, search and a run tool in
         # each user's projects folder, the same one the Developer app edits.
         "command": f'"{sys.executable}" -m src.dev_server',
-        "description": "Code in your projects folder: read, edit, search and run. Open it in the "
-                       "Developer app.",
+        "description": "Code in your projects folder: read, edit, search and run, always on. "
+                       "This switch is for GitHub repos: cloning, committing and pushing.",
         # for_user() hands each user their own workspace.
         "workspace": True,
         "builtin": True,
@@ -429,21 +429,56 @@ def forget_everywhere(name):
                 logger.exception("Couldn't drop MCP choice %r for user=%r", name, user)
 
 
+# The Developer server's switch is the GitHub-repos switch. Its workspace
+# (files, run, check, jobs, the toolbox, apps from code) is always on: it's how
+# an agent gets round a problem no tool solves, by writing and running a
+# program, and that shouldn't depend on whether the person works with repos.
+# Switched off, it offers no git tools and its instructions leave git out.
+DEVELOPER_SERVER = "developer"
+REPO_TOOLS = ("git_clone", "git_status", "git_diff", "git_commit", "git_push", "git_fetch",
+              "git_pull", "git_branch")
+
+
+def _developer_for(server, repos):
+    """The Developer server for one user: on, with or without its git tools."""
+    excluded = [t for t in server.get("exclude_tools") or () if t not in REPO_TOOLS]
+    if not repos:
+        excluded += list(REPO_TOOLS)
+    return {**server, "enabled": True, "repos": bool(repos), "exclude_tools": excluded}
+
+
+def repos_on(user):
+    """Whether `user` has the Developer app's GitHub repos on (its switch)."""
+    # A sub-agent goes by its main agent's switch, as it uses its workspace.
+    pref = (read_prefs(_workspace_owner(user)) or {}).get(DEVELOPER_SERVER) if user else None
+    if pref is not None:
+        return bool(pref)
+    server = next((s for s in BUILTIN_SERVERS if s["name"] == DEVELOPER_SERVER), {})
+    return bool(server.get("default_enabled"))
+
+
 def _apply_user_prefs(servers, user):
     """`servers` with each `enabled` flag resolved against `user`'s choices.
     Copies rather than mutating: the same dicts are handed to callers holding
     the install-wide view, which must keep the defaults it's about to write
-    back to `.env`."""
+    back to `.env`. The Developer server is always on for a user; its switch
+    says whether it has its git tools (DEVELOPER_SERVER above)."""
     if not user:
         return servers
-    prefs = read_prefs(user)
-    if not prefs:
-        return servers
+    prefs = read_prefs(user) or {}
     for old, new in LEGACY_BUILTIN_NAMES.items():
         if old in prefs and new not in prefs:
             prefs[new] = prefs[old]
-    return [{**s, "enabled": prefs[s["name"]]} if s.get("name") in prefs else s
-            for s in servers]
+    out = []
+    for s in servers:
+        name = s.get("name")
+        if name == DEVELOPER_SERVER and s.get("workspace"):
+            out.append(_developer_for(s, repos_on(user)))
+        elif name in prefs:
+            out.append({**s, "enabled": prefs[name]})
+        else:
+            out.append(s)
+    return out
 
 
 # ── .env storage (read + serialize) ──────────────────────────
