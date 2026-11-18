@@ -9,6 +9,7 @@ installed, and are skipped with a note where they aren't.
 """
 
 import io
+import types
 import json
 import os
 import shutil
@@ -436,15 +437,28 @@ class TestProjectsKnown(unittest.TestCase):
 
     def test_in_instructions_and_routing(self):
         import src.agent as agent
-        text = agent._instructions(coding=True, projects=["Home-web", "minecraft"])
-        self.assertIn("Their projects in the workspace: Home-web, minecraft.", text)
-        self.assertNotIn("Their projects", agent._instructions(coding=False, projects=["x"]))
         with mock.patch.object(agent, "_tools_user", lambda: "alice"):
             self.assertIn("[their projects: Home-web, minecraft]", agent._projects_hint("mcp:developer"))
             self.assertEqual(agent._projects_hint("mcp:browser"), "")
             line = agent._jev_server_about({"name": "developer", "workspace": True, "description": "Code."},
                                            [], None)
             self.assertIn("The user's own projects here: Home-web, minecraft.", line)
+        self.assertNotIn("Their projects", agent._instructions(coding=True))
+        sess = types.SimpleNamespace(name="alice", depth=0)
+        with mock.patch.object(agent, "_sess", lambda: sess), \
+                mock.patch.object(agent.approvals, "current_user", lambda: "alice"), \
+                mock.patch.object(agent, "_developer_on", lambda u: True):
+            self.assertIn("Their projects in the Developer workspace: Home-web, minecraft.",
+                          agent._projects_block())
+            # A new project changes the live tail, never the cached instructions.
+            before = agent._instructions(coding=True)
+            os.makedirs(os.path.join(self.static, "alice", "files", "projects", "platformer"))
+            self.assertIn("platformer", agent._projects_block())
+            self.assertEqual(before, agent._instructions(coding=True))
+        with mock.patch.object(agent, "_sess", lambda: sess), \
+                mock.patch.object(agent.approvals, "current_user", lambda: "alice"), \
+                mock.patch.object(agent, "_developer_on", lambda u: False):
+            self.assertEqual(agent._projects_block(), "")
 
 
 class TestSubagentWorkspace(TestProjectsKnown):

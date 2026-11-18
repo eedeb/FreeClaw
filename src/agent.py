@@ -1825,9 +1825,10 @@ DEVELOPER_INSTRUCTION = (
     "file first and read only around the lines it points to, not big slices.")
 
 
-def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False,
-                  projects=()):
-    """The instruction half of the stable prefix, for this kind of conversation."""
+def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False):
+    """The instruction half of the stable prefix, for this kind of conversation.
+    Nothing here may change inside a turn: a different byte anywhere in it and
+    the provider's cache matches nothing of the request (see _projects_block)."""
     prompt = _INSTRUCTIONS
     if browsing:
         prompt += "\n\n" + ACCOUNT_ACTIONS_INSTRUCTION
@@ -1835,11 +1836,6 @@ def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False,
         prompt += "\n\n" + FAST_BROWSER_INSTRUCTION
     if coding:
         prompt += "\n\n" + DEVELOPER_INSTRUCTION
-        if projects:
-            # Changes when a project is added or removed, which is rare; the
-            # cached prefix pays for it once.
-            prompt += (f" Their projects in the workspace: {', '.join(projects)}. When they talk "
-                       "about one of these (\"my game\", \"my site\"), they mean that code.")
     if tts:
         prompt += "\n\nYou are speaking through text-to-speech — write for clear, natural speech."
     if subagent:
@@ -1855,8 +1851,7 @@ def _session_instructions(sess):
     user = approvals.current_user() or sess.name
     return _instructions(tts=sess.tts, subagent=sess.depth > 0,
                          browsing=_browser_on(user), fast_browser=_fast_browser_on(user),
-                         coding=_developer_on(user),
-                         projects=mcp_client.developer_projects(user) if _developer_on(user) else ())
+                         coding=_developer_on(user))
 
 
 def _browser_on(user):
@@ -2013,12 +2008,37 @@ def _toolbox_block():
         return ""
 
 
+def _projects_block():
+    """The user's Developer projects, while the app is on.
+
+    In the live tail, not the instructions: it was there, on the thought that
+    a project is added rarely, but a coding turn's first write usually *is*
+    a new project folder, and the instructions change on the next request.
+    That request matched nothing in the provider's cache and wrote the whole
+    conversation again (measured 2026-11-18, the same platformer prompt
+    twice: 18,703 tokens re-written on Luna, 18,969 on Terra, a quarter of
+    that turn's cost). Here it costs its own few tokens and nothing else."""
+    sess = _sess()
+    user = approvals.current_user() or sess.name
+    if not user or not _developer_on(user):
+        return ""
+    try:
+        projects = mcp_client.developer_projects(user)
+    except Exception:                                        # noqa: BLE001 — the tail stands
+        return ""
+    if not projects:
+        return ""
+    return (f"\nTheir projects in the Developer workspace: {', '.join(projects)}. When they talk "
+            "about one of these (\"my game\", \"my site\"), they mean that code.")
+
+
 def _volatile_tail():
     """Everything below _VOLATILE_HEADER, rebuilt on every request: the clock,
-    the schedule, what was saved this conversation, the toolbox, and this
-    turn's notes."""
+    the schedule, what was saved this conversation, the projects, the toolbox,
+    and this turn's notes."""
     return (_now_line() + _pings_block() + _new_sections_line()
-            + _live_context_block() + _toolbox_block() + _sess().turn_notes + "\n")
+            + _live_context_block() + _projects_block() + _toolbox_block()
+            + _sess().turn_notes + "\n")
 
 
 def _refresh_volatile():
