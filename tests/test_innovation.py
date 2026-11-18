@@ -129,5 +129,19 @@ class TestPlan(unittest.TestCase):
         self.assertIn(agent.PLAN_TOOL_NAME, [t["function"]["name"] for t in agent.build_context_tools()])
 
 
+class TestRunApproval(unittest.TestCase):
+    def test_runs_ask_by_default(self):
+        import src.dev_server as dev_server
+        self.assertTrue(dev_server.runs_need_approval())
+
+    def test_gate_consults_it_and_never_for_push_or_bash(self):
+        import inspect
+        src_text = inspect.getsource(agent.agent_stream)
+        i = src_text.index("dev_server.runs_need_approval()")
+        gate = src_text[i - 300:i]
+        self.assertIn("command_name != 'run_bash_command'", gate)
+        self.assertIn('where != "GitHub"', gate)
+
+
 if __name__ == "__main__":
     unittest.main()

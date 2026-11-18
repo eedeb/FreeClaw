@@ -6103,6 +6103,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         # Where the run starts (dev_server.files_top).
                         where = "your files"
                     verdict = approvals.NO_COMMAND if invalid else approvals.check(gated)
+                    if (verdict == approvals.NEEDS_PROMPT and command_name != 'run_bash_command'
+                            and where != "GitHub" and not dev_server.runs_need_approval()):
+                        # A host whose runs are sandboxed (dev_server's note).
+                        verdict = approvals.ALLOWED
                     if invalid:
                         # Malformed, so nothing to approve: the model is told
                         # what's wrong and nobody is asked.
