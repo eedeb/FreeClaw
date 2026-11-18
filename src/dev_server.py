@@ -125,6 +125,18 @@ class ToolError(Exception):
     """A mistake the model can fix — reported to it, not logged as a crash."""
 
 
+# ── asking before a run ──────────────────────────────────────
+
+def runs_need_approval():
+    """Whether run and start_job ask the person first (agent.py's approval
+    gate). Yes on an install like this one, where a run is a program on the
+    machine itself. A host whose every run is sandboxed (its own walls, its
+    own network rules, its own budget) replaces this to answer no, so the
+    agent can use code whenever it needs to, scheduled tasks included.
+    git_push asks either way: it publishes their code."""
+    return True
+
+
 # ── the off switch ───────────────────────────────────────────
 
 def disabled():

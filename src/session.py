@@ -173,6 +173,7 @@ class Session:
         # with whether it consulted a source or answered from weights alone.
         self.turn_tool_names = []
         self.turn_follow_ups = 0
+        self.turn_plan = []
 
         # Both default to the safe answer, so a turn that never called
         # approvals.begin_turn() gets refusals rather than unattended
@@ -210,6 +211,8 @@ class Session:
         self.turn_tool_names = []
         # Follow-through nudges given this turn (agent._follow_through).
         self.turn_follow_ups = 0
+        # The plan tool's checklist (agent.update_plan), for this turn only.
+        self.turn_plan = []
 
     def note_tool_used(self, name):
         """Record that this turn ran `name`."""
