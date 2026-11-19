@@ -143,5 +143,21 @@ class TestRunApproval(unittest.TestCase):
         self.assertIn('where != "GitHub"', gate)
 
 
+class TestImagesAndSubagents(unittest.TestCase):
+    def test_images_cut_back_in_batches(self):
+        msgs = [{"role": "tool", "images": ["x"]} for _ in range(agent._MAX_HISTORY_IMAGES)]
+        agent._prune_history_images(msgs)
+        self.assertTrue(all(m.get("images") for m in msgs))
+        msgs.append({"role": "tool", "images": ["y"]})
+        agent._prune_history_images(msgs)
+        self.assertEqual(sum(bool(m.get("images")) for m in msgs), agent._KEEP_HISTORY_IMAGES)
+        self.assertTrue(msgs[-1].get("images"))
+
+    def test_subagent_not_for_a_check(self):
+        with mock.patch.object(agent, "_subagent_launcher", object()):
+            text = agent._subagent_description()
+        self.assertIn("Not for a check", text)
+
+
 if __name__ == "__main__":
     unittest.main()

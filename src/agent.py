@@ -3000,8 +3000,10 @@ def _subagent_description():
         return ("Starts a sub-agent on one task, working in parallel while you carry on. It "
                 "starts from this conversation, with your memory, files and browser logins; "
                 "`task` says what to do and what to report. Returns at once; the report comes "
-                "back later as a message starting \"SUB-AGENT RESULT\". Worth it for multi-step "
-                "work; for one or two tool calls, do them yourself.")
+                "back later as a message starting \"SUB-AGENT RESULT\". Worth it for long work "
+                "that can go on beside yours (a separate part of a build, research across many "
+                "sources). Not for a check, a review or something to look up for your own work: "
+                "the report comes after you've moved on, and doing it yourself costs less.")
     return ("Delegates one task to a sub-agent and returns its report. It can't see this "
             "conversation, so `task` must carry everything it needs. Worth it for "
             "multi-step work; for one or two tool calls, do them yourself.")
@@ -4623,8 +4625,15 @@ def _history_for_request(messages, full_start, lean_start, picked=None):
 # cut back to _KEEP_HISTORY_IMAGES at once; the cache breaks every couple of
 # steps instead of every step, and the prompt stays bounded. Replaying a
 # captured 9-step browsing run, this cut its prompt cost by about 38%.
-_MAX_HISTORY_IMAGES = 4
-_KEEP_HISTORY_IMAGES = 2
+#
+# Raised from 4 and 2 (2026-11-19): with the cache, an image kept costs a
+# cached read on each later request, and a cut costs re-writing everything
+# after the oldest image dropped. A web page checked 9 times in one Terra turn
+# hit the cut once, re-writing 4,540 tokens (17 credits where the step was
+# otherwise 6); at 8 it would not have been cut at all, and a long browsing
+# run is cut a third as often.
+_MAX_HISTORY_IMAGES = 8
+_KEEP_HISTORY_IMAGES = 3
 
 
 def _prune_history_images(messages):
