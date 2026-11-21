@@ -198,10 +198,11 @@ def _run(parent, child, task, history, workspace):
             cancellation.begin_turn(sess)
             message = f"[Task from the main agent] {task}"
             try:
-                # ping=True: every tool, no per-message routing. Routed like a
-                # message, a task got a tool set picked for its wording, which
-                # could leave out the browser it needed, and a sub-agent has
-                # nobody to ask for the rest.
+                # ping=True: a background turn. Jev still picks its history
+                # and memory, but a sub-agent is given every tool it has
+                # (agent._turn_tool_picks): a set picked for the task's
+                # wording could leave out the one it needed, and a sub-agent
+                # has nobody to ask for the rest.
                 with live_turns.turn(child, message, "task") as live:
                     for _event in live.watch(agent.agent_stream(user_input=message, ping=True)):
                         pass

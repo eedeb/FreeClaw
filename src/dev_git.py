@@ -21,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.error
 import urllib.request
 
 TIMEOUT = 120
@@ -317,7 +318,72 @@ def push(repo, branch=None):
     left = f"\nNot included (never committed): {_names(new)}." if new else ""
     if "everything up-to-date" in out.lower():
         return f"Nothing new to push: GitHub's {branch} already has these commits.{left}"
-    return f"Pushed to {branch}.{left}\n{out}".strip()
+    return f"Pushed to {branch}. For review, use git_pull_request now.{left}\n{out}".strip()
+
+
+def _github(method, path, body=None):
+    """One GitHub API call with the person's token: (status, parsed JSON)."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request("https://api.github.com" + path, data=data, method=method, headers={
+        "Authorization": f"Bearer {token()}", "Accept": "application/vnd.github+json",
+        "User-Agent": "FreeClaw", **({"Content-Type": "application/json"} if data else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.load(e)
+        except ValueError:
+            return e.code, {}
+    except (OSError, ValueError) as e:
+        raise GitError(f"Couldn't reach GitHub: {e}")
+
+
+def pull_request(repo, title, body="", base=None, branch=None):
+    """Open a pull request on GitHub from a pushed branch (default: the
+    current one) into `base` (default: the repo's default branch). If one is
+    already open from that branch, its link instead of a second."""
+    _need_repo(repo)
+    _need_token()
+    owner, name = repo_url(_origin(repo))
+    branch = (branch or current_branch(repo)).strip()
+    title = " ".join(str(title or "").split())
+    if not branch:
+        raise GitError("Not on a branch (a detached checkout). Say which branch the pull request is from.")
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", branch) or (base and not re.fullmatch(
+            r"[A-Za-z0-9_][A-Za-z0-9_./-]*", base)):
+        raise GitError("Bad branch name.")
+    if not title:
+        raise GitError("A pull request needs a title.")
+    if branch == current_branch(repo):
+        ahead, _behind = _counts(repo, branch)
+        if ahead is None:
+            raise GitError(f"{branch} isn't on GitHub yet: git_push it first.")
+        if ahead:
+            raise GitError(f"{ahead} commit{'s' if ahead != 1 else ''} on {branch} {'aren' if ahead != 1 else 'isn'}'t "
+                           "pushed, so the pull request wouldn't have them: git_push first.")
+    if not base:
+        status, info = _github("GET", f"/repos/{owner}/{name}")
+        if status != 200 or not info.get("default_branch"):
+            raise GitError(f"Couldn't read {owner}/{name} on GitHub (HTTP {status}).")
+        base = info["default_branch"]
+    if base == branch:
+        raise GitError(f"{branch} is the branch it would merge into. Push the work to a branch of its own first.")
+    status, pr = _github("POST", f"/repos/{owner}/{name}/pulls",
+                         {"title": title[:250], "head": branch, "base": base, "body": str(body or "")[:60000]})
+    if status == 201:
+        return f"Opened pull request #{pr.get('number')}: {pr.get('html_url')} ({branch} into {base})."
+    errors = " ".join(str(e.get("message") or "") for e in (pr.get("errors") or []) if isinstance(e, dict))
+    if status == 422 and "already exists" in errors:
+        _s, open_prs = _github("GET", f"/repos/{owner}/{name}/pulls?state=open&head={owner}:{branch}")
+        for p in open_prs if isinstance(open_prs, list) else []:
+            return f"A pull request from {branch} is already open: #{p.get('number')} {p.get('html_url')}."
+    if status == 422 and "No commits between" in errors:
+        raise GitError(f"{branch} has nothing that {base} doesn't, so there's nothing to review.")
+    if status in (401, 403, 404):
+        raise GitError(f"GitHub refused (HTTP {status}): the GitHub connection may not be allowed to open pull "
+                       f"requests on {owner}/{name}.")
+    raise GitError(f"GitHub didn't open it (HTTP {status}): {pr.get('message') or errors or 'no reason given'}.")
 
 
 def _names(paths, most=5):

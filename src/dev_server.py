@@ -133,7 +133,7 @@ def runs_need_approval():
     machine itself. A host whose every run is sandboxed (its own walls, its
     own network rules, its own budget) replaces this to answer no, so the
     agent can use code whenever it needs to, scheduled tasks included.
-    git_push asks either way: it publishes their code."""
+    git_push and git_pull_request ask either way: they publish their code."""
     return True
 
 
@@ -1180,6 +1180,14 @@ TOOLS = [
                         "required": ["repo"]},
     },
     {
+        "name": "git_pull_request",
+        "description": "Open or find a GitHub PR from a pushed branch. Defaults to the current branch and the repo's default base.",
+        "inputSchema": {"type": "object", "properties": {
+            "repo": _PATH, "title": {"type": "string"}, "body": {"type": "string"},
+            "base": {"type": "string"}, "branch": {"type": "string"},
+        }, "required": ["repo", "title"]},
+    },
+    {
         "name": "git_fetch",
         "description": "Check origin: fetch from GitHub and list commits there that aren't here yet.",
         "inputSchema": {"type": "object", "properties": {"repo": _PATH}, "required": ["repo"]},
@@ -1507,6 +1515,10 @@ class Tools:
 
     def t_git_push(self, root, args):
         return self._git(dev_git.push, self._repo(root, args), args.get("branch"))
+
+    def t_git_pull_request(self, root, args):
+        return self._git(dev_git.pull_request, self._repo(root, args), args.get("title"), args.get("body"),
+                         args.get("base"), args.get("branch"))
 
     def t_git_fetch(self, root, args):
         return self._git(dev_git.fetch, self._repo(root, args))

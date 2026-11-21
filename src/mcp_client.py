@@ -435,7 +435,7 @@ def forget_everywhere(name):
 # program, and that shouldn't depend on whether the person works with repos.
 # Switched off, it offers no git tools and its instructions leave git out.
 DEVELOPER_SERVER = "developer"
-REPO_TOOLS = ("git_clone", "git_status", "git_diff", "git_commit", "git_push", "git_fetch",
+REPO_TOOLS = ("git_clone", "git_status", "git_diff", "git_commit", "git_push", "git_pull_request", "git_fetch",
               "git_pull", "git_branch")
 
 

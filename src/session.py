@@ -208,6 +208,9 @@ class Session:
         self.last_tool_name = None
         self.identical_tool_calls = 0
         self.last_call_signature = None
+        # (name, argument signature) -> [result hash, times in a row it gave
+        # it] for every call this turn (agent._same_answer_again).
+        self.turn_answers = {}
         self.turn_tool_names = []
         # Follow-through nudges given this turn (agent._follow_through).
         self.turn_follow_ups = 0
