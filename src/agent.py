@@ -894,6 +894,53 @@ def _throttle_tool_call(name, args_dict=None):
     return None
 
 
+# ── the same answer again ────────────────────────────────────
+#
+# The run above only sees calls in a row. A model that checks the same thing
+# between other steps never trips it: after a push on 2026-11-21 one ran the
+# same `git ls-remote` eight times among fetches, statuses and `echo check`,
+# each answering exactly as the last. So across the whole turn: a call made
+# with the same arguments that has given the same result TURN_REPEAT_LIMIT
+# times running isn't run again; the model gets that result back, marked as
+# such. Something that changes (a job's output, a page) gives a different
+# result and is never held. Browser steps whose repeat is progress, and job
+# polling, are left alone.
+
+TURN_REPEAT_LIMIT = 2
+TURN_REPEAT_SHOWN = 1500
+REPEAT_NOTICE = (
+    "'{name}' was NOT run: the same call has already given the same result {n} times this turn, "
+    "so it would again. That result:\n{result}")
+
+
+def _repeat_exempt(name):
+    return name in _REPEATABLE_TOOLS or name.endswith("check_job")
+
+
+def _same_answer_again(name, args_dict):
+    """The notice for a call that has already answered the same way
+    TURN_REPEAT_LIMIT times this turn, or None to run it."""
+    if _repeat_exempt(name):
+        return None
+    seen = (getattr(_sess(), "turn_answers", None) or {}).get((name, _call_signature(args_dict)))
+    if not seen or seen[1] < TURN_REPEAT_LIMIT:
+        return None
+    return REPEAT_NOTICE.format(name=name, n=seen[1], result=seen[2][:TURN_REPEAT_SHOWN])
+
+
+def _note_answer(name, args_dict, result):
+    sess = _sess()
+    if not hasattr(sess, "turn_answers") or sess.turn_answers is None:
+        sess.turn_answers = {}
+    key = (name, _call_signature(args_dict))
+    digest = hashlib.sha1(str(result).encode("utf-8", "replace")).hexdigest()
+    seen = sess.turn_answers.get(key)
+    if seen and seen[0] == digest:
+        seen[1] += 1
+    else:
+        sess.turn_answers[key] = [digest, 1, str(result)]
+
+
 def get_turn_usage():
     """Token totals for the turn that just ran. Read by the /v1 endpoint to
     fill in its `usage` block — the figures are the providers' own, so they're
@@ -1833,7 +1880,7 @@ DEVELOPER_INSTRUCTION = (
 REPOS_INSTRUCTION = (
     " A GitHub repo: git_clone it, change it, then git_diff (not a printed diff), git_commit and "
     "git_push, in that order: a push sends only committed work (on a branch of its own unless "
-    "they said otherwise); open the pull request with the GitHub tools if they have them.")
+    "they said otherwise); git_pull_request then opens the pull request.")
 
 
 def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False,
@@ -3321,7 +3368,7 @@ def _is_developer_entry(entry):
 
 # The Developer server's tools that ask first: running code, and pushing to
 # someone's GitHub repo.
-DEVELOPER_GATED = ("run", "git_push", "start_job")
+DEVELOPER_GATED = ("run", "git_push", "git_pull_request", "start_job")
 
 
 def _is_developer_run(command_name):
@@ -5111,6 +5158,19 @@ def _jev_notes(sess):
     return note + sess.turn_route_notes
 
 
+def _turn_tool_picks(picked_names, groups, sess):
+    """The tools a routed turn is given: Jev's picks, or for a sub-agent all
+    of them. A sub-agent's task is worded for the main agent, and it has
+    nobody to ask for a tool it lacks: routed like a message, one got the
+    Developer app's read tools but not git_clone, write or run (trimmed from
+    a group it was sent, so load_tools couldn't add them either) and gave up
+    on the task it was started for (2026-11-21). The tools are in every
+    request anyway (_tool_universe); this only allows them."""
+    if not getattr(sess, "depth", 0):
+        return picked_names
+    return set(picked_names) | {_tool_name(t) for _gid, _short, ts in groups for t in ts}
+
+
 def _jev_turn_tools(groups, picked_names, sess):
     """The routed turn's tool list, recording on the Session which groups it
     withheld whole (loadable with load_tools) and which tools it trimmed from
@@ -5478,7 +5538,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                        if n and n not in included]
             sections_block, opened = _jev_sections_block(route.sections, sections)
             sess.turn_route_notes = _digest(skipped) + sections_block
-            check_tools = _jev_turn_tools(groups, route.tools, sess)
+            check_tools = _jev_turn_tools(groups, _turn_tool_picks(route.tools, groups, sess), sess)
             sess.turn_route_groups = groups
             sess.turn_notes = _jev_notes(sess)
             _refresh_volatile()
@@ -6031,6 +6091,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             args_dict = None
             result = None
             held = None
+            ran = False
             try:
                 if i == last and finish_reason == "length" and not _whole_tool_call(tc):
                     # The reply hit its output limit part-way through this
@@ -6077,7 +6138,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                 # going to run shouldn't put a prompt in front of the user, and
                 # shouldn't burn one of their answers either.
                 held = _throttle_tool_call(command_name, args_dict)
-                if held:
+                again = None if held else _same_answer_again(command_name, args_dict)
+                if again:
+                    held = "same_answer"
+                    result = again
+                    logger.info("Tool '%s' not run — the same call gave the same result %d times this turn",
+                                command_name, TURN_REPEAT_LIMIT)
+                    yield {"type": "tool_throttled", "name": command_name,
+                           "limit": TURN_REPEAT_LIMIT, "reason": "same_answer"}
+                elif held:
                     same = _THROTTLE_CLAUSE[held]
                     result = THROTTLE_NOTICE.format(name=command_name,
                                                     limit=TOOL_CALL_RUN_LIMIT, same=same)
@@ -6106,6 +6175,12 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         branch = str(args_dict.get("branch") or "").strip() or "its current branch"
                         gated = f"git push {repo} to {branch}" if repo else None
                         invalid = None if repo else "git_push needs repo."
+                        where = "GitHub"
+                    elif _developer_tool(command_name) == "git_pull_request":
+                        repo = str(args_dict.get("repo") or "").strip()
+                        branch = str(args_dict.get("branch") or "").strip() or "its current branch"
+                        gated = f"open a pull request in {repo} from {branch}" if repo else None
+                        invalid = None if repo else "git_pull_request needs repo."
                         where = "GitHub"
                     else:
                         gated, invalid = dev_server.command_line(args_dict)
@@ -6141,6 +6216,7 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         if not bash_approved:
                             result = approvals.denial_message(decision)
                 if result is None:
+                    ran = True
                     try:
                         result = _run_tool(command_name, args_dict, bash_approved=bash_approved)
                     except Exception as e:
@@ -6149,6 +6225,8 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
             result = _clip_tool_result(result)
+            if args_dict is not None and ran:
+                _note_answer(command_name, args_dict, result)
             # The advisor (src/advisor.py), called in when the turn is in
             # trouble: a loop held back, failures piling up, a very long turn.
             # Its advice rides on this result, the next thing the model reads.
