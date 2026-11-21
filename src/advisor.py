@@ -273,6 +273,8 @@ def _agent_tools(sess):
             out += [(t, True) for t in entry[1]]
         except (IndexError, TypeError):
             pass
+    for tools in (getattr(sess, "turn_trimmed", None) or {}).values():
+        out += [(t, True) for t in tools]
     return [(t, loadable) for t, loadable in out
             if isinstance(t, dict) and _tool_fn(t).get("name") not in (TOOL_NAME, "load_tools")]
 

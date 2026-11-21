@@ -4809,6 +4809,16 @@ def _jev_server_about(server, server_tools, used_for):
     line += f" Tools: {', '.join(names[:10])}"
     if len(names) > 10:
         line += " …"
+    # Names alone often hide a tool's purpose or identity (for example,
+    # agent mail versus a person's mailbox). Give Jev a bounded taste of the
+    # actual descriptions, without putting the entire catalogue in its state.
+    capabilities = []
+    for name, tool in zip(names[:3], server_tools[:3]):
+        desc = (tool.get("function") or {}).get("description") or ""
+        if desc:
+            capabilities.append(f"{name}: {jev.one_line(desc, 100)}")
+    if capabilities:
+        line += ". Capabilities: " + "; ".join(capabilities)
     if used_for:
         line += ". Used before for: " + "; ".join(f'"{u}"' for u in used_for)
     return line
@@ -5050,9 +5060,10 @@ def _load_tools_tool(withheld):
         "type": "function",
         "function": {
             "name": LOAD_TOOLS_NAME,
-            "description": "Fallback, not a first step: adds a tool group held back for this "
-                           "message, once the tools you have have proved unable to do the request. "
-                           "Never call it first. Use it rather than saying you can't do something.",
+            "description": "Fallback, not a first step: adds missing tools from a group, "
+                           "including a group with some tools already available, once the tools "
+                           "you have have proved unable to do the request. Never call it first. "
+                           "Use it rather than saying you can't do something.",
             "parameters": {
                 "type": "object",
                 "properties": {"groups": groups},
@@ -5091,35 +5102,39 @@ def _projects_hint(gid):
     return f" [their projects: {', '.join(projects)}]" if projects else ""
 
 
+def _jev_available(sess):
+    """All recoverable groups, including tools trimmed from a selected group."""
+    available = dict(sess.turn_withheld)
+    for gid, tools in sess.turn_trimmed.items():
+        if tools:
+            available[gid] = (gid, tools)
+    return available
+
+
 def _jev_notes(sess):
-    """The routed turn's live-tail lines: what's withheld and how to get it,
-    the user's skipped requests, and the opened memory sections."""
-    # Worded as a fallback, and offering only groups that sent nothing: with
-    # "Not loaded: … (mcp:browser: drag)" in view, the model loaded the server
-    # it already had before doing anything, on every tool turn (6/6, live). As
-    # below it went straight to the right tool 10/10, and still loads a group
-    # that's genuinely missing.
-    withheld = sess.turn_withheld
+    """What a routed turn can recover, plus its other live-tail notes."""
+    available = _jev_available(sess)
     note = ""
-    if withheld:
+    if available:
         note = ("\nStart with the tools you have — they were picked for this request. Only if "
-                "they turn out unable to do it, load_tools can add: "
+                "they turn out unable to do it, load_tools can add these missing tools "
+                "(a group may already have other tools available): "
                 + "; ".join(f"{gid} ({', '.join(_short_tool_name(t, gid) for t in ts)})"
                             + _projects_hint(gid)
-                            for gid, (_short, ts) in withheld.items())
+                            for gid, (_short, ts) in available.items())
                 + ".")
     return note + sess.turn_route_notes
 
 
 def _jev_turn_tools(groups, picked_names, sess):
-    """The routed turn's tool list, recording on the Session which groups it
-    withheld whole (loadable with load_tools) and which tools it trimmed from
-    a group it did send (not loadable — see _jev_notes for why)."""
+    """The routed tool list and the whole or partial groups recoverable later."""
     turn_tools = [t for t in build_context_tools() + build_time_tools()
                   if _tool_name(t) in _JEV_ALWAYS]
     sess.turn_withheld = {}
     sess.turn_trimmed = {}
     for gid, short, ts in groups:
+        # A tool barred at this conversation's depth is not recoverable.
+        ts = _apply_depth_limit(ts, sess)
         kept = [t for t in ts if _tool_name(t) in picked_names]
         rest = [t for t in ts if _tool_name(t) not in picked_names
                 and _tool_name(t) not in _JEV_ALWAYS]
@@ -5128,8 +5143,9 @@ def _jev_turn_tools(groups, picked_names, sess):
             sess.turn_trimmed[gid] = rest
         elif rest:
             sess.turn_withheld[gid] = (short, rest)
-    if sess.turn_withheld:
-        turn_tools.append(_load_tools_tool(sess.turn_withheld))
+    available = _jev_available(sess)
+    if available:
+        turn_tools.append(_load_tools_tool(available))
     return turn_tools
 
 
@@ -5223,27 +5239,32 @@ def _load_tools(args_dict):
     asked = args_dict.get("groups") or []
     if isinstance(asked, str):
         asked = [asked]
+    available = _jev_available(sess)
     got = []
     for g in asked:
-        g = _withheld_group(str(g), sess.turn_withheld)
+        g = _withheld_group(str(g), available)
         if g and g not in got:
             got.append(g)
     if not got:
-        available = ", ".join(sess.turn_withheld) or "none — everything is already loaded"
-        return f"Nothing loaded. Groups you can load: {available}."
+        names = ", ".join(available) or "none — everything is already loaded"
+        return f"Nothing loaded. Groups you can load: {names}."
     tools_now = [t for t in (sess.turn_prefix.get("tools") or [])
                  if _tool_name(t) != LOAD_TOOLS_NAME]
     for g in got:
-        tools_now += sess.turn_withheld.pop(g)[1]
-    if sess.turn_withheld:
-        tools_now.append(_load_tools_tool(sess.turn_withheld))
+        tools_now += available[g][1]
+        sess.turn_withheld.pop(g, None)
+        sess.turn_trimmed.pop(g, None)
+    remaining = _jev_available(sess)
+    if remaining:
+        tools_now.append(_load_tools_tool(remaining))
     if sess.turn_prefix:
         sess.turn_prefix["tools"] = _apply_depth_limit(tools_now, sess)
     sess.turn_notes = _jev_notes(sess)
     if sess.turn_route:
         sess.turn_route["loaded"] += got
-        sess.turn_route["withheld"] = [w for w in sess.turn_route["withheld"]
-                                       if w["group"] not in got]
+        for field in ("withheld", "trimmed"):
+            sess.turn_route[field] = [w for w in sess.turn_route.get(field, [])
+                                      if w["group"] not in got]
         sess.turn_route["tools"] = _route_tool_list(
             sess.turn_prefix.get("tools") or tools_now, sess.turn_route_groups)
     return "Loaded: " + ", ".join(got) + ". Their tools are available from your next step."
