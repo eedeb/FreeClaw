@@ -118,6 +118,13 @@ class TestCapture(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.user, ignore_errors=True)
 
+    def test_a_static_folder_named_through_dot_dot(self):
+        os.makedirs(os.path.join(self.user, "src"), exist_ok=True)
+        agent.set_static_dir(os.path.join(self.user, "src", "..", "files"))
+        with mock.patch.object(agent, "registry_for", lambda u: self.registry):
+            agent._undo_capture("mcp_developer_write", {"path": "projects/app/main.py", "content": "y"})
+        self.assertEqual(list(undo.records(self.user)[0]["files"]), ["projects/app/main.py"])
+
     def test_file_tools_and_the_developer_app(self):
         with mock.patch.object(agent, "registry_for", lambda u: self.registry):
             agent._undo_capture("edit_file", {"filename": "draft.md", "old_str": "hi", "new_str": "yo"})

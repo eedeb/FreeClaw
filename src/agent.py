@@ -963,7 +963,10 @@ def _undo_paths(command_name, args_dict):
     entry = registry_for(_tools_user()).get(command_name) or {}
     if not (entry.get("server") or {}).get("workspace") or entry.get("tool") not in _UNDO_DEV_TOOLS:
         return []
-    root = os.path.join(static_dir, dev_server.FILES_FOLDER)
+    # Resolved: dev_server.resolve compares real paths, and a static folder
+    # named through "src/../Flask/static" (as a host may) would otherwise
+    # make every path look outside it.
+    root = os.path.realpath(os.path.join(static_dir, dev_server.FILES_FOLDER))
     if entry["tool"] == "patch":
         import src.dev_edit as dev_edit
         rels = []
