@@ -211,6 +211,8 @@ class Session:
         # (name, argument signature) -> [result hash, times in a row it gave
         # it] for every call this turn (agent._same_answer_again).
         self.turn_answers = {}
+        # This turn's undo record (src/undo.py), made with its first file change.
+        self.turn_undo = None
         self.turn_tool_names = []
         # Follow-through nudges given this turn (agent._follow_through).
         self.turn_follow_ups = 0

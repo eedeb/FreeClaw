@@ -198,17 +198,26 @@ def _run(parent, child, task, history, workspace):
             cancellation.begin_turn(sess)
             message = f"[Task from the main agent] {task}"
             try:
-                # ping=True: a background turn. Jev still picks its history
-                # and memory, but a sub-agent is given every tool it has
-                # (agent._turn_tool_picks): a set picked for the task's
-                # wording could leave out the one it needed, and a sub-agent
-                # has nobody to ask for the rest.
-                with live_turns.turn(child, message, "task") as live:
-                    for _event in live.watch(agent.agent_stream(user_input=message, ping=True)):
-                        pass
-                    save_conversation(child, agent.get_messages(), title=task[:60])
-                if cancellation.is_stopped(sess):
-                    outcome = "was stopped by the user"
+                for _round in range(MAX_FOLLOW_UPS + 1):
+                    # ping=True: a background turn. Jev still picks its history
+                    # and memory, but a sub-agent is given every tool it has
+                    # (agent._turn_tool_picks): a set picked for the task's
+                    # wording could leave out the one it needed, and a sub-agent
+                    # has nobody to ask for the rest.
+                    with live_turns.turn(child, message, "task") as live:
+                        for _event in live.watch(agent.agent_stream(user_input=message, ping=True)):
+                            pass
+                        save_conversation(child, agent.get_messages(), title=task[:60])
+                    if cancellation.is_stopped(sess):
+                        outcome = ("was stopped by the main agent" if getattr(sess, "stopped_by_parent", False)
+                                   else "was stopped by the user")
+                        break
+                    # The main agent wrote after this turn's last step: those
+                    # messages are a turn of their own.
+                    waiting = take_messages(sess)
+                    if not waiting:
+                        break
+                    message = FOLLOW_UP_PREFIX + "\n\n".join(waiting)
             finally:
                 cancellation.end_turn(sess)
             reply = next((m.get("content") for m in reversed(sess.messages)
@@ -220,6 +229,64 @@ def _run(parent, child, task, history, workspace):
     finally:
         _delete(child)
     _deliver(parent, child, task, outcome, reply)
+
+
+# ── talking to one that's running ────────────────────────────
+#
+# The main agent can add to or change a running sub-agent's work, or stop it
+# (spawn_subagent with `to`). A message waits on the sub-agent's Session and is
+# put in front of it with its next tool result (agent.py reads take_messages);
+# one that arrives after its last step starts a turn of its own. At most
+# MAX_FOLLOW_UPS such turns, so two agents can't keep each other going.
+
+MAX_FOLLOW_UPS = 5
+FOLLOW_UP_PREFIX = "[Follow-up from the main agent] "
+_inbox_lock = threading.Lock()
+
+
+def take_messages(sess):
+    """The main agent's messages waiting for `sess`, now taken."""
+    with _inbox_lock:
+        waiting = list(getattr(sess, "incoming", None) or [])
+        sess.incoming = []
+    return waiting
+
+
+def _find(parent, name):
+    """The running sub-agent of `parent` that `name` means (its shown name,
+    its stored one, or just its number), or None."""
+    name = str(name or "").strip().strip('"').lower()
+    for child in children(parent):
+        n = child.rsplit("-subagent-", 1)[-1]
+        if name in (child.lower(), display_name(child).lower(), n, f"subagent-{n}", f"sub-agent {n}"):
+            return child
+    return None
+
+
+def message(parent_sess, to, text, stop=False):
+    """Send a running sub-agent of the main agent in `parent_sess` a message,
+    or stop it. What the tool call answers with."""
+    parent = parent_sess.name
+    child = _find(parent, to)
+    if child is None:
+        running = ", ".join(f'"{display_name(c)}"' for c in children(parent))
+        return (f"No sub-agent called \"{to}\" is working for you now"
+                + (f" (running: {running})." if running else "; none are running.")
+                + " Its report may already have come back.")
+    sess = sessions.for_user(child)
+    if stop:
+        sess.stopped_by_parent = True
+        with _inbox_lock:
+            sess.incoming = []
+        cancellation.request_stop(sess)
+        return f"Stopping \"{display_name(child)}\". Its report will come back saying it was stopped."
+    text = (text or "").strip()
+    if not text:
+        return "Nothing to send: say what to tell it in `task`."
+    with _inbox_lock:
+        sess.incoming = list(getattr(sess, "incoming", None) or []) + [text[:4000]]
+    return (f"Sent to \"{display_name(child)}\". It gets it with its next step, or as a new task "
+            "if it had just finished. Its report still comes back as one message.")
 
 
 def _deliver(parent, child, task, outcome, reply):

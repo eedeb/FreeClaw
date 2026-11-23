@@ -77,5 +77,28 @@ class TestSchedulerPass(unittest.TestCase):
         self.assertEqual(self.agent.read_ping_lines(self.main.user_ping_path(busy)), [])
 
 
+    def test_a_quiet_check_means_no_turn_and_a_loud_one_wakes_it(self):
+        user = self.make_user()
+        when = (datetime.now() - timedelta(minutes=1)).strftime(self.agent.PING_TIME_FORMAT)
+        ran = []
+
+        def fake_stream(user_input=None, ping=False, **kw):
+            ran.append(user_input)
+            self.agent.get_messages().append({"role": "assistant", "content": "ok"})
+            yield {"type": "token", "text": "ok"}
+
+        for answer, expect in (((False, ""), 0), ((True, "The check (`c`) ran and it printed:\n$79"), 1)):
+            with open(self.main.user_ping_path(user), "w") as f:
+                f.write(f"{when} - [check: python projects/toolbox/price.py] Tell them the price dropped.\n")
+            with mock.patch.object(self.main, "list_users", return_value=[user]), \
+                    mock.patch.object(self.agent, "agent_stream", fake_stream), \
+                    mock.patch.object(self.agent, "run_ping_check", lambda u, c: answer):
+                self.main._fire_due_pings(wait=True)
+            self.assertEqual(len(ran), expect)
+        self.assertIn("Tell them the price dropped.", ran[0])
+        self.assertNotIn("[check:", ran[0])
+        self.assertIn("$79", ran[0])
+
+
 if __name__ == "__main__":
     unittest.main()
