@@ -15,8 +15,9 @@ the agent's own, not the person's work.
     <user folder>/.undo/<turn id>/<blob>        a file's bytes before the turn
 
 Beside conversation.json, outside files/, so the agent's own tools can't
-reach it. The newest KEEP turns, for at most DAYS days; a file over FILE_MAX
-isn't kept, and undo says it couldn't put that one back.
+reach it. The newest KEEP turns, for at most DAYS days; a file over FILE_MAX,
+or past TURN_MAX for the turn, isn't kept, and undo says it couldn't put that
+one back.
 """
 import json
 import os
@@ -30,6 +31,7 @@ FOLDER = ".undo"
 KEEP = 10
 DAYS = 7
 FILE_MAX = 5 * 1024 * 1024
+TURN_MAX = 20 * 1024 * 1024        # all of one turn's kept files together; past it, not kept
 SKIP = {"context.md", "ping.md"}
 TOO_BIG = "too-big"
 _lock = threading.Lock()
@@ -119,13 +121,15 @@ def capture(user_dir, files_dir, turn_id, label, paths):
             if rel is None or rel in rec["files"]:
                 continue
             if os.path.isfile(path) and not os.path.islink(path):
-                if os.path.getsize(path) > FILE_MAX:
+                size = os.path.getsize(path)
+                if size > FILE_MAX or rec.get("bytes", 0) + size > TURN_MAX:
                     rec["files"][rel] = TOO_BIG
                 else:
                     os.makedirs(folder, exist_ok=True)
                     blob = f"{len(rec['files'])}.bin"
                     shutil.copyfile(path, os.path.join(folder, blob))
                     rec["files"][rel] = blob
+                    rec["bytes"] = rec.get("bytes", 0) + size
             elif not os.path.exists(path):
                 rec["files"][rel] = None            # made by the turn: undo deletes it
             else:

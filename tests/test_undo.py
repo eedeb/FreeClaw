@@ -77,6 +77,18 @@ class TestUndo(unittest.TestCase):
             time.sleep(0.002)
         self.assertEqual(len(undo.records(self.user)), undo.KEEP)
 
+    def test_a_turn_keeps_at_most_turn_max(self):
+        put(self.p("big1.bin"), "x" * 600)
+        put(self.p("big2.bin"), "y" * 600)
+        with mock.patch.object(undo, "TURN_MAX", 1000):
+            undo.capture(self.user, self.files, "t1", "x", [self.p("big1.bin"), self.p("big2.bin")])
+        files = undo.records(self.user)[0]["files"]
+        self.assertNotEqual(files["big1.bin"], undo.TOO_BIG)
+        self.assertEqual(files["big2.bin"], undo.TOO_BIG)
+        put(self.p("big2.bin"), "changed")
+        _, _, failed = undo.undo(self.user, self.files, "t1")
+        self.assertEqual(failed, ["big2.bin"])
+
     def test_outside_the_files_is_never_kept(self):
         undo.capture(self.user, self.files, "t1", "x", [os.path.join(self.user, "conversation.json"),
                                                         "/etc/passwd"])
