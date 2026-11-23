@@ -95,6 +95,11 @@ eof_line: "*** End of File" LF
 """
 PATCH_DESCRIPTION = ("Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not "
                      "wrap the patch in JSON.")
+# Sent under the name it's trained on: described as `apply_patch` but named
+# mcp_developer_patch, the model looked for apply_patch, didn't find it and
+# said it had no patch tool (2026-11-23). Mapped back on the way in.
+FREEFORM_NAME = "apply_patch"
+_NAMES_KEY = "_fc_freeform_names"     # on a built request: sent name -> FreeClaw's; popped before it goes
 
 
 # The Developer app's run and start_job under the argument names of the
@@ -217,7 +222,7 @@ def _tools_to_responses(tools, freeform=False, shell_names=False):
         if freeform and freeform_param(fn):
             out.append({
                 "type": "custom",
-                "name": fn.get("name"),
+                "name": FREEFORM_NAME,
                 "description": PATCH_DESCRIPTION,
                 "format": {"type": "grammar", "syntax": "lark", "definition": PATCH_GRAMMAR},
             })
@@ -319,7 +324,7 @@ def _messages_to_input(messages, phase=True, freeform=()):
                     if isinstance(raw, str):
                         custom_calls.add(tc.get("id"))
                         items.append({"type": "custom_tool_call", "call_id": tc.get("id"),
-                                      "name": fn.get("name"), "input": raw})
+                                      "name": FREEFORM_NAME, "input": raw})
                         continue
                 items.append({
                     "type": "function_call",
@@ -379,6 +384,9 @@ def build_request(call_kwargs):
         request["tools"] = tools
     if call_kwargs.get("max_tokens"):
         request["max_output_tokens"] = call_kwargs["max_tokens"]
+    if freeform and any(t.get("type") == "custom" for t in request.get("tools") or []):
+        # One patch tool a conversation (the Developer app's): its name back.
+        request[_NAMES_KEY] = {FREEFORM_NAME: next(iter(freeform))}
     effort = call_kwargs.get(EFFORT_KEY)
     if effort and effort != REASONING_EFFORT:
         _insert_effort(request["input"], effort)
@@ -451,7 +459,7 @@ def _reasoning_items(response):
     return items
 
 
-def translate_stream(events):
+def translate_stream(events, names=None):
     """Responses stream events rewritten as chat-completions chunks."""
     # Responses numbers every output item — reasoning, text, each function
     # call — in one sequence, while the chat side indexes tool calls from zero
@@ -460,7 +468,7 @@ def translate_stream(events):
     # reasoning arrives as index 1 and desyncs the accumulator.
     tool_index = {}
     try:
-        yield from _translate(events, tool_index)
+        yield from _translate(events, tool_index, names or {})
     finally:
         # Closing this generator early (Stop, or a runaway stream) has to
         # close the connection under it too, or OpenAI keeps generating — and
@@ -470,7 +478,8 @@ def translate_stream(events):
             close()
 
 
-def _translate(events, tool_index):
+def _translate(events, tool_index, names=None):
+    names = names or {}
     for event in events:
         etype = getattr(event, "type", "")
 
@@ -488,8 +497,9 @@ def _translate(events, tool_index):
                 # escaped piece by piece as it streams.
                 index = len(tool_index)
                 tool_index[getattr(event, "output_index", index)] = index
+                name = getattr(item, "name", None)
                 yield _chunk(tool_calls=[_tool_call_delta(
-                    index, call_id=getattr(item, "call_id", None), name=getattr(item, "name", None),
+                    index, call_id=getattr(item, "call_id", None), name=names.get(name, name),
                     arguments='{"patch": "')])
             elif getattr(item, "type", None) == "function_call":
                 index = len(tool_index)
@@ -557,9 +567,10 @@ def create(client, call_kwargs):
         # caller would need a different translation and doesn't exist.
         raise ValueError("The Responses translation supports streaming calls only.")
     request = build_request(call_kwargs)
+    names = request.pop(_NAMES_KEY, None) if isinstance(request, dict) else None
     logger.info(
         "Responses request: model=%s items=%d tools=%d effort=%s",
         request.get("model"), len(request["input"]),
         len(request.get("tools") or []), REASONING_EFFORT,
     )
-    return translate_stream(client.responses.create(**request))
+    return translate_stream(client.responses.create(**request), names)

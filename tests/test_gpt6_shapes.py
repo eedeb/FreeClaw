@@ -65,12 +65,12 @@ class TestRequest(unittest.TestCase):
         off = self.build()
         self.assertEqual([t["type"] for t in off["tools"]], ["function", "function"])
         req = self.build(**{ra.FREEFORM_KEY: True})
-        patch = next(t for t in req["tools"] if t["name"] == "mcp_developer_patch")
+        patch = next(t for t in req["tools"] if t["name"] == "apply_patch")
         self.assertEqual(patch["type"], "custom")
         self.assertEqual(patch["format"]["syntax"], "lark")
         self.assertIn("begin_patch", patch["format"]["definition"])
         call = next(i for i in req["input"] if i.get("call_id") == "c1" and "output" not in i)
-        self.assertEqual(call, {"type": "custom_tool_call", "call_id": "c1", "name": "mcp_developer_patch",
+        self.assertEqual(call, {"type": "custom_tool_call", "call_id": "c1", "name": "apply_patch",
                                 "input": "*** Begin Patch\n*** End Patch"})
         out = next(i for i in req["input"] if i.get("call_id") == "c1" and "output" in i)
         self.assertEqual(out["type"], "custom_tool_call_output")
@@ -79,7 +79,8 @@ class TestRequest(unittest.TestCase):
 
     def test_freeform_with_allowed_tools(self):
         req = self.build(**{ra.FREEFORM_KEY: True, ra.TOOL_UNIVERSE_KEY: TOOLS + [fn("get_time", [])]})
-        self.assertIn({"type": "custom", "name": "mcp_developer_patch"}, req["tool_choice"]["tools"])
+        self.assertIn({"type": "custom", "name": "apply_patch"}, req["tool_choice"]["tools"])
+        self.assertEqual(req[ra._NAMES_KEY], {"apply_patch": "mcp_developer_patch"})
 
     def test_shell_names(self):
         req = self.build(**{ra.SHELL_NAMES_KEY: True})
@@ -93,22 +94,33 @@ def ev(type_, **kw):
     return types.SimpleNamespace(type=type_, **kw)
 
 
+class TestCreate(unittest.TestCase):
+    def test_the_name_map_never_reaches_the_api(self):
+        sent = {}
+        client = types.SimpleNamespace(responses=types.SimpleNamespace(
+            create=lambda **kw: sent.update(kw) or iter(())))
+        list(ra.create(client, {"model": "m", "stream": True, "messages": CONV, "tools": TOOLS,
+                                ra.FREEFORM_KEY: True}))
+        self.assertNotIn(ra._NAMES_KEY, sent)
+        self.assertIn("apply_patch", [t["name"] for t in sent["tools"]])
+
+
 class TestStream(unittest.TestCase):
     def test_a_freeform_call_comes_back_as_json_arguments(self):
         events = [
             ev("response.output_item.added", output_index=1,
-               item=types.SimpleNamespace(type="custom_tool_call", call_id="c9", name="mcp_developer_patch")),
+               item=types.SimpleNamespace(type="custom_tool_call", call_id="c9", name="apply_patch")),
             ev("response.custom_tool_call_input.delta", output_index=1, delta='*** Begin Patch\n+say "hi"\\'),
             ev("response.custom_tool_call_input.delta", output_index=1, delta="\n*** End Patch"),
             ev("response.output_item.done", output_index=1, item=types.SimpleNamespace(type="custom_tool_call")),
         ]
         args, name, cid = "", None, None
-        for chunk in ra._translate(events, {}):
+        for chunk in ra._translate(events, {}, {"apply_patch": "mcp_developer_patch"}):
             for tc in chunk.choices[0].delta.tool_calls or []:
                 args += tc.function.arguments or ""
                 name = tc.function.name or name
                 cid = tc.id or cid
-        self.assertEqual((name, cid), ("mcp_developer_patch", "c9"))
+        self.assertEqual((name, cid), ("mcp_developer_patch", "c9"))   # FreeClaw's name, back
         self.assertEqual(json.loads(args), {"patch": '*** Begin Patch\n+say "hi"\\\n*** End Patch'})
 
 
