@@ -977,6 +977,51 @@ def _undo_paths(command_name, args_dict):
     return [dev_server.resolve(root, r) for r in rels]
 
 
+# ── a project's own instructions ─────────────────────────────
+# The first time a turn's Developer tools touch a project, its AGENTS.md (or
+# CLAUDE.md) comes with the result, once per conversation, in the form the
+# models are trained to follow (dev_map.instructions_block).
+
+def _agents_md_for(command_name, args_dict, result):
+    """The instructions block to add to this result, or ""."""
+    import src.dev_map as dev_map
+    sess = _sess()
+    static_dir = getattr(sess, "static_dir", None)
+    if not static_dir or not command_name.startswith(_MCP_TOOL_PREFIX):
+        return ""
+    entry = registry_for(_tools_user()).get(command_name) or {}
+    if not (entry.get("server") or {}).get("workspace"):
+        return ""
+    rels = [args_dict.get(k) for k in ("path", "repo", "where", "folder") if isinstance(args_dict.get(k), str)]
+    if entry.get("tool") == "patch":
+        import src.dev_edit as dev_edit
+        try:
+            rels += [op["path"] for op in dev_edit.parse(args_dict.get("patch"))]
+        except dev_edit.EditError:
+            pass
+    root = os.path.realpath(os.path.join(static_dir, dev_server.FILES_FOLDER))
+    said = "\n".join(str(m.get("content") or "") for m in (sess.messages or []) if m.get("role") == "tool")
+    for rel in rels:
+        parts = [p for p in re.split(r"[\\/]+", rel) if p not in ("", ".")]
+        if parts[:1] == [dev_server.FILES_FOLDER]:
+            parts = parts[1:]
+        if not parts or ".." in parts:
+            continue
+        project = os.path.join(root, parts[0])
+        if not os.path.isdir(project):
+            continue
+        found = dev_map.project_instructions(root, project)
+        if not found:
+            continue
+        folder = f"{dev_server.FILES_FOLDER}/{parts[0]}"
+        header = f"# AGENTS.md instructions for {folder}"
+        if header in said or header in str(result):
+            continue
+        return "\n\n" + dev_map.instructions_block(folder, found[0], found[1],
+                                                    f"{folder}/{os.path.basename(found[0])}")
+    return ""
+
+
 def _undo_capture(command_name, args_dict):
     """Keep what a file-changing call is about to change. Never what fails a
     call: a path or patch it can't work out is one the tool refuses too."""
@@ -2508,22 +2553,29 @@ def sort_ping_lines(lines):
 # on every request, so twenty steps in the agent still sees what's done and
 # what's left (the way a coding agent keeps its to-do list).
 PLAN_TOOL_NAME = "update_plan"
-PLAN_STATUSES = ("todo", "doing", "done")
+# The shape OpenAI's models are trained on (Codex's update_plan): `plan`, each
+# step pending / in_progress / completed, at most one in progress, and an
+# optional `explanation`. The old names (steps; todo / doing / done) are still
+# read, for conversations from before.
+PLAN_STATUSES = ("pending", "in_progress", "completed")
+_PLAN_OLD_STATUS = {"todo": "pending", "doing": "in_progress", "done": "completed"}
 PLAN_MAX_STEPS = 20
 PLAN_STEP_CHARS = 160
 PLAN_TOOL = {
     "type": "function",
     "function": {
         "name": PLAN_TOOL_NAME,
-        "description": ("Keeps your plan for a task of many steps: send the whole list each time, "
-                        "each step todo, doing or done. Shown back to you on every step. Skip it "
-                        "for anything quick."),
+        "description": ("Updates the task plan.\nProvide an optional explanation and a list of plan "
+                        "items, each with a step and status.\nAt most one step can be in_progress at a "
+                        "time. Skip it for anything quick."),
         "parameters": {"type": "object", "properties": {
-            "steps": {"type": "array", "items": {"type": "object", "properties": {
-                "step": {"type": "string"},
-                "status": {"type": "string", "enum": list(PLAN_STATUSES)}},
+            "explanation": {"type": "string"},
+            "plan": {"type": "array", "description": "The list of steps", "items": {
+                "type": "object", "properties": {
+                    "step": {"type": "string"},
+                    "status": {"type": "string", "description": "One of: pending, in_progress, completed"}},
                 "required": ["step", "status"]}}},
-            "required": ["steps"]},
+            "required": ["plan"]},
     },
 }
 
@@ -2531,20 +2583,27 @@ PLAN_TOOL = {
 def _update_plan(sess, steps):
     """The plan tool: keep `steps` as this turn's plan. Its answer."""
     if not isinstance(steps, list) or not steps:
-        return "Error: steps must be a list of {step, status}; nothing was changed."
-    plan = []
+        return "Error: plan must be a list of {step, status}; nothing was changed."
+    plan, doing = [], False
     for item in steps[:PLAN_MAX_STEPS]:
         if not isinstance(item, dict):
             continue
         text = " ".join(str(item.get("step") or "").split())[:PLAN_STEP_CHARS]
-        status = str(item.get("status") or "todo").strip().lower()
+        status = str(item.get("status") or "pending").strip().lower()
+        status = _PLAN_OLD_STATUS.get(status, status)
+        if status not in PLAN_STATUSES:
+            status = "pending"
+        if status == "in_progress":
+            if doing:
+                status = "pending"          # at most one in progress
+            doing = True
         if text:
-            plan.append({"step": text, "status": status if status in PLAN_STATUSES else "todo"})
+            plan.append({"step": text, "status": status})
     if not plan:
         return "Error: none of the steps had any text; nothing was changed."
     sess.turn_plan = plan
-    done = sum(p["status"] == "done" for p in plan)
-    return f"Plan kept: {done} of {len(plan)} done."
+    done = sum(p["status"] == "completed" for p in plan)
+    return f"Plan updated: {done} of {len(plan)} completed."
 
 
 def _plan_block():
@@ -2552,8 +2611,9 @@ def _plan_block():
     plan = getattr(_sess(), "turn_plan", None) or []
     if not plan:
         return ""
-    mark = {"done": "[x]", "doing": "[>]", "todo": "[ ]"}
-    return "\nYour plan for this task: " + "; ".join(f"{mark[p['status']]} {p['step']}" for p in plan)
+    mark = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]"}
+    return "\nYour plan for this task: " + "; ".join(
+        f"{mark.get(p['status'], '[ ]')} {p['step']}" for p in plan)
 
 
 def build_context_tools():
@@ -4070,7 +4130,7 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return _search_history(args_dict.get('query'))
 
     if command_name == PLAN_TOOL_NAME:
-        return _update_plan(sess, args_dict.get("steps"))
+        return _update_plan(sess, args_dict.get("plan") or args_dict.get("steps"))
 
     if command_name == advisor.TOOL_NAME:
         return advisor.ask(sess, _tools_user(), sess.messages,
@@ -4834,7 +4894,11 @@ def _prune_history_images(messages):
 # the window, and one bigger than a provider's limit (a multi-megabyte file
 # read whole, a command that printed a log) made every request after it fail
 # as too large, for turn after turn, until it scrolled out.
-TOOL_RESULT_CHAR_LIMIT = 80_000
+# About 10,000 tokens (4 characters each): what OpenAI's models are trained to
+# see from a tool (Codex's truncation policy), head and tail in equal halves.
+# The whole result is kept in a file (_save_tool_output), so less inline loses
+# nothing.
+TOOL_RESULT_CHAR_LIMIT = 40_000
 
 CUT_OFF_NOTICE = (
     "'{name}' was NOT run: your reply reached its length limit before the call's arguments "
@@ -4886,8 +4950,8 @@ def _clip_tool_result(result, name=None):
     (mcp_client.ToolText)."""
     if len(result) <= TOOL_RESULT_CHAR_LIMIT:
         return result
-    head = result[:TOOL_RESULT_CHAR_LIMIT * 3 // 4]
-    tail = result[len(result) - TOOL_RESULT_CHAR_LIMIT // 4:]
+    head = result[:TOOL_RESULT_CHAR_LIMIT // 2]
+    tail = result[len(result) - TOOL_RESULT_CHAR_LIMIT // 2:]
     left_out = len(result) - len(head) - len(tail)
     saved = _save_tool_output(result, name)
     where = (f" The whole result is saved in {saved}: read or search that file for the part left "
@@ -6404,6 +6468,11 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
             result = _clip_tool_result(result, command_name)
+            if args_dict is not None and ran and not getattr(result, "images", None):
+                try:
+                    result += _agents_md_for(command_name, args_dict, result)
+                except Exception:                        # noqa: BLE001 — the result stands without it
+                    logger.warning("Couldn't add a project's instructions", exc_info=True)
             # A sub-agent's messages from its main agent (src/subagents.py),
             # with the next thing it reads.
             if getattr(sess, "incoming", None):

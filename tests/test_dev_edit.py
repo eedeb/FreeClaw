@@ -145,7 +145,7 @@ class TestProjectInstructions(unittest.TestCase):
         with open(os.path.join(self.root, "repo", "AGENTS.md"), "w") as f:
             f.write("Run tests with make test.\n")
         out = self.tools.t_overview(self.root, {"path": "projects/repo/src"})
-        self.assertIn("projects/repo/AGENTS.md", out)
+        self.assertIn("# AGENTS.md instructions for projects/repo\n\n<INSTRUCTIONS>", out)
         self.assertIn("Run tests with make test.", out)
         self.assertNotIn("Claude notes", out)
 

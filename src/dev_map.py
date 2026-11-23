@@ -343,10 +343,8 @@ def overview(root, top, rel_of, files):
         out.append("Likely entry points: " + ", ".join(entries))
     found = project_instructions(root, top)
     if found:
-        path, text = found
-        more = f"\n[… the rest is in {rel_of(root, path)}]" if len(text) > INSTRUCTIONS_SHOWN else ""
-        out.append(f"The project's own instructions ({rel_of(root, path)}), to follow while working in it:\n"
-                   + text[:INSTRUCTIONS_SHOWN].rstrip() + more)
+        out.append(instructions_block(rel_of(root, os.path.dirname(found[0])), found[0], found[1],
+                                      rel_of(root, found[0])))
     out.append("Next: outline a folder or file, find a name, search text, then read only the lines you need.")
     return "\n".join(out)
 
@@ -356,6 +354,15 @@ def overview(root, top, rel_of, files):
 # CLAUDE.md is read where there's no AGENTS.md.
 INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 INSTRUCTIONS_SHOWN = 4000
+
+
+def instructions_block(folder, path, text, shown_path=None):
+    """A project's instructions as OpenAI's models are trained to read them
+    (Codex sends each AGENTS.md this way): a heading naming the folder, the
+    text inside <INSTRUCTIONS>."""
+    more = (f"\n[… the rest is in {shown_path or path}]" if len(text) > INSTRUCTIONS_SHOWN else "")
+    return (f"# AGENTS.md instructions for {folder}\n\n<INSTRUCTIONS>\n"
+            f"{text[:INSTRUCTIONS_SHOWN].rstrip()}{more}\n</INSTRUCTIONS>")
 
 
 def project_instructions(root, top):

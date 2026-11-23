@@ -29,6 +29,7 @@ and the token accounting all keep working unchanged. In particular:
     loop is mostly tool hops.
 """
 
+import json
 from types import SimpleNamespace
 
 from src.logging_setup import get_logger
@@ -49,6 +50,84 @@ REASONING_EFFORT = "low"
 # blob is opaque by design — it exists to be handed back, not read — so without
 # this the reasoning block in the UI would have nothing to put in it.
 REASONING_SUMMARY = "auto"
+
+# ── trained shapes (OpenAI's own harness, Codex) ─────────────
+#
+# `phase` on an assistant message: "commentary" for words said on the way
+# (alongside tool calls), "final_answer" for the reply that ended the turn.
+# OpenAI: without it, a model can read its own progress notes as finished
+# answers. Ours to infer: a message with tool calls is commentary.
+PHASE = True
+PHASE_KEY = "_fc_phase"          # per call, overriding PHASE (a host trying it out)
+
+# A different reasoning effort for one request, said as an input item
+# (configuration_update) rather than by changing the request's own
+# reasoning.effort: the effort is part of what a cached prefix matches on, so
+# switching it threw the conversation's cache away. Set this key on the call to
+# the effort wanted; the request itself stays at REASONING_EFFORT.
+EFFORT_KEY = "reasoning_effort"
+
+# The Developer app's patch as a freeform tool: the patch text itself, not a
+# JSON string holding it, under the grammar OpenAI's models are trained to
+# write (Codex sends apply_patch this way to gpt-6-luna, gpt-6.1-terra and
+# gpt-6.1-sol). Off unless asked: a host tries it first (FREEFORM_KEY).
+FREEFORM = False
+FREEFORM_KEY = "_fc_freeform"
+PATCH_GRAMMAR = r"""start: begin_patch hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+
+hunk: add_hunk | delete_hunk | update_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change_move? change?
+
+filename: /(.+)/
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.+)/) LF
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+
+%import common.LF
+"""
+PATCH_DESCRIPTION = ("Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not "
+                     "wrap the patch in JSON.")
+
+
+# The Developer app's run and start_job under the argument names of the
+# terminal tool OpenAI's models are trained with (Codex's exec_command: `cmd`,
+# `workdir`). dev_server takes both names (_RUN_ALIASES). Off unless asked.
+SHELL_NAMES = False
+SHELL_NAMES_KEY = "_fc_shell_names"
+_SHELL_RENAME = {"command": "cmd", "path": "workdir"}
+
+
+def _shell_named(fn):
+    """`fn`'s parameters with the trained names, if it's run or start_job."""
+    name = str(fn.get("name") or "")
+    params = fn.get("parameters") or {}
+    props = params.get("properties") or {}
+    if not (name.endswith(("_run", "_start_job")) and "command" in props):
+        return params
+    renamed = {_SHELL_RENAME.get(k, k): v for k, v in props.items()}
+    if "cmd" in renamed:
+        renamed["cmd"] = {**renamed["cmd"], "description": "Shell command to execute."}
+    if "workdir" in renamed:
+        renamed["workdir"] = {**renamed["workdir"], "description": "Working directory for the command."}
+    required = [_SHELL_RENAME.get(k, k) for k in params.get("required") or []]
+    return {**params, "properties": renamed, **({"required": required} if required else {})}
+
+
+def freeform_param(fn):
+    """The one string argument a function tool is sent freeform as, or None:
+    the Developer app's patch (a tool named ..._patch taking only `patch`)."""
+    props = ((fn or {}).get("parameters") or {}).get("properties") or {}
+    if str((fn or {}).get("name") or "").endswith("patch") and list(props) == ["patch"]:
+        return "patch"
+    return None
 
 
 def _content_text(content):
@@ -122,7 +201,7 @@ def _content_parts(content):
     return parts
 
 
-def _tools_to_responses(tools):
+def _tools_to_responses(tools, freeform=False, shell_names=False):
     """Chat-completions tool schemas flattened into Responses' shape.
 
     Chat completions nests the definition under a "function" key; Responses
@@ -135,11 +214,20 @@ def _tools_to_responses(tools):
         fn = t.get("function") if isinstance(t, dict) else None
         if not fn:
             continue
+        if freeform and freeform_param(fn):
+            out.append({
+                "type": "custom",
+                "name": fn.get("name"),
+                "description": PATCH_DESCRIPTION,
+                "format": {"type": "grammar", "syntax": "lark", "definition": PATCH_GRAMMAR},
+            })
+            continue
         out.append({
             "type": "function",
             "name": fn.get("name"),
             "description": fn.get("description") or "",
-            "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+            "parameters": ((_shell_named(fn) if shell_names else fn.get("parameters"))
+                           or {"type": "object", "properties": {}}),
             "strict": False,
         })
     return out
@@ -171,7 +259,7 @@ TOOL_UNIVERSE_KEY = "tool_universe"
 MAX_UNIVERSE_TOOLS = 256
 
 
-def _allowed_tools_universe(universe, tools):
+def _allowed_tools_universe(universe, tools, freeform=False, shell_names=False):
     """The full tool list to send with an allowed_tools choice, or None to
     send just `tools` the old way.
 
@@ -181,13 +269,13 @@ def _allowed_tools_universe(universe, tools):
     allowing a tool the request doesn't define would be a 400."""
     if not universe:
         return None
-    full = {t["name"]: t for t in _tools_to_responses(universe)}
+    full = {t["name"]: t for t in _tools_to_responses(universe, freeform, shell_names)}
     if len(full) > MAX_UNIVERSE_TOOLS or any(t["name"] not in full for t in tools):
         return None
     return [full[name] for name in sorted(full)]
 
 
-def _messages_to_input(messages):
+def _messages_to_input(messages, phase=True, freeform=()):
     """The conversation as a flat Responses `input` list.
 
     Responses has no `messages` array and no `tool` role. A turn is a sequence
@@ -196,12 +284,14 @@ def _messages_to_input(messages):
     the reasoning has to precede the calls it produced, or the model gets its
     own conclusions without the thinking that reached them."""
     items = []
+    custom_calls = set()            # call ids sent as custom_tool_call: their outputs match
     for m in messages:
         role = m.get("role")
 
         if role == "tool":
             items.append({
-                "type": "function_call_output",
+                "type": ("custom_tool_call_output" if m.get("tool_call_id") in custom_calls
+                         else "function_call_output"),
                 "call_id": m.get("tool_call_id"),
                 "output": m.get("content") or "",
             })
@@ -214,9 +304,23 @@ def _messages_to_input(messages):
                 items.append(item)
             text = _content_text(m.get("content"))
             if text:
-                items.append({"role": "assistant", "content": text})
+                item = {"role": "assistant", "content": text}
+                if phase:
+                    item = {"type": "message", **item,
+                            "phase": "commentary" if m.get("tool_calls") else "final_answer"}
+                items.append(item)
             for tc in m.get("tool_calls") or []:
                 fn = tc.get("function") or {}
+                if fn.get("name") in freeform:
+                    try:
+                        raw = json.loads(fn.get("arguments") or "{}").get(freeform[fn.get("name")])
+                    except (ValueError, AttributeError):
+                        raw = None
+                    if isinstance(raw, str):
+                        custom_calls.add(tc.get("id"))
+                        items.append({"type": "custom_tool_call", "call_id": tc.get("id"),
+                                      "name": fn.get("name"), "input": raw})
+                        continue
                 items.append({
                     "type": "function_call",
                     "call_id": tc.get("id"),
@@ -246,29 +350,49 @@ def build_request(call_kwargs):
     so nothing chat-only can leak through — not stream_options, and not the
     internal bookkeeping keys (provider, usage, reasoning) that hang off our
     own messages and that no provider should ever see."""
+    phase = call_kwargs.get(PHASE_KEY, PHASE)
+    freeform_on = bool(call_kwargs.get(FREEFORM_KEY, FREEFORM))
+    freeform = {}
+    if freeform_on:
+        for t in (call_kwargs.get(TOOL_UNIVERSE_KEY) or []) + (call_kwargs.get("tools") or []):
+            fn = t.get("function") if isinstance(t, dict) else None
+            if fn and freeform_param(fn):
+                freeform[fn.get("name")] = freeform_param(fn)
     request = {
         "model": call_kwargs.get("model"),
-        "input": _messages_to_input(call_kwargs.get("messages") or []),
+        "input": _messages_to_input(call_kwargs.get("messages") or [], phase, freeform),
         "stream": True,
         # Ours to keep — see the module docstring.
         "store": False,
         "include": ["reasoning.encrypted_content"],
         "reasoning": {"effort": REASONING_EFFORT, "summary": REASONING_SUMMARY},
     }
-    tools = _tools_to_responses(call_kwargs.get("tools"))
-    universe = _allowed_tools_universe(call_kwargs.get(TOOL_UNIVERSE_KEY), tools)
+    shell_names = bool(call_kwargs.get(SHELL_NAMES_KEY, SHELL_NAMES))
+    tools = _tools_to_responses(call_kwargs.get("tools"), freeform_on, shell_names)
+    universe = _allowed_tools_universe(call_kwargs.get(TOOL_UNIVERSE_KEY), tools, freeform_on, shell_names)
     if universe is not None:
         request["tools"] = universe
         request["tool_choice"] = ({"type": "allowed_tools", "mode": "auto",
-                                   "tools": [{"type": "function", "name": t["name"]} for t in tools]}
+                                   "tools": [{"type": t["type"], "name": t["name"]} for t in tools]}
                                   if tools else "none")
     elif tools:
         request["tools"] = tools
     if call_kwargs.get("max_tokens"):
         request["max_output_tokens"] = call_kwargs["max_tokens"]
+    effort = call_kwargs.get(EFFORT_KEY)
+    if effort and effort != REASONING_EFFORT:
+        _insert_effort(request["input"], effort)
     # temperature and top_p are dropped deliberately: reasoning models reject
     # them outright, and the chain only ever sends them at their defaults.
     return request
+
+
+def _insert_effort(items, effort):
+    """A configuration_update for `effort` just before the newest user
+    message: the request's own reasoning.effort stays as it was, so the cached
+    prefix up to there still matches."""
+    at = next((i for i in range(len(items) - 1, -1, -1) if items[i].get("role") == "user"), len(items))
+    items.insert(at, {"type": "configuration_update", "reasoning": {"effort": effort}})
 
 
 def _chunk(content=None, reasoning=None, tool_calls=None):
@@ -358,7 +482,16 @@ def _translate(events, tool_index):
 
         elif etype == "response.output_item.added":
             item = getattr(event, "item", None)
-            if getattr(item, "type", None) == "function_call":
+            if getattr(item, "type", None) == "custom_tool_call":
+                # A freeform call: its raw text is handed on as the JSON
+                # arguments the rest of FreeClaw reads, {"patch": "<text>"},
+                # escaped piece by piece as it streams.
+                index = len(tool_index)
+                tool_index[getattr(event, "output_index", index)] = index
+                yield _chunk(tool_calls=[_tool_call_delta(
+                    index, call_id=getattr(item, "call_id", None), name=getattr(item, "name", None),
+                    arguments='{"patch": "')])
+            elif getattr(item, "type", None) == "function_call":
                 index = len(tool_index)
                 tool_index[getattr(event, "output_index", index)] = index
                 # Name and id arrive once, here; the arguments stream in
@@ -368,6 +501,18 @@ def _translate(events, tool_index):
                     call_id=getattr(item, "call_id", None),
                     name=getattr(item, "name", None),
                 )])
+
+        elif etype == "response.custom_tool_call_input.delta":
+            index = tool_index.get(getattr(event, "output_index", None))
+            if index is not None:
+                yield _chunk(tool_calls=[_tool_call_delta(
+                    index, arguments=json.dumps(getattr(event, "delta", "") or "")[1:-1])])
+
+        elif etype == "response.output_item.done":
+            item = getattr(event, "item", None)
+            index = tool_index.get(getattr(event, "output_index", None))
+            if getattr(item, "type", None) == "custom_tool_call" and index is not None:
+                yield _chunk(tool_calls=[_tool_call_delta(index, arguments='"}')])
 
         elif etype == "response.function_call_arguments.delta":
             index = tool_index.get(getattr(event, "output_index", None))

@@ -101,7 +101,7 @@ class TestPlan(unittest.TestCase):
             out = agent._update_plan(sess, [{"step": "read the data", "status": "done"},
                                             {"step": "chart it", "status": "doing"},
                                             {"step": "email it", "status": "maybe"}])
-            self.assertEqual(out, "Plan kept: 1 of 3 done.")
+            self.assertEqual(out, "Plan updated: 1 of 3 completed.")   # the old statuses still read
             self.assertEqual(agent._plan_block(),
                              "\nYour plan for this task: [x] read the data; [>] chart it; [ ] email it")
 
