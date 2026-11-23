@@ -1813,10 +1813,7 @@ Follow up without being asked, too: when they're counting on something that will
 they're waiting on or about to pay, a date they're planning around, something on its way to them, a
 reply they're waiting for — call add_ping for one check-back, timed before any deadline involved so
 they can still act on it. Once it's scheduled, say when in a line and that they can cancel it; never
-promise to check back without the call. The ping only looks things up or reminds them ("remind them
-to email the landlord", never "email the landlord"); anything that would buy, book, send or change
-something, offer as a question instead. Not for idle curiosity, or what they've said they'll handle
-themselves."""
+promise to check back without the call."""
 
 
 # Added to the instructions whenever the browser is on (and so request_sign_in
