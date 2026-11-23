@@ -577,6 +577,28 @@ class TestCheck(Workspace):
         self.assertIn("Text: Hi", out)
         self.assertRegex(out, r"score → [1-9]")
 
+    def test_playing_a_pointer_lock_game(self):
+        # Keys count only while the mouse is locked, as in most first-person
+        # games; looking is movementX; right-click and the mouse button too.
+        self.put("fps/index.html", "<canvas id=c width=200 height=200></canvas><button>▶ Play</button><script>\n"
+                 "window.s = {x: 0, yaw: 0, right: 0, mining: false, locked: false};\n"
+                 "document.querySelector('button').onclick = () => c.requestPointerLock();\n"
+                 "document.addEventListener('pointerlockchange', () => s.locked = document.pointerLockElement === c);\n"
+                 "addEventListener('keydown', e => { if (s.locked && e.code === 'KeyW') s.x += e.shiftKey ? 2 : 1; });\n"
+                 "addEventListener('mousemove', e => { if (s.locked) s.yaw += e.movementX; });\n"
+                 "addEventListener('mousedown', e => { if (e.button === 2) s.right++; if (e.button === 0) s.mining = true; });\n"
+                 "addEventListener('contextmenu', e => e.preventDefault());\n</script>")
+        out = self.call("check", path="fps", wait=100, eval="JSON.stringify(s)", steps=[
+            "click ▶ Play", "wait 50", "js s.locked", "hold ShiftLeft+KeyW 300", "move 120 0",
+            "rightclick 100 100", "mousedown", "js s.mining", "mouseup"])
+        self.assertIn("s.locked → true", out)
+        self.assertIn("s.mining → true", out)
+        state = json.loads(out.split("JSON.stringify(s) → ")[1].splitlines()[0])
+        self.assertTrue(state["locked"])
+        self.assertGreater(state["x"], 0)
+        self.assertGreater(state["yaw"], 0)
+        self.assertEqual(state["right"], 1)
+
     def test_no_local_network(self):
         self.put("site/index.html", "<script>fetch('http://127.0.0.1:1/x').catch(() => {});</script>")
         self.assertIn("blocked http://127.0.0.1:1/x", self.call("check", path="site", wait=100))
@@ -596,7 +618,7 @@ class TestCheck(Workspace):
     def test_save_as_image(self):
         self.put("post/index.html", "<style>body{margin:0;background:#123}</style><h1>Post</h1>")
         text, image, mime = self.call("check", path="post", size="300x200", save="post/out.jpg")
-        self.assertIn("Saved post/out.jpg (300×200", text)
+        self.assertIn("Saved projects/post/out.jpg (300×200", text)
         with open(os.path.join(self.root, "post", "out.jpg"), "rb") as f:
             data = f.read()
         self.assertTrue(data.startswith(b"\xff\xd8"), "a JPEG")
@@ -604,7 +626,7 @@ class TestCheck(Workspace):
         self.assertEqual((image, mime), (data, "image/jpeg"))
         self.assertIn("attached", text)
         text, image, mime = self.call("check", path="post", save="renders/out.png")
-        self.assertIn("Saved renders/out.png (960×640", text)
+        self.assertIn("Saved projects/renders/out.png (960×640", text)
         self.assertTrue(image.startswith(b"\x89PNG") and mime == "image/png")
         self.assertIn("save must end", self.error("check", path="post", save="post/out.gif"))
         self.assertIn("size is WIDTHxHEIGHT", self.error("check", path="post", size="9999x10", save="a.png"))
@@ -794,3 +816,20 @@ class TestRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCheckInputSwitch(unittest.TestCase):
+    """FC_CHECK_INPUT=off: the new steps aren't offered or taken (a host deciding who has them)."""
+
+    def test_off(self):
+        import importlib
+        import src.dev_check as dc
+        with mock.patch.dict(os.environ, {"FC_CHECK_INPUT": "off"}):
+            off = importlib.reload(dc)
+            self.assertFalse(off.INPUT_STEPS)
+            self.assertNotIn("rightclick", off.STEPS_HELP)
+            with self.assertRaises(off.CheckError):
+                off._step(None, "rightclick 1 1")
+        on = importlib.reload(dc)
+        self.assertTrue(on.INPUT_STEPS)
+        self.assertIn("rightclick", on.STEPS_HELP)
