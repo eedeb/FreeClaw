@@ -1012,6 +1012,23 @@
     .approval-btn:disabled { opacity: 0.4; cursor: default; }
     .approval-note { font-size: 11.5px; color: var(--muted); margin-top: 9px; line-height: 1.5; }
     .approval-failed { font-size: 11.5px; color: var(--err); margin-top: 8px; line-height: 1.5; }
+    .approval-instead {
+      display: block; width: 100%; box-sizing: border-box; margin-top: 8px;
+      font: inherit; font-size: 12.5px; padding: 7px 10px; border-radius: 8px;
+      border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+    }
+    .approval-instead:focus { outline: none; border-color: var(--accent); }
+    .undo-bar {
+      display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; padding: 7px 11px;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+      font-size: 12px; color: var(--muted);
+    }
+    .undo-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .undo-btn {
+      font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 7px;
+      border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); cursor: pointer;
+    }
+    .undo-btn:disabled { opacity: 0.5; cursor: default; }
     .approval.settled { border-color: var(--border); background: var(--surface); }
     .approval.settled .approval-head { color: var(--muted); }
 
@@ -2141,6 +2158,7 @@
     return note;
   }
   const FOLLOW_NOTE = '↻ Jev: that looked unfinished — nudged the agent to carry on';
+  const UNDO_NOTE = '↶ File changes undone';
   // The advisor (src/advisor.py): a second model that checked the turn.
   const ADVISOR_NOTE = '✓ Advisor: checked this turn and suggested a fix — the agent is carrying on';
   const ADVISOR_CHECKUP_NOTE = '✓ Advisor: checked the agent\'s memory and suggested changes';
@@ -2190,7 +2208,62 @@
       const m = text.match(/^SUB-AGENT RESULT from "([^"]*)", which ([^.]*)\./);
       return [m ? `↩ Sub-agent “${m[1]}” ${m[2]}` : '↩ A sub-agent reported back', text];
     }
+    if (kind === 'undo') return [UNDO_NOTE, text];
     return [FOLLOW_NOTE, text];
+  }
+
+  // ── Undo a turn's file changes (src/undo.py) ─────────────
+  // After a turn, if it changed files with its file tools, a bar under it
+  // offers to put them back. lastUndoId is the newest undoable turn already
+  // seen, so a turn that changed nothing shows no bar.
+  let lastUndoId = null;
+  async function fetchUndo() {
+    try {
+      const res = await fetch('/api/undo');
+      if (!res.ok) return null;
+      return (await res.json()).turns || [];
+    } catch (_) { return null; }
+  }
+  async function primeUndo() {
+    const turns = await fetchUndo();
+    if (turns) lastUndoId = turns.length ? turns[0].id : '';
+  }
+  async function offerUndo() {
+    const turns = await fetchUndo();
+    if (!turns || !turns.length || turns[0].id === lastUndoId) return;
+    const turn = turns[0];
+    lastUndoId = turn.id;
+    const bar = document.createElement('div');
+    bar.className = 'undo-bar';
+    const text = document.createElement('span');
+    const names = turn.files.slice(0, 3).join(', ') + (turn.count > 3 ? ` and ${turn.count - 3} more` : '');
+    text.textContent = `Changed ${turn.count} file${turn.count === 1 ? '' : 's'}: ${names}`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'undo-btn';
+    btn.textContent = 'Undo';
+    btn.title = 'Put these files back as they were before this turn';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/undo', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: turn.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+        const failed = (data.failed || []).length;
+        text.textContent = 'Undone' + (failed ? ` (${failed} couldn't be put back)` : '') + '.';
+        btn.remove();
+        lastUpdatedAt = null;   // the note it added comes with the next poll
+      } catch (e) {
+        text.textContent = `Couldn't undo: ${e.message}`;
+        btn.disabled = false;
+      }
+    });
+    bar.append(text, btn);
+    messagesEl.appendChild(bar);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   // ── Render a single user/agent text bubble ──────────────
@@ -2780,6 +2853,7 @@
     choices.push({ decision: 'deny', label: 'deny', cls: 'deny' });
 
     const buttons = [];
+    let denyBtn = null;
     choices.forEach(c => {
       const btn = document.createElement('button');
       btn.className = 'approval-btn' + (c.cls ? ' ' + c.cls : '');
@@ -2788,6 +2862,22 @@
       btn.addEventListener('click', () => send(c.decision, c.label));
       actions.appendChild(btn);
       buttons.push(btn);
+      if (c.decision === 'deny') denyBtn = btn;
+    });
+
+    // "No — do this instead": what's typed here goes with a deny, and the
+    // agent carries on with it rather than stopping.
+    const instead = document.createElement('input');
+    instead.type = 'text';
+    instead.className = 'approval-instead';
+    instead.maxLength = 1000;
+    instead.placeholder = 'Or tell it what to do instead…';
+    instead.setAttribute('aria-label', 'Tell the agent what to do instead');
+    instead.addEventListener('input', () => {
+      if (denyBtn) denyBtn.textContent = instead.value.trim() ? 'deny & tell it' : 'deny';
+    });
+    instead.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && instead.value.trim()) { e.preventDefault(); send('deny', 'deny'); }
     });
 
     // Why the last answer didn't get through, under the buttons.
@@ -2799,6 +2889,7 @@
     function settle(text) {
       buttons.forEach(b => { b.disabled = true; });
       actions.remove();
+      instead.remove();
       note.remove();
       failed.remove();
       wrap.classList.add('settled');
@@ -2812,7 +2903,8 @@
         const res = await fetch('/api/approval', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: evt.id, decision })
+          body: JSON.stringify({ id: evt.id, decision,
+                                 feedback: decision === 'deny' ? instead.value.trim() : '' })
         });
         const data = await res.json().catch(() => ({}));
         if (res.status === 409) {
@@ -2822,7 +2914,9 @@
           return;
         }
         if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-        settle(decision === 'deny' ? 'denied' : label);
+        settle(decision === 'deny'
+          ? (instead.value.trim() ? 'denied — told it: ' + instead.value.trim() : 'denied')
+          : label);
       } catch (e) {
         // It didn't get through (offline, a server hiccup), so the turn is
         // still waiting on an answer: the buttons stay, to try again.
@@ -2837,6 +2931,7 @@
     wrap.appendChild(head);
     wrap.appendChild(cmd);
     wrap.appendChild(actions);
+    wrap.appendChild(instead);
     wrap.appendChild(failed);
     wrap.appendChild(note);
     messagesEl.appendChild(wrap);
@@ -3466,6 +3561,7 @@
             // saved messages would drop back to the last request alone.
             renderConversation(evt.conversation, { keepLiveUsage: true });
             if (!live) offerRepeat(lastAsk, turnTools);
+            offerUndo();
           }
         }
       }
@@ -3553,6 +3649,7 @@
     }
   }
 
+  primeUndo();
   (async function loadConversation() {
     try {
       const res = await fetch('/api/conversation');

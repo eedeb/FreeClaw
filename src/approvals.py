@@ -250,6 +250,9 @@ class Request:
         self.where = where
         self.program = program_of(command)
         self.decision = None
+        # What the person said with a refusal ("no, do X instead"), for the
+        # agent to carry on with (denial_message).
+        self.feedback = ""
         self._answered = threading.Event()
 
     def as_event(self):
@@ -306,7 +309,10 @@ def wait(req):
     return req.decision
 
 
-def resolve(request_id, decision):
+FEEDBACK_MAX = 1000
+
+
+def resolve(request_id, decision, feedback=None):
     """Answer a pending prompt. Called from whatever thread heard back from the
     user — the Flask route in the web UI, the input loop in the CLI. Writes any
     always-allow rule *before* releasing the waiter, so the rule is on disk by
@@ -333,6 +339,8 @@ def resolve(request_id, decision):
             decision = DECISION_ONCE
 
     req.decision = decision
+    if decision == DECISION_DENY and feedback:
+        req.feedback = " ".join(str(feedback).split())[:FEEDBACK_MAX]
     req._answered.set()
     logger.info("Bash approval for user=%r: %s — %r", req.user, decision, req.command)
     return True, None
@@ -360,11 +368,17 @@ def was_approved(decision):
     return decision in (DECISION_ONCE, DECISION_ALWAYS_EXACT, DECISION_ALWAYS_PROGRAM)
 
 
-def denial_message(decision):
+def denial_message(decision, feedback=""):
     """What the model is told when a command doesn't run. Phrased as a fact
     about what happened, with an explicit instruction not to work around it —
     a model that reads "denied" and then tries a different spelling of the same
-    command is the failure mode worth heading off."""
+    command is the failure mode worth heading off. A refusal that came with
+    the person's own words ("no, do X instead") passes them on: they're the
+    way forward, so the turn goes on with them instead of stopping."""
+    if decision == DECISION_DENY and feedback:
+        return ("The command was NOT run: the user refused it, and said instead: "
+                f"\"{feedback}\"\nDo what they said. Don't run the refused step again unless "
+                "that's what they asked for.")
     if decision == _DECISION_TIMEOUT:
         return ("The command was NOT run: the approval prompt went unanswered, so it timed out. "
                 "Tell the user it needs their approval and stop. Do not retry it and do not try "

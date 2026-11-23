@@ -49,6 +49,7 @@ import threading
 import time
 
 import src.dev_check as dev_check
+import src.dev_edit as dev_edit
 import src.dev_git as dev_git
 import src.dev_map as dev_map
 
@@ -1066,6 +1067,13 @@ TOOLS = [
         }, "required": ["path", "content"]},
     },
     {
+        "name": "patch",
+        "description": "Add, change, rename and delete files in one call, in apply_patch format "
+                       "(*** Begin Patch ... *** End Patch). All of it applies, or none.",
+        "inputSchema": {"type": "object", "properties": {"patch": {"type": "string"}},
+                        "required": ["patch"]},
+    },
+    {
         "name": "edit",
         "description": "Replace an exact string in a file. old must match once, unless all is true.",
         "inputSchema": {"type": "object", "properties": {
@@ -1373,22 +1381,86 @@ class Tools:
             raise ToolError(f"{rel}: not a text file.")
         text = _read_text(path)
         count = text.count(old)
-        if count == 0:
-            # The usual cause is whitespace or a line that changed since it was
-            # read, so say where to look rather than just "no".
-            hint = " Check whitespace and indentation, or read the lines again."
+        if count > 1 and args.get("all"):
+            line = text[:text.index(old)].count("\n") + 1
+            text = text.replace(old, dev_edit.with_endings(new, text))
+            _write_text(path, text)
+            return (f"Edited {rel}: {count} replacements, first at line {line}"
+                    + _notes(path, text, long_lines=False))
+        # Exact first; then the same lines ignoring trailing whitespace, then
+        # look-alike quotes, dashes and spaces too (src/dev_edit.py). Only a
+        # match found exactly once is taken.
+        start, end, tier = dev_edit.find(text, old)
+        if start is None:
+            if end:
+                raise ToolError(f"old matches {end} times in {rel}. Add surrounding lines to make it "
+                                f"unique, or pass all: true.")
+            hint = " Check indentation, or read the lines again."
             if old.strip() and old.strip() in text:
                 hint = " It matches with different leading/trailing whitespace."
             raise ToolError(f"old not found in {rel}.{hint}")
-        if count > 1 and not args.get("all"):
-            raise ToolError(f"old matches {count} times in {rel}. Add surrounding lines to make it "
-                            f"unique, or pass all: true.")
-        line = text[:text.index(old)].count("\n") + 1
-        text = text.replace(old, new) if args.get("all") else text.replace(old, new, 1)
+        line = text[:start].count("\n") + 1
+        text = text[:start] + dev_edit.with_endings(new, text) + text[end:]
         _write_text(path, text)
-        replaced = count if args.get("all") else 1
-        return (f"Edited {rel}: {replaced} replacement{'s' if replaced > 1 else ''}, first at line {line}"
+        loose = (" (matched ignoring trailing spaces)" if tier == 1
+                 else " (matched ignoring quote, dash and space variants)" if tier == 2 else "")
+        return (f"Edited {rel}: 1 replacement, first at line {line}{loose}"
                 + _notes(path, text, long_lines=False))
+
+    # patch
+
+    def t_patch(self, root, args):
+        try:
+            ops = dev_edit.parse(args.get("patch"))
+        except dev_edit.EditError as e:
+            raise ToolError(str(e))
+        # Everything worked out first: path -> new text, or None to delete.
+        writes, done = {}, []
+        for op in ops:
+            path = resolve(root, op["path"])
+            rel = rel_of(root, path)
+            if path == root or os.path.isdir(path):
+                raise ToolError(f"{op['path']}: a folder, not a file.")
+            if op["op"] == "add":
+                if os.path.exists(path) or writes.get(path) is not None:
+                    raise ToolError(f"Add File {rel}: it already exists. Use Update File to change it.")
+                writes[path] = op["content"]
+                done.append(f"added {rel}")
+                continue
+            current = writes[path] if path in writes else (_read_text(path) if os.path.exists(path) else None)
+            if current is None:
+                raise ToolError(f"{op['op'].title()} File {rel}: no such file. Use ls or search to find it.")
+            if os.path.exists(path) and path not in writes and not _is_text(path):
+                raise ToolError(f"{rel}: not a text file.")
+            if op["op"] == "delete":
+                writes[path] = None
+                done.append(f"deleted {rel}")
+                continue
+            try:
+                text = dev_edit.apply_update(current, op["hunks"], rel)
+            except dev_edit.EditError as e:
+                raise ToolError(str(e) + "\nNothing was changed.")
+            if op.get("move_to"):
+                target = resolve(root, op["move_to"])
+                if os.path.exists(target) or writes.get(target) is not None:
+                    raise ToolError(f"Move to {rel_of(root, target)}: it already exists.")
+                writes[path], writes[target] = None, text
+                done.append(f"moved {rel} to {rel_of(root, target)}" + (" and changed it" if op["hunks"] else ""))
+            else:
+                writes[path] = text
+                done.append(f"changed {rel}")
+        size = max((len(t.encode("utf-8")) for t in writes.values() if t is not None), default=0)
+        if size > WRITE_MAX_BYTES:
+            raise ToolError(f"A file would be too big ({size:,} bytes; max {WRITE_MAX_BYTES:,}). Nothing was changed.")
+        notes = []
+        for path, text in writes.items():
+            if text is None:
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                _write_text(path, text)
+                notes.append(_notes(path, text, long_lines=False))
+        return "Patched: " + "; ".join(done) + "." + "".join(n for n in notes if n)
 
     # search
 

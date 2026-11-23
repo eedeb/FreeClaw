@@ -18,6 +18,7 @@ from openai import OpenAI, APIConnectionError
 
 import src.advisor as advisor
 import src.approvals as approvals
+import src.undo as undo
 import src.browser_handoff as browser_handoff
 import src.browser_setup as browser_setup
 import src.cancellation as cancellation
@@ -939,6 +940,61 @@ def _note_answer(name, args_dict, result):
         seen[1] += 1
     else:
         sess.turn_answers[key] = [digest, 1, str(result)]
+
+
+# ── undo ─────────────────────────────────────────────────────
+# Each file a turn's file tools change is kept as it was first (src/undo.py),
+# so the person can put it back.
+
+_UNDO_FILE_TOOLS = ("create_file", "edit_file", "delete_file")
+_UNDO_DEV_TOOLS = ("write", "edit", "patch")
+
+
+def _undo_paths(command_name, args_dict):
+    """The files `command_name` is about to change, as absolute paths."""
+    static_dir = getattr(_sess(), "static_dir", None)
+    if not static_dir:
+        return []
+    if command_name in _UNDO_FILE_TOOLS:
+        filename, error = _filename_arg(args_dict, root=static_dir)
+        return [] if error else [os.path.join(static_dir, filename)]
+    if not command_name.startswith(_MCP_TOOL_PREFIX):
+        return []
+    entry = registry_for(_tools_user()).get(command_name) or {}
+    if not (entry.get("server") or {}).get("workspace") or entry.get("tool") not in _UNDO_DEV_TOOLS:
+        return []
+    root = os.path.join(static_dir, dev_server.FILES_FOLDER)
+    if entry["tool"] == "patch":
+        import src.dev_edit as dev_edit
+        rels = []
+        for op in dev_edit.parse(args_dict.get("patch")):
+            rels += [op["path"]] + ([op["move_to"]] if op.get("move_to") else [])
+    else:
+        rels = [args_dict.get("path")]
+    return [dev_server.resolve(root, r) for r in rels]
+
+
+def _undo_capture(command_name, args_dict):
+    """Keep what a file-changing call is about to change. Never what fails a
+    call: a path or patch it can't work out is one the tool refuses too."""
+    import src.dev_edit as dev_edit
+    sess = _sess()
+    try:
+        paths = _undo_paths(command_name, args_dict)
+        if not paths:
+            return
+        if not sess.turn_undo:
+            sess.turn_undo = undo.new_turn_id()
+        label = next((m.get("content") for m in reversed(sess.messages or [])
+                      if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+        static_dir = sess.static_dir.rstrip("/" + os.sep)
+        if os.path.basename(static_dir) != "files":
+            return                    # not a person's files folder (the fallback Session's)
+        undo.capture(os.path.dirname(static_dir), static_dir, sess.turn_undo, label, paths)
+    except (dev_server.ToolError, dev_edit.EditError):
+        pass
+    except Exception:                                    # noqa: BLE001
+        logger.warning("Couldn't keep files for undo before '%s'", command_name, exc_info=True)
 
 
 def get_turn_usage():
@@ -2639,6 +2695,7 @@ def build_file_tools():
                         # "remind them about the thing" is then unanswerable.
                         "action": { "type": "string", "description": "A self-contained instruction to your future self, with the names and details needed to act on it cold, e.g. 'Remind them to call Dr. Patel's office to move Friday's 3pm appointment.'" },
                         "repeat": { "type": "string", "enum": ["hourly", "daily", "weekly"], "description": "Omit unless they asked for something recurring — most pings are one-off." },
+                        "check": { "type": "string", "description": "For watching something: a command (as for run) run first when it fires. You're woken, with its output, only if it prints something." },
                     },
                     "required": ["date_time", "action"]
                 }
@@ -2824,7 +2881,12 @@ def build_utility_tools():
                 "description": _subagent_description(),
                 "parameters": {
                     "type": "object",
-                    "properties": { "task": { "type": "string" } },
+                    "properties": {
+                        "task": {"type": "string"},
+                        "to": {"type": "string", "description": "A running sub-agent's name: "
+                               "task goes to it as a follow-up."},
+                        "stop": {"type": "boolean", "description": "With to: stop it."},
+                    },
                     "required": ["task"]
                 }
             }
@@ -3047,7 +3109,9 @@ def _subagent_description():
                 "back later as a message starting \"SUB-AGENT RESULT\". Worth it for long work "
                 "that can go on beside yours (a separate part of a build, research across many "
                 "sources). Not for a check, a review or something to look up for your own work: "
-                "the report comes after you've moved on, and doing it yourself costs less.")
+                "the report comes after you've moved on, and doing it yourself costs less. "
+                "To add to or change a running one's work, call this with `to` (its name); "
+                "stop: true stops it.")
     return ("Delegates one task to a sub-agent and returns its report. It can't see this "
             "conversation, so `task` must carry everything it needs. Worth it for "
             "multi-step work; for one or two tool calls, do them yourself.")
@@ -3767,6 +3831,68 @@ def schedule_ping(static_dir, date_time, action, repeat=None):
             + (f", then repeating {repeat}" if repeat else "") + ".")
 
 
+# ── checks: pings that cost no AI until something changes ────
+#
+# A ping can carry a check, a command run first when it fires (from the
+# Developer app, the same as its `run`): no output and exit 0 means nothing to
+# do, and no turn happens; anything it prints wakes the agent with the ping's
+# action and that output. "Tell me when the price drops" is then a small
+# program run every hour, and an AI turn only on the hour it drops. Kept in
+# the action itself, "[check: <command>] <action>", so ping.md and everything
+# that reads it stay as they are.
+
+PING_CHECK_RE = re.compile(r"^\[check: ([^\]\n]{1,300})\]\s*(.*)$", re.S)
+PING_CHECK_TIMEOUT = 60
+PING_CHECK_SHOWN = 4000
+
+
+def _bad_check(check):
+    if len(check) > 300 or "]" in check or "\n" in check:
+        return "a check is one command line of at most 300 characters, without ']'"
+    return None
+
+
+def split_ping_check(action):
+    """(check command or None, the action without it)."""
+    m = PING_CHECK_RE.match(action or "")
+    return (m.group(1).strip(), m.group(2).strip()) if m else (None, action)
+
+
+def run_ping_check(user, command):
+    """Run a ping's check for `user`, unattended: (wake, what to tell the
+    agent). Runs only where it needs nobody's approval: runs that don't ask
+    (a sandboxed host), or a command they always allow. Anything else, or a
+    check that can't run, wakes the agent saying so, so a ping is never lost
+    to its check."""
+    entry = next((e for e in (registry_for(user) or {}).values()
+                  if (e.get("server") or {}).get("workspace") and e.get("tool") == "run"), None)
+    if entry is None:
+        return True, f"The check (`{command}`) couldn't run: the Developer app isn't available."
+    args = {"command": command, "timeout": PING_CHECK_TIMEOUT}
+    gated, invalid = dev_server.command_line(args)
+    if invalid:
+        return True, f"The check (`{command}`) couldn't run: {invalid}"
+    if dev_server.runs_need_approval() and approvals.check(gated, user) != approvals.ALLOWED:
+        return True, (f"The check (`{command}`) didn't run: running code asks for approval here, and "
+                      "nobody was there. (Always allowing that command lets it run unattended.)")
+    try:
+        out = str(mcp_client.call_tool(mcp_client.for_user(entry["server"], user), "run", args))
+    except Exception as e:                               # noqa: BLE001
+        return True, f"The check (`{command}`) couldn't run: {e}"
+    m = re.search(r"(?m)^(exit (-?\d+)|timed out after)[^\n]*", out)
+    if not m:
+        return True, f"The check (`{command}`) gave an answer that couldn't be read:\n{out[:PING_CHECK_SHOWN]}"
+    printed = out[m.end():]
+    # What the run reports about files it wrote isn't output: a check keeping
+    # its state in a file would otherwise wake the agent every time.
+    cut = printed.find("Files it wrote:")
+    printed = (printed[:cut] if cut != -1 else printed).strip()
+    if m.group(2) == "0" and not printed:
+        return False, ""
+    status = "it printed" if m.group(2) == "0" else f"it failed ({m.group(0).split(' · ')[0]})"
+    return True, f"The check (`{command}`) ran and {status}:\n{printed[:PING_CHECK_SHOWN]}"
+
+
 def _describe_when(when, now=None):
     """'Thursday 2026-10-01 08:00, in 14h 5m' — what add_ping hands back, so the
     model can repeat an exact time to the user and catch a wrong date before
@@ -4183,8 +4309,14 @@ def _run_tool(command_name, args_dict, bash_approved=False):
     if command_name == 'add_ping':
         # Looked up at call time, so a wrapper installed over schedule_ping
         # applies to the tool as well.
-        return schedule_ping(static_dir, args_dict.get('date_time'),
-                             args_dict.get('action'), args_dict.get('repeat'))
+        action = args_dict.get('action')
+        check = str(args_dict.get('check') or '').strip()
+        if check:
+            why = _bad_check(check)
+            if why:
+                return f"Error: {why} — nothing was scheduled."
+            action = f"[check: {check}] {(action or '').strip()}"
+        return schedule_ping(static_dir, args_dict.get('date_time'), action, args_dict.get('repeat'))
 
     if command_name == 'cancel_ping':
         return _remove_ping(static_dir, args_dict.get('match'))
@@ -4291,6 +4423,10 @@ def _run_tool(command_name, args_dict, bash_approved=False):
         return output
 
     if command_name == SUBAGENT_TOOL_NAME:
+        if _subagent_launcher is not None and (args_dict.get('to') or args_dict.get('stop')):
+            import src.subagents as subagents
+            return subagents.message(_sess(), args_dict.get('to'), args_dict.get('task'),
+                                     stop=bool(args_dict.get('stop')))
         return _run_subagent(args_dict.get('task'))
 
     if command_name == FAST_BROWSER_TOOL_NAME:
@@ -4703,18 +4839,60 @@ CUT_OFF_NOTICE = (
     "file in parts (create it, then add to it), a shorter message, fewer items.")
 
 
-def _clip_tool_result(result):
+# A result too long to keep whole is kept whole in a file as well, so the
+# part left out of the conversation can still be read or searched instead of
+# fetched again: a test run's middle, a long page, a big log. Under the
+# Developer workspace (projects/), where both its tools and the file tools
+# reach; hidden, so it stays out of the Files list. Kept a week, at most
+# TOOL_OUTPUT_KEEP of them.
+TOOL_OUTPUT_DIR = os.path.join("projects", ".tool-output")
+TOOL_OUTPUT_KEEP = 20
+TOOL_OUTPUT_DAYS = 7
+TOOL_OUTPUT_MAX = 5_000_000
+
+
+def _save_tool_output(text, name):
+    """Write a whole tool result to the agent's .tool-output folder; its path
+    as the tools show it, or None (no folder for this conversation, or the
+    write failed: the clipped result still goes)."""
+    static_dir = getattr(_sess(), "static_dir", None)
+    if not static_dir:
+        return None
+    folder = os.path.join(static_dir, TOOL_OUTPUT_DIR)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        now = time.time()
+        old = sorted((e for e in os.scandir(folder) if e.is_file()), key=lambda e: e.stat().st_mtime)
+        for i, e in enumerate(old):
+            if now - e.stat().st_mtime > TOOL_OUTPUT_DAYS * 86400 or len(old) - i >= TOOL_OUTPUT_KEEP:
+                os.remove(e.path)
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "-", str(name or "tool"))[:40].strip("-") or "tool"
+        fname = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe}.txt"
+        with open(os.path.join(folder, fname), "w", encoding="utf-8") as f:
+            f.write(str(text)[:TOOL_OUTPUT_MAX])
+        return f"{TOOL_OUTPUT_DIR.replace(os.sep, '/')}/{fname}"
+    except OSError:
+        logger.warning("Couldn't keep a long tool result whole", exc_info=True)
+        return None
+
+
+def _clip_tool_result(result, name=None):
     """`result` as it's kept: whole when it fits TOOL_RESULT_CHAR_LIMIT, else
-    its start and its end around a note saying how much was left out. Any
-    images it carries stay on it (mcp_client.ToolText)."""
+    its start and its end around a note saying how much was left out, and
+    where the whole of it was saved. Any images it carries stay on it
+    (mcp_client.ToolText)."""
     if len(result) <= TOOL_RESULT_CHAR_LIMIT:
         return result
     head = result[:TOOL_RESULT_CHAR_LIMIT * 3 // 4]
     tail = result[len(result) - TOOL_RESULT_CHAR_LIMIT // 4:]
     left_out = len(result) - len(head) - len(tail)
+    saved = _save_tool_output(result, name)
+    where = (f" The whole result is saved in {saved}: read or search that file for the part left "
+             f"out, rather than running this again." if saved else
+             " If you need that part, ask for less at a time (one page, a smaller range, a "
+             "narrower search).")
     clipped = (f"{head}\n\n[… {left_out:,} characters left out here: this result was too long "
-               f"to keep whole. If you need that part, ask for less at a time (one page, a "
-               f"smaller range, a narrower search).]\n\n{tail}")
+               f"to keep whole.{where}]\n\n{tail}")
     images = getattr(result, "images", ())
     return mcp_client.ToolText(clipped, images) if images else clipped
 
@@ -6211,9 +6389,10 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         yield {"type": "approval_resolved", "id": req.id,
                                "decision": decision, "approved": bash_approved}
                         if not bash_approved:
-                            result = approvals.denial_message(decision)
+                            result = approvals.denial_message(decision, req.feedback)
                 if result is None:
                     ran = True
+                    _undo_capture(command_name, args_dict)
                     try:
                         result = _run_tool(command_name, args_dict, bash_approved=bash_approved)
                     except Exception as e:
@@ -6221,7 +6400,15 @@ def agent_stream(user_input=None, system_input=None, tool_input=None, tool_id=No
                         result = f"Error running tool '{command_name}': {e}"
             if not isinstance(result, str):
                 result = "" if result is None else str(result)
-            result = _clip_tool_result(result)
+            result = _clip_tool_result(result, command_name)
+            # A sub-agent's messages from its main agent (src/subagents.py),
+            # with the next thing it reads.
+            if getattr(sess, "incoming", None):
+                import src.subagents as subagents
+                waiting = subagents.take_messages(sess)
+                if waiting:
+                    result += ("\n\n" + subagents.FOLLOW_UP_PREFIX
+                               + "\n\n".join(waiting))
             if args_dict is not None and ran:
                 _note_answer(command_name, args_dict, result)
             # The advisor (src/advisor.py), called in when the turn is in

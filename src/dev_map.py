@@ -341,8 +341,42 @@ def overview(root, top, rel_of, files):
     entries = [rel_of(root, p) for p in files if os.path.basename(p) in ENTRY_POINTS][:8]
     if entries:
         out.append("Likely entry points: " + ", ".join(entries))
+    found = project_instructions(root, top)
+    if found:
+        path, text = found
+        more = f"\n[… the rest is in {rel_of(root, path)}]" if len(text) > INSTRUCTIONS_SHOWN else ""
+        out.append(f"The project's own instructions ({rel_of(root, path)}), to follow while working in it:\n"
+                   + text[:INSTRUCTIONS_SHOWN].rstrip() + more)
     out.append("Next: outline a folder or file, find a name, search text, then read only the lines you need.")
     return "\n".join(out)
+
+
+# A repo's instructions for coding agents: how it's built and tested, its
+# conventions, what not to touch. AGENTS.md is the shared name for them;
+# CLAUDE.md is read where there's no AGENTS.md.
+INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
+INSTRUCTIONS_SHOWN = 4000
+
+
+def project_instructions(root, top):
+    """(path, text) of the nearest AGENTS.md (else CLAUDE.md) in `top` or a
+    folder above it inside the workspace, or None."""
+    here = os.path.normpath(top if os.path.isdir(top) else os.path.dirname(top))
+    stop = os.path.normpath(root)
+    while True:
+        for name in INSTRUCTION_FILES:
+            path = os.path.join(here, name)
+            if os.path.isfile(path) and not os.path.islink(path):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        text = f.read(INSTRUCTIONS_SHOWN + 1000).strip()
+                except OSError:
+                    continue
+                if text:
+                    return path, text
+        if here == stop or not here.startswith(stop + os.sep):
+            return None
+        here = os.path.dirname(here)
 
 
 def match_glob(path, rel, glob):

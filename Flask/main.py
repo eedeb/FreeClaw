@@ -18,6 +18,7 @@ import src.mcp_catalog as mcp_catalog
 import src.routines as routines
 import src.session as sessions
 import src.subagents as subagents
+import src.undo as undo
 import src.telemetry as telemetry
 from src.users import (
     STATIC_DIR, safe_username, user_dir, conv_files_dir,
@@ -1212,12 +1213,59 @@ def api_resolve_approval():
         return jsonify({'error': "Body must include 'id'."}), 400
     if decision not in approvals.DECISIONS:
         return jsonify({'error': f"decision must be one of: {', '.join(approvals.DECISIONS)}."}), 400
-    ok, error = approvals.resolve(request_id, decision)
+    feedback = data.get('feedback')
+    ok, error = approvals.resolve(request_id, decision,
+                                  feedback if isinstance(feedback, str) else None)
     if not ok:
         # 409, not 400: the request was well-formed, the prompt just isn't
         # waiting any more (answered already, or timed out).
         return jsonify({'error': error}), 409
     return jsonify({'ok': True})
+
+
+@app.route('/api/undo', methods=['GET'])
+def api_undo_list():
+    """The turns whose file changes can be undone, newest first (src/undo.py)."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = current_user()
+    if not name:
+        return jsonify({'error': 'No active user selected'}), 400
+    return jsonify({'turns': [{'id': r['id'], 'at': r.get('at'), 'label': r.get('label') or '',
+                               'files': sorted(r['files'])[:50], 'count': len(r['files'])}
+                              for r in undo.records(user_dir(name))]})
+
+
+@app.route('/api/undo', methods=['POST'])
+def api_undo():
+    """Put the files back as they were before turn `id` (and every turn after
+    it), and tell the agent in its conversation. Not while it's working."""
+    if not logged_in():
+        return jsonify({'error': 'Unauthorized'}), 401
+    name = current_user()
+    if not name:
+        return jsonify({'error': 'No active user selected'}), 400
+    turn_id = str((request.get_json(silent=True) or {}).get('id') or '').strip()
+    label = next((r.get('label') or '' for r in undo.records(user_dir(name)) if r['id'] == turn_id), '')
+    lock = _session_lock(name)
+    if not lock.acquire(blocking=False):
+        return jsonify({'error': "It's in the middle of something. Try again when it's finished."}), 409
+    try:
+        try:
+            restored, deleted, failed = undo.undo(user_dir(name), conv_files_dir(name), turn_id)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 409
+        sess = sessions.for_user(name)
+        with sessions.use(sess):
+            activate_session(name)
+            messages = agent.get_messages()
+            messages.append({'role': 'user', 'content': undo.note(restored, deleted, failed, label),
+                             'auto_kind': 'undo',
+                             'ts': datetime.now().strftime(agent.PING_TIME_FORMAT)})
+            save_conversation(name, messages)
+    finally:
+        lock.release()
+    return jsonify({'restored': restored, 'deleted': deleted, 'failed': failed})
 
 
 @app.route('/api/bash-approvals', methods=['GET'])
@@ -3575,7 +3623,17 @@ def _deliver_pings(name, due):
                             else f"due {stamp}")
                     if repeat:
                         when += f", repeats {repeat}"
-                    stamped = f"{agent.PING_PREFIX} [{when}]: {action}"
+                    # A check first (agent.run_ping_check): nothing to report
+                    # means no turn, and no AI spent.
+                    check, task = agent.split_ping_check(action)
+                    found = ""
+                    if check:
+                        wake, found = agent.run_ping_check(name, check)
+                        if not wake:
+                            logger.info("Ping check for user=%s scheduled=%s: nothing to report", name, stamp)
+                            continue
+                    stamped = (f"{agent.PING_PREFIX} [{when}]: {task}"
+                               + (f"\n\n{found}" if found else ""))
                     # Drained here rather than by agent.agent() so a chat page
                     # that's open can watch it happen (live_turns).
                     # And recorded for the Activity window (src/activity.py):
