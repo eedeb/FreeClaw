@@ -38,6 +38,20 @@ class TestScrollbars(unittest.TestCase):
                 self.assertRegex(text, r"--muted\s*:")
                 self.assertRegex(text, r"--accent-line\s*:")
 
+    def test_no_scroller_swaps_them_for_the_default(self):
+        # In Chrome a scroller with scrollbar-width set (other than none, which
+        # hides it) drops the ::-webkit-scrollbar styling for the browser's own
+        # bar: the chat's sidebar had "thin" and showed the default one.
+        import re
+        for name in os.listdir(TEMPLATES):
+            if not name.endswith(".html") or name == "_scrollbars.html":
+                continue
+            with open(os.path.join(TEMPLATES, name), encoding="utf-8") as f:
+                text = f.read()
+            for value in re.findall(r"scrollbar-width:\s*([a-z-]+)", text):
+                with self.subTest(page=name):
+                    self.assertEqual(value, "none")
+
     def test_they_render(self):
         from jinja2 import Environment, FileSystemLoader
         out = Environment(loader=FileSystemLoader(TEMPLATES)).get_template("_scrollbars.html").render()
