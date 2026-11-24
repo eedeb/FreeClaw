@@ -41,8 +41,39 @@ EVAL_CHARS = 2000
 TEXT_CHARS = 300
 SNIPPET = 60                    # characters either side of an error's column
 
+# Playing a game, not only loading it: right-clicks, looking around (mouse
+# movement), holding the mouse, keys held together, and reading the game's
+# state between steps. On unless FC_CHECK_INPUT is "off" (a host deciding
+# who has it).
+INPUT_STEPS = os.environ.get("FC_CHECK_INPUT", "").strip().lower() not in ("off", "0", "false", "no")
 STEPS_HELP = ('"press Space", "hold ArrowRight 800" (ms), "click 120 300" (x y), '
               '"click Start" (text), "type hello", "wait 500"')
+if INPUT_STEPS:
+    STEPS_HELP += (', "rightclick 480 320", "move 200 0" (look: dx dy), "mousedown", "mouseup", '
+                   '"hold KeyW+ShiftLeft 1000", "js player.pos" (logged)')
+EVAL_STEP_CHARS = 300
+
+# A headless browser grants no pointer lock, and a game that only takes input
+# while the mouse is locked (most first-person ones) then ignores every key.
+# With input steps on, requestPointerLock is granted at once: the element is
+# document.pointerLockElement and pointerlockchange fires, as in a browser
+# that said yes.
+POINTER_LOCK = """(() => {
+  let locked = null;
+  Object.defineProperty(Document.prototype, 'pointerLockElement', {get() { return locked; }, configurable: true});
+  Element.prototype.requestPointerLock = function () {
+    locked = this;
+    setTimeout(() => document.dispatchEvent(new Event('pointerlockchange')), 0);
+    return Promise.resolve();
+  };
+  Document.prototype.exitPointerLock = function () {
+    locked = null;
+    setTimeout(() => document.dispatchEvent(new Event('pointerlockchange')), 0);
+  };
+  // A locked mouse doesn't move the view by clicking somewhere: only the
+  // "move" steps (sent, so not trusted) turn it while locked.
+  addEventListener('mousemove', (e) => { if (locked && e.isTrusted) e.stopImmediatePropagation(); }, true);
+})();"""
 
 
 class CheckError(Exception):
@@ -110,7 +141,23 @@ def _where(stack, folder, root_rel):
     return ""
 
 
-def _step(page, step):
+def _xy(rest):
+    return len(rest) == 2 and all(re.fullmatch(r"-?\d+(\.\d+)?", w) for w in rest)
+
+
+def _click_text(page, step, label, button="left"):
+    """The element showing `label`, or a button named it, clicked."""
+    for find in (lambda: page.get_by_text(label).first,
+                 lambda: page.get_by_role("button", name=label).first):
+        try:
+            find().click(timeout=2000, button=button)
+            return
+        except Exception:                                # noqa: BLE001 — playwright's timeout
+            continue
+    raise CheckError(f"Step {step!r}: nothing visible says {label!r}.")
+
+
+def _step(page, step, notes=None):
     words = str(step).split()
     if not words:
         return 0
@@ -120,18 +167,47 @@ def _step(page, step):
             page.keyboard.press(rest[0])
         elif verb == "hold" and rest:
             ms = int(rest[1]) if len(rest) > 1 else 500
-            page.keyboard.down(rest[0])
+            keys = rest[0].split("+") if INPUT_STEPS else [rest[0]]
+            for key in keys:
+                page.keyboard.down(key)
             page.wait_for_timeout(ms)
-            page.keyboard.up(rest[0])
+            for key in reversed(keys):
+                page.keyboard.up(key)
             return ms
-        elif verb == "click" and len(rest) == 2 and all(re.fullmatch(r"-?\d+(\.\d+)?", w) for w in rest):
+        elif INPUT_STEPS and verb == "rightclick" and _xy(rest):
+            page.mouse.click(float(rest[0]), float(rest[1]), button="right")
+        elif INPUT_STEPS and verb == "rightclick" and rest:
+            _click_text(page, step, str(step).split(None, 1)[1], button="right")
+        elif INPUT_STEPS and verb == "move" and _xy(rest):
+            # Looking around: mousemove events carrying movementX/Y, as a
+            # locked mouse sends them, in ten small moves (a game may clamp
+            # one big jump). Sent, not made with the real pointer, which stops
+            # at the window's edge and can't move "past" it the way a locked
+            # mouse does.
+            page.evaluate("""([dx, dy]) => {
+                const t = document.pointerLockElement || document.elementFromPoint(innerWidth / 2, innerHeight / 2) || document;
+                for (let n = 0; n < 10; n++) t.dispatchEvent(new MouseEvent('mousemove', {
+                    bubbles: true, cancelable: true, movementX: dx / 10, movementY: dy / 10,
+                    clientX: innerWidth / 2, clientY: innerHeight / 2}));
+            }""", [float(rest[0]), float(rest[1])])
+        elif INPUT_STEPS and verb in ("mousedown", "mouseup"):
+            button = rest[0] if rest and rest[0] in ("left", "right", "middle") else "left"
+            (page.mouse.down if verb == "mousedown" else page.mouse.up)(button=button)
+        elif INPUT_STEPS and verb == "js" and rest:
+            source = str(step).split(None, 1)[1]
+            try:
+                value = page.evaluate(
+                    "(src) => { const v = (0, eval)(src); "
+                    "try { return typeof v === 'string' ? v : JSON.stringify(v); } "
+                    "catch (e) { return String(v); } }", source)
+            except Exception as e:                       # noqa: BLE001 — the page's own error
+                value = "threw " + _cut(re.sub(r"^\w+\.evaluate: ", "", str(e).splitlines()[0]))
+            if notes is not None:
+                notes.append(f"{_cut(source, 60)} → {_cut(str(value), EVAL_STEP_CHARS)}")
+        elif verb == "click" and _xy(rest):
             page.mouse.click(float(rest[0]), float(rest[1]))
         elif verb == "click" and rest:
-            label = str(step).split(None, 1)[1]
-            try:
-                page.get_by_text(label).first.click(timeout=3000)
-            except Exception:                            # noqa: BLE001 — playwright's timeout
-                raise CheckError(f"Step {step!r}: nothing visible says {label!r}.")
+            _click_text(page, step, str(step).split(None, 1)[1])
         elif verb == "type" and rest:
             page.keyboard.type(str(step).split(None, 1)[1])
         elif verb == "wait" and rest:
@@ -223,6 +299,8 @@ def check(folder, page_rel, root_rel, wait_ms=WAIT_DEFAULT_MS, steps=(), express
                     failed.append(f"{_cut(req.url, 120)} ({req.failure or 'failed'})"))
             page.on("dialog", lambda d: (console.append(("dialog", _cut(f"{d.type}: {d.message}"))), d.dismiss()))
             context.route("**/*", route)
+            if INPUT_STEPS:
+                context.add_init_script(POINTER_LOCK)
             url = ORIGIN + "/" + urllib.parse.quote(page_rel)
             try:
                 response = page.goto(url, wait_until="load", timeout=15_000)
@@ -236,8 +314,9 @@ def check(folder, page_rel, root_rel, wait_ms=WAIT_DEFAULT_MS, steps=(), express
             except PlaywrightError:
                 pass
             spent = 0
+            notes = []
             for step in steps:
-                spent += _step(page, step)
+                spent += _step(page, step, notes)
                 if spent > STEPS_MAX_MS:
                     raise CheckError(f"Steps hold and wait {STEPS_MAX_MS // 1000}s at most in all.")
             if steps:
@@ -295,6 +374,9 @@ def check(folder, page_rel, root_rel, wait_ms=WAIT_DEFAULT_MS, steps=(), express
     if save:
         w, h = (size or (VIEWPORT["width"], VIEWPORT["height"]))
         out.append(f"Saved {os.path.basename(save)} ({w}×{h}, {max(1, os.path.getsize(save) // 1024)} KB).")
+    if steps and notes:
+        out.append("During the steps:")
+        out += ["  " + n for n in notes]
     if expression:
         value = str(value)
         if len(value) > EVAL_CHARS:
