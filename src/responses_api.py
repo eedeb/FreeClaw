@@ -389,10 +389,32 @@ def build_request(call_kwargs):
         request[_NAMES_KEY] = {FREEFORM_NAME: next(iter(freeform))}
     effort = call_kwargs.get(EFFORT_KEY)
     if effort and effort != REASONING_EFFORT:
-        _insert_effort(request["input"], effort)
+        messages = call_kwargs.get("messages") or []
+        at = _turn_start(messages)
+        if at is None:
+            _insert_effort(request["input"], effort)
+        else:
+            # Where the turn's own message lands among the items: everything
+            # before it, converted the same way (the conversion goes in order).
+            before = len(_messages_to_input(messages[:at], phase, freeform))
+            request["input"].insert(before, {"type": "configuration_update", "reasoning": {"effort": effort}})
     # temperature and top_p are dropped deliberately: reasoning models reject
     # them outright, and the chain only ever sends them at their defaults.
     return request
+
+
+def _turn_start(messages):
+    """Index of the message that started this turn: the newest user message
+    that was sent (it has a `ts`). Not an image a tool returned, which also
+    goes as a user message (agent._with_tool_images): put before one of those,
+    the update moved to a new place each time a screenshot came back, and
+    everything after the system message missed the cache (2026-11-23, 7
+    requests, ~180 credits on one Terra turn). None if no message says."""
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") == "user" and m.get("ts"):
+            return i
+    return None
 
 
 def _insert_effort(items, effort):
