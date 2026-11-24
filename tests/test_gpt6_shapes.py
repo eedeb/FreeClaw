@@ -61,6 +61,23 @@ class TestRequest(unittest.TestCase):
         self.assertEqual(plain["input"], [i for i in items if i.get("type") != "configuration_update"])
         self.assertNotIn("configuration_update", json.dumps(self.build(**{ra.EFFORT_KEY: ra.REASONING_EFFORT})))
 
+    def test_the_effort_item_stays_put_when_a_tool_returns_an_image(self):
+        conv = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "old", "ts": "2026-11-23 10:00"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "add horses", "ts": "2026-11-23 11:00"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "function": {"name": "mcp_developer_check", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "Checked"},
+                # how agent._with_tool_images sends a screenshot
+                {"role": "user", "content": [{"type": "text", "text": "Image returned by check:"}]}]
+        before = ra.build_request({"model": "m", "messages": conv[:4], ra.EFFORT_KEY: "high"})["input"]
+        after = ra.build_request({"model": "m", "messages": conv, ra.EFFORT_KEY: "high"})["input"]
+        item = {"type": "configuration_update", "reasoning": {"effort": "high"}}
+        self.assertEqual(before.index(item), after.index(item))
+        self.assertEqual(after[after.index(item) + 1]["content"], "add horses")
+        self.assertEqual(after[:len(before)], before, "the earlier request is a prefix of the later one")
+
     def test_freeform_patch(self):
         off = self.build()
         self.assertEqual([t["type"] for t in off["tools"]], ["function", "function"])
