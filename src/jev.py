@@ -427,8 +427,15 @@ def route(user_input, messages, end, tools, sections, servers=()):
 # being proactive, never a push into something the agent can't do — any
 # real chance that it's waiting on the user or has hit a wall, and nothing
 # happens.
-PARTWAY_THRESHOLD = 0.7
+# Measured on 438 checked replies (28 nudges, 2026-11-25): finished answers
+# that mention something they couldn't check scored 0.70-0.82 "partway" and
+# were nudged to say it again; the nudges that found real work left undone
+# scored 0.94-1.0. And "I'll check it every day at 7" (scheduled, or saved to
+# memory) scored 0.9+ as a promise while also scoring "done".
+PARTWAY_THRESHOLD = 0.85
 PROMISE_THRESHOLD = 0.85
+# A promise only counts when the reply doesn't also read as done.
+PROMISE_DONE_CEILING = 0.5
 BLOCKED_CEILING = 0.2
 REPLY_CLIP = 1500
 ACTIONS_SHOWN = 25
@@ -468,7 +475,8 @@ def follow_through(request, actions, reply, review=False):
                    "criteria": dict(FOLLOW_CRITERIA)},
         "promise": {"type": "noul",
                     "instructions": "Does the REPLY say it will do something next (\"I'll check…\", "
-                                    "\"Next, I'll…\", \"Let me…\") that it has not done?"},
+                                    "\"Next, I'll…\", \"Let me…\") that it has not done? Not work it has "
+                                    "scheduled for later, handed to a sub-agent, or started (a call placed)."},
     }
     if review:
         questions["review"] = {
@@ -488,7 +496,7 @@ def follow_through(request, actions, reply, review=False):
     promise = _p(answers, "promise") or 0.0
     blocked = shares.get("needs_user", 0.0) + shares.get("cant", 0.0)
     nudge = ((status == "partway" and shares.get("partway", 0.0) >= PARTWAY_THRESHOLD)
-             or (promise >= PROMISE_THRESHOLD and blocked < BLOCKED_CEILING)) \
+             or (promise >= PROMISE_THRESHOLD and shares.get("done", 0.0) < PROMISE_DONE_CEILING)) \
         and blocked < BLOCKED_CEILING
     out = {"status": status, "shares": {k: round(v, 2) for k, v in shares.items()},
            "promise": round(promise, 2), "nudge": bool(nudge), "ms": ms}
