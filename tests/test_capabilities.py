@@ -103,7 +103,10 @@ class TestOfferReminder(unittest.TestCase):
             self.assertEqual(agent._offer_line(), agent.OFFER_REMINDER)
 
     def test_short(self):
-        self.assertLess(len(agent.OFFER_REMINDER) / 4, 50)
+        self.assertLess(len(agent.OFFER_REMINDER) / 4, 60)
+
+    def test_one_thing_for_the_yes_button(self):
+        self.assertIn("one thing, not a choice between two", agent.OFFER_REMINDER)
 
 
 if __name__ == "__main__":
