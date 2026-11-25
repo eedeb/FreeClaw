@@ -75,5 +75,36 @@ class TestCapabilities(unittest.TestCase):
             self.assertEqual(agent.capability_block("x"), "")
 
 
+class TestOfferReminder(unittest.TestCase):
+    """The reminder in the live context (agent._offer_line)."""
+
+    def sess(self, depth=0, request="What's in my inbox from today?", proactive=True):
+        system = "rules" + ("\n\n" + agent.PROACTIVE_INSTRUCTION if proactive else "")
+        s = mock.Mock(depth=depth, messages=[{"role": "system", "content": system},
+                                             {"role": "user", "content": request}])
+        return mock.patch.object(agent, "_sess", lambda: s)
+
+    def test_the_main_agents_turn_from_the_person(self):
+        with self.sess():
+            self.assertEqual(agent._offer_line(), agent.OFFER_REMINDER)
+
+    def test_not_for_a_scheduled_run_a_sub_agent_or_without_capabilities(self):
+        with self.sess(request=f"{agent.PING_PREFIX} [due 2026-11-25 07:53]: brief"):
+            self.assertEqual(agent._offer_line(), "")
+        with self.sess(depth=1):
+            self.assertEqual(agent._offer_line(), "")
+        with self.sess(proactive=False):
+            self.assertEqual(agent._offer_line(), "")
+
+    def test_an_automatic_message_isnt_the_request(self):
+        with self.sess() as _:
+            s = agent._sess()
+            s.messages.append({"role": "user", "content": "[Automatic follow-through check]", "auto": True})
+            self.assertEqual(agent._offer_line(), agent.OFFER_REMINDER)
+
+    def test_short(self):
+        self.assertLess(len(agent.OFFER_REMINDER) / 4, 50)
+
+
 if __name__ == "__main__":
     unittest.main()
