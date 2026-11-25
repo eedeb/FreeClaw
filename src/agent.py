@@ -5627,6 +5627,11 @@ def _follow_through(reply):
             or text.endswith("?") or text.startswith("(No response")):
         return None
     actions, request = _turn_actions(sess.messages)
+    # A scheduled task's run has nobody waiting for more: a nudge costs a
+    # round, and the work it starts can send a second notification. 16 of 28
+    # nudges measured (2026-11-25) were scheduled runs, one of them useful.
+    if str(request or "").startswith(PING_PREFIX):
+        return None
     try:
         return jev.follow_through(request, actions, text,
                                   review=advisor.can_call(sess, _tools_user()))
