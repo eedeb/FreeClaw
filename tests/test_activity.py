@@ -1,5 +1,5 @@
 """Tests for Activity (src/activity.py, /activity and /api/activity in
-Flask/main.py), the "Do this every morning?" offer in chat.html, and
+Flask/main.py), the "Yes, do it" offer in chat.html, and
 scheduled tasks routed by Jev (src/agent.py).
 
 Run from the repo root:  python -m unittest discover -s tests
@@ -274,39 +274,35 @@ class TestPingRouting(unittest.TestCase):
         self.assertEqual(len(tools), len(self.agent.tools_for(None)))
 
 
-class TestRepeatOffer(unittest.TestCase):
-    """chat.html's rule for offering to repeat a request (run with node)."""
+class TestOfferYes(unittest.TestCase):
+    """chat.html's "Yes, do it": shown when a reply's last line offers a next
+    step (run with node). The old "Do this every morning?" banner is gone."""
 
     def setUp(self):
         if not shutil.which("node"):
             raise unittest.SkipTest("node isn't installed")
         with open(os.path.join(ROOT, "Flask", "templates", "chat.html"), encoding="utf-8") as f:
-            text = f.read()
-        start = text.index("  const REPEATABLE = ")
-        end = text.index("  const OFFERED_KEY")
-        fn_start = text.index("  function repeatCadence")
-        fn_end = text.index("  function offeredBefore")
-        self.js = text[start:end] + text[fn_start:fn_end]
+            self.text = f.read()
+        start = self.text.index("  const OFFER = ")
+        self.js = self.text[start:self.text.index("\n", start)]
 
-    def cadence(self, cases):
-        prog = self.js + "\nconsole.log(JSON.stringify(" + json.dumps(cases) + ".map(c => repeatCadence(c[0], c[1]))));"
+    def test_rule(self):
+        cases = ["Done: your cart has Double Stuf now.\nWant me to check it again on Friday?",
+                 "Scheduled.\nShould I also remind you the night before?",
+                 "Would you like me to draft a reply to Sam?",
+                 "I can also watch the price and tell you if it drops?",
+                 "Which city should I use?",
+                 "Here's the summary. Let me know if you need anything.",
+                 "Want me to check it again Friday? I already did today's."]
+        prog = self.js + "\nconsole.log(JSON.stringify(" + json.dumps(cases) + \
+            ".map(t => OFFER.test(t.trim().split('\\n').pop()))));"
         out = subprocess.run(["node", "-e", prog], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
-        return json.loads(out.stdout)
+        self.assertEqual(json.loads(out.stdout), [True, True, True, True, False, False, False])
 
-    def test_rules(self):
-        cases = [
-            ["Summarize my inbox", ["mcp_gmail_fetch"]],                    # daily
-            ["What's the weather this week in Chicago?", ["web_search"]],   # weekly
-            ["Check the price of the Sony XM6", ["mcp_browser_navigate"]],   # daily
-            ["Summarize my inbox", []],                                      # nothing looked up
-            ["Summarize my inbox every morning", ["web_search"]],            # already says when
-            ["Check the weather", ["add_ping"]],                             # scheduled itself
-            ["Write me a poem about cats", ["web_search"]],                  # not a check
-            ["/reset", ["web_search"]],                                      # a command
-        ]
-        self.assertEqual(self.cadence(cases),
-                         ["daily", "weekly", "daily", None, None, None, None, None])
+    def test_banner_is_gone(self):
+        self.assertNotIn("Do this every morning?", self.text)
+        self.assertNotIn("offerRepeat", self.text)
 
 
 if __name__ == "__main__":

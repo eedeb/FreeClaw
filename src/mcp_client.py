@@ -94,6 +94,7 @@ TRANSPORTS = (HTTP, STDIO)
 BUILTIN_SERVERS = [
     {
         "name": "browser",
+        "can": "use a real web browser: open sites, read them, fill forms, sign in, add to carts",
         "transport": STDIO,
         # `-m` against sys.executable rather than a console script: on Linux
         # FreeClaw runs out of a venv whose bin/ isn't necessarily on the
@@ -113,6 +114,7 @@ BUILTIN_SERVERS = [
     },
     {
         "name": "developer",
+        "can": "write and run code: build apps, games, websites and tools, and publish them with a link",
         "transport": STDIO,
         # FreeClaw's own (src/dev_server.py): files, search and a run tool in
         # each user's projects folder, the same one the Developer app edits.
