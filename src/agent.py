@@ -1984,8 +1984,75 @@ REPOS_INSTRUCTION = (
     "they said otherwise); git_pull_request then opens the pull request.")
 
 
+# Proactive: an agent that knows what it can do, and says what it could do
+# next. Not for a sub-agent, which reports to its main agent, not the person.
+PROACTIVE_INSTRUCTION = (
+    "Be proactive. When you finish something, think what else you could do for them with what you "
+    "can do (below): check, make, send, schedule, watch. If there's a clearly useful next step, end "
+    "by offering it in one short question (\"Want me to…?\"): one, specific to what just happened, "
+    "and only something you can really do. None after small talk, a question back to them, or a "
+    "scheduled task's run. Never do it before they say yes.")
+
+# What the agent can do, said once in the instructions: Jev sends each turn
+# only the tools it needs, so the model otherwise knows only those. Built from
+# the person's catalogue (a tool or server not there isn't mentioned), so it
+# changes only when their apps do, and the prompt cache holds in between.
+# A server may carry "can": the phrase to use for it ("" leaves it out);
+# otherwise the first sentence of its description is used.
+CAPABILITY_TOOLS = (
+    ("web_search", "search the web and read any page"),
+    ("add_ping", "schedule tasks for later or every day/week, which run on their own"),
+    ("create_file", "make files: notes, documents, CSV spreadsheets"),
+    ("create_page", "make a web page"),
+    ("generate_image", "make images"),
+    ("watch_video", "watch and summarize videos"),
+    ("run_bash_command", "run commands on their computer"),
+    ("spawn_subagent", "hand work to sub-agents in the background"),
+)
+CAPABILITY_LINE_MAX = 140
+# A host adds its own lines: callables (user) -> [str], e.g. which apps are connected.
+CAPABILITY_HOOKS = []
+
+
+def _capability_phrase(server):
+    can = server.get("can")
+    if can is not None:
+        return str(can).strip()
+    desc = " ".join(str(server.get("description") or "").split())
+    first = re.split(r"(?<=[.!?])\s", desc, 1)[0].rstrip(".")
+    return first[:CAPABILITY_LINE_MAX]
+
+
+def capability_block(user):
+    """"What you can do" for `user`, or "" if their catalogue can't be read."""
+    try:
+        names = {_tool_name(t) for t in tools_for(user)}
+        registry = registry_for(user)
+    except Exception:                                    # noqa: BLE001 — the prompt stands without it
+        return ""
+    lines = [phrase for name, phrase in CAPABILITY_TOOLS if name in names]
+    seen = set()
+    for entry in registry.values():
+        server = entry.get("server") or {}
+        name = str(server.get("label") or server.get("name") or "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        phrase = _capability_phrase(server)
+        if phrase:
+            lines.append(f"{name}: {phrase}")
+    for hook in CAPABILITY_HOOKS:
+        try:
+            lines += [str(x).strip()[:CAPABILITY_LINE_MAX * 2] for x in hook(user) or () if str(x).strip()]
+        except Exception:                                # noqa: BLE001
+            logger.exception("A capability hook failed")
+    if not lines:
+        return ""
+    return "What you can do:\n" + "\n".join(f"- {ln}" for ln in lines)
+
+
 def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False, coding=False,
-                  repos=False):
+                  repos=False, capabilities=""):
     """The instruction half of the stable prefix, for this kind of conversation.
     Nothing here may change inside a turn: a different byte anywhere in it and
     the provider's cache matches nothing of the request (see _projects_block)."""
@@ -2002,6 +2069,10 @@ def _instructions(tts=False, subagent=False, browsing=False, fast_browser=False,
         prompt += "\n\nYou are speaking through text-to-speech — write for clear, natural speech."
     if subagent:
         prompt += "\n" + _subagent_instruction().rstrip()
+    elif capabilities:
+        prompt += "\n\n" + PROACTIVE_INSTRUCTION
+    if capabilities:
+        prompt += "\n\n" + capabilities
     return prompt.rstrip()
 
 
@@ -2014,7 +2085,8 @@ def _session_instructions(sess):
     return _instructions(tts=sess.tts, subagent=sess.depth > 0,
                          browsing=_browser_on(user), fast_browser=_fast_browser_on(user),
                          coding=_developer_on(user),
-                         repos=_developer_on(user) and mcp_client.repos_on(user))
+                         repos=_developer_on(user) and mcp_client.repos_on(user),
+                         capabilities=capability_block(user))
 
 
 def _browser_on(user):

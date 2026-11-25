@@ -1487,20 +1487,14 @@
       line-height: 18px; text-align: center; flex-shrink: 0;
     }
 
-    /* "Do this every morning?" under a reply worth repeating. */
-    .repeat-offer {
-      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-      margin: 2px 0 14px; padding: 8px 12px; border-radius: 10px;
-      border: 1px dashed var(--border-strong); color: var(--text-2); font-size: 13px;
+    /* "Yes, do it" under a reply that ends by offering a next step. */
+    .offer-yes {
+      display: flex; gap: 8px; margin: 2px 0 14px;
     }
-    .repeat-offer .q { flex: 1; min-width: 160px; }
-    .repeat-offer button {
-      border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
-      border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+    .offer-yes button {
+      border: 1px solid transparent; background: var(--accent); color: var(--accent-ink);
+      border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
     }
-    .repeat-offer button.yes { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
-    .repeat-offer button.no { background: none; border-color: transparent; color: var(--muted); }
-    .repeat-offer a { color: var(--accent-text); cursor: pointer; }
   </style>
   {% include "_scrollbars.html" %}
 </head>
@@ -3068,6 +3062,7 @@
     clearFile();
 
     lastAsk = text;
+    messagesEl.querySelectorAll('.offer-yes').forEach(el => el.remove());
     // Show the user's message immediately so it doesn't feel like it
     // vanished into the void while the agent is working. This is rendered
     // optimistically; renderConversation() will replace it (and recompute
@@ -3111,110 +3106,32 @@
   activityBadge.check();
   setInterval(activityBadge.check, 60000);
 
-  // ── "Do this every morning?" ──
-  // Under the reply to something worth repeating, one offer to make it a
-  // scheduled task. Worth repeating means the turn looked something up (it
-  // ran a tool) and the message reads like a check, a summary or a watch —
-  // decided here on the page, so it costs the model nothing. Not for a
-  // message that already says when, nor a turn that scheduled something
-  // itself, only once per wording, and never once they've said "Don't ask
-  // again" in this browser.
-  const REPEATABLE = /\b(check|summari[sz]e|look (?:for|up|at|into)|find|what'?s (?:new|happening|on)|any (?:new|updates?)|news|headlines|weather|forecast|prices?|deals?|inbox|e-?mails?|calendar|agenda|track|monitor|update me|digest|scores?|stocks?|status|reviews?)\b/i;
-  const ALREADY_TIMED = /\b(every|each|daily|weekly|monthly|hourly|tomorrow|tonight|remind me|schedule|in \d+ (?:minutes?|hours?|days?))\b/i;
-  const OFFERED_KEY = 'fc-repeat-offered';
-  function repeatCadence(text, tools) {
-    const t = String(text || '').trim();
-    if (t.length < 8 || t.length > 400 || t.startsWith('/') || t.startsWith('📞')) return null;
-    if (!tools.length || tools.some(n => n === 'add_ping' || n === 'cancel_ping')) return null;
-    if (ALREADY_TIMED.test(t) || !REPEATABLE.test(t)) return null;
-    return /\b(this week|next week|weekend|week ahead)\b/i.test(t) ? 'weekly' : 'daily';
-  }
-  function offeredBefore(text) {
-    const key = text.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200);
-    let seen = [];
-    try { seen = JSON.parse(localStorage.getItem(OFFERED_KEY) || '[]'); } catch (_) {}
-    if (seen.includes(key)) return true;
-    try { localStorage.setItem(OFFERED_KEY, JSON.stringify(seen.concat([key]).slice(-200))); } catch (_) {}
-    return false;
-  }
-  function offerRepeat(text, tools) {
-    const cadence = repeatCadence(text, tools);
-    if (!cadence) return;
-    try { if (localStorage.getItem('fc-repeat-off') === '1') return; } catch (_) {}
-    if (offeredBefore(text)) return;
+  // ── "Yes, do it" ──
+  // The agent ends a finished reply by offering one next step it can do
+  // itself ("Want me to check it again Friday?"): one tap says yes. Read off
+  // the reply's last line, so it costs the model nothing; never while a turn
+  // is running, and gone as soon as anything else is sent.
+  const OFFER = /\b(want me to|should i (?:also|go ahead)|shall i|would you like me to|do you want me to|i can also|i could also)\b[^\n]*\?\s*$/i;
+  function offerYes() {
+    messagesEl.querySelectorAll('.offer-yes').forEach(el => el.remove());
+    const bubbles = messagesEl.querySelectorAll('.message.agent:not(.thinking)');
+    const last = bubbles[bubbles.length - 1];
+    if (!last || last !== messagesEl.lastElementChild) return;
+    const lines = (last.innerText || '').trim().split('\n').filter(l => l.trim());
+    if (!lines.length || !OFFER.test(lines[lines.length - 1])) return;
     const box = document.createElement('div');
-    box.className = 'repeat-offer';
-    const q = document.createElement('span');
-    q.className = 'q';
-    q.textContent = cadence === 'weekly' ? 'Do this every week?' : 'Do this every morning?';
-    box.appendChild(q);
-    const choices = cadence === 'weekly'
-      ? [['Sundays at 6:00 PM', 'weekly', '18:00'], ['Every morning', 'daily', '08:00']]
-      : [['Every day at 8:00 AM', 'daily', '08:00'], ['Every week', 'weekly', '08:00']];
-    choices.forEach(([label, repeat, hm], i) => {
-      const b = document.createElement('button');
-      b.className = i === 0 ? 'yes' : '';
-      b.textContent = label;
-      b.addEventListener('click', () => scheduleRepeat(box, text, repeat, hm, label));
-      box.appendChild(b);
+    box.className = 'offer-yes';
+    const yes = document.createElement('button');
+    yes.textContent = 'Yes, do it';
+    yes.addEventListener('click', () => {
+      if (turnRunning) return;
+      box.remove();
+      inputEl.value = 'Yes, do it.';
+      sendMessage();
     });
-    const no = document.createElement('button');
-    no.className = 'no'; no.textContent = 'No thanks';
-    no.addEventListener('click', () => box.remove());
-    box.appendChild(no);
-    const never = document.createElement('button');
-    never.className = 'no'; never.textContent = 'Don\u2019t ask again';
-    never.addEventListener('click', () => {
-      try { localStorage.setItem('fc-repeat-off', '1'); } catch (_) {}
-      box.innerHTML = '';
-      const said = document.createElement('span');
-      said.className = 'q';
-      said.textContent = 'Okay, I won\u2019t offer that again. You can still schedule anything in Tasks. ';
-      const undo = document.createElement('a');
-      undo.textContent = 'Undo';
-      undo.addEventListener('click', () => {
-        try { localStorage.removeItem('fc-repeat-off'); } catch (_) {}
-        box.remove();
-      });
-      said.appendChild(undo);
-      box.appendChild(said);
-    });
-    box.appendChild(never);
+    box.appendChild(yes);
     messagesEl.appendChild(box);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-  async function scheduleRepeat(box, text, repeat, hm, label) {
-    const user = currentUser || '';
-    const q = user ? '?user=' + encodeURIComponent(user) : '';
-    box.querySelectorAll('button').forEach(b => { b.disabled = true; });
-    try {
-      // The agent's clock ("YYYY-MM-DD HH:MM"), so 8:00 is theirs.
-      const now = (await (await fetch('/api/schedule' + q)).json()).now || '';
-      const m = /^(\d+)-(\d+)-(\d+) (\d+):(\d+)/.exec(now);
-      const base = m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) : new Date();
-      const [h, min] = hm.split(':').map(Number);
-      const when = new Date(base); when.setHours(h, min, 0, 0);
-      if (repeat === 'weekly' && hm === '18:00') { while (when.getDay() !== 0 || when <= base) when.setDate(when.getDate() + 1); }
-      else if (when <= base) when.setDate(when.getDate() + 1);
-      const p = n => String(n).padStart(2, '0');
-      const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())} ${p(when.getHours())}:${p(when.getMinutes())}`;
-      const r = await fetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user, when: stamp, action: text, repeat }) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || "That couldn't be scheduled.");
-      box.innerHTML = '';
-      const done = document.createElement('span');
-      done.className = 'q';
-      done.textContent = `Scheduled: ${label.toLowerCase()}. What it does each time shows up in Tasks. `;
-      const link = document.createElement('a');
-      link.textContent = 'Change it';
-      link.addEventListener('click', () => openApp('schedule'));
-      done.appendChild(link);
-      box.appendChild(done);
-    } catch (e) {
-      box.querySelectorAll('button').forEach(b => { b.disabled = false; });
-      box.querySelector('.q').textContent = e.message;
-    }
   }
   let lastAsk = '';
 
@@ -3559,7 +3476,7 @@
             // turn, including its tool-call requests. Rebuilding them from the
             // saved messages would drop back to the last request alone.
             renderConversation(evt.conversation, { keepLiveUsage: true });
-            if (!live) offerRepeat(lastAsk, turnTools);
+            if (!live) offerYes();
             offerUndo();
           }
         }
