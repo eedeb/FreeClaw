@@ -2298,8 +2298,15 @@ def _projects_block():
 # firmer wording; this line in the live context (which a host may move to the
 # end of the request) made it 5 of 6. Per request, and outside the cached
 # prefix, so it costs its own few tokens.
+# "One thing, not a choice between two": the chat's "Yes, do it" button
+# answers the offer, and to "open the Linode alert or the HACC update?" it
+# can't say which (2026-11-25). Replayed on that turn: 0 of 6 two-way offers
+# with this line, 5 of 6 replies still offering; pushing for "an action, not
+# open or fetch more" instead cut offers to 2 of 4 on an inbox with nothing
+# to reply to.
 OFFER_REMINDER = ("\nWhen you've finished: end with one short offer of the next thing you can do for "
-                  "them, like drafting a reply, scheduling a check or making something (\"Want me to…?\").")
+                  "them, like drafting a reply, scheduling a check or making something: one thing, not "
+                  "a choice between two (\"Want me to…?\").")
 
 
 def _offer_line():
