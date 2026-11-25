@@ -2292,13 +2292,36 @@ def _projects_block():
             "about one of these (\"my game\", \"my site\"), they mean that code.")
 
 
+# PROACTIVE_INSTRUCTION, said again where the model writes the reply. In the
+# instructions alone, ~14k tokens up, the reply ended with an offer 0 of 3
+# times on a real turn ("What's in my inbox from today?"), and 2-3 of 6 with
+# firmer wording; this line in the live context (which a host may move to the
+# end of the request) made it 5 of 6. Per request, and outside the cached
+# prefix, so it costs its own few tokens.
+OFFER_REMINDER = ("\nWhen you've finished: end with one short offer of the next thing you can do for "
+                  "them, like drafting a reply, scheduling a check or making something (\"Want me to…?\").")
+
+
+def _offer_line():
+    """OFFER_REMINDER for the main agent's turn from the person, with its
+    capabilities known; "" for a sub-agent or a scheduled task's run."""
+    sess = _sess()
+    if sess.depth > 0 or PROACTIVE_INSTRUCTION not in str((sess.messages or [{}])[0].get("content") or ""):
+        return ""
+    request = next((m.get("content") for m in reversed(sess.messages)
+                    if m.get("role") == "user" and not m.get("auto")), "")
+    if isinstance(request, str) and request.startswith(PING_PREFIX):
+        return ""
+    return OFFER_REMINDER
+
+
 def _volatile_tail():
     """Everything below _VOLATILE_HEADER, rebuilt on every request: the clock,
     the schedule, what was saved this conversation, the projects, the toolbox,
-    and this turn's notes."""
+    this turn's notes, and the reminder to offer a next step."""
     return (_now_line() + _pings_block() + _new_sections_line()
             + _live_context_block() + _projects_block() + _toolbox_block()
-            + _plan_block() + _sess().turn_notes + "\n")
+            + _plan_block() + _sess().turn_notes + _offer_line() + "\n")
 
 
 def _refresh_volatile():
