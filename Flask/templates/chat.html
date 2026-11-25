@@ -2773,7 +2773,23 @@
       const done = document.createElement('button');
       done.className = 'approval-btn signin-continue';
       done.textContent = card.done;
-      done.addEventListener('click', () => {
+      done.addEventListener('click', async () => {
+        // Hand the browser back first, if they still have it: "I'm signed in
+        // — continue" used to send its message with the browser still theirs,
+        // so the agent woke to "you're still in control" and asked them to
+        // press Hand back in the Browser window as well (2026-11-25). The
+        // hand-back is also what saves the new login for the agent. Not
+        // holding it is fine; nothing stops the message going.
+        done.disabled = true;
+        try {
+          const q = currentUser ? '?user=' + encodeURIComponent(currentUser) : '';
+          await Promise.race([
+            fetch('/api/browser/agent/control' + q, { method: 'POST',
+              headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ take: false }) }),
+            new Promise(r => setTimeout(r, 8000)),
+          ]);
+        } catch (_) { /* the message still goes */ }
+        done.disabled = false;
         inputEl.value = card.reply;
         // Mid-turn the send button is disabled; the text waits in the box.
         if (!sendBtn.disabled) sendMessage();

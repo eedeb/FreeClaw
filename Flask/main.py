@@ -1579,6 +1579,11 @@ def api_browser_agent_control():
     if error:
         return error
     data = request.get_json(silent=True) or {}
+    # `renew`: the Browser page keeping control it already has. Handed back
+    # meanwhile (the chat's "I'm signed in — continue" does that), it stays
+    # handed back: a renewal never takes control again.
+    if data.get('take') and data.get('renew') and not browser_live.holding(name):
+        return jsonify({'error': 'Handed back to the agent.', 'control': False}), 409
     if data.get('take'):
         # Made now, so the hand-back has somewhere to save to — and so one
         # that finds it gone knows the user was deleted meanwhile.

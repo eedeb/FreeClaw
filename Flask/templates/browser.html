@@ -1079,7 +1079,7 @@
       // another app runs none of its timers): say so, and the lease is long
       // enough to fetch a password or a sign-in code and come back.
       await api('agent/control', { method: 'POST',
-                                   body: JSON.stringify({ take: true, away: document.hidden }) });
+                                   body: JSON.stringify({ take: true, renew: true, away: document.hidden }) });
     } catch (e) {
       if (controlling) lostControl(e.message);
     }
