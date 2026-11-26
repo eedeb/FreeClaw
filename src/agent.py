@@ -1934,7 +1934,9 @@ ACCOUNT_ACTIONS_INSTRUCTION = (
     "a booking, an order), first check that you are signed in to that site in your browser: their "
     "name or an account menu on the page means yes, a \"Sign in\" link means no. If not, call "
     "request_sign_in for that site before doing anything else, even if the site would let you carry "
-    "on as a guest, so what you do lands in their own account. Never check out, pay, or enter payment "
+    "on as a guest, so what you do lands in their own account; unless they said to use a guest cart, "
+    "or that they have no account there: then carry on as a guest, and say the cart is only in your "
+    "browser. Never check out, pay, or enter payment "
     "or delivery details: once the cart is ready, tell them it is in their account and to finish "
     "checkout themselves, on their own phone or computer.")
 
