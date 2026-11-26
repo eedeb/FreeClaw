@@ -1313,6 +1313,7 @@ class Tools:
         self.b = browser
         self._emit = emit
         self._auto_cleared = {}          # site -> when its check was last cleared here
+        self._unchecked = None           # the page last asked about that showed no check
 
     async def run(self, name, args):
         if name not in TOOL_NAMES:
@@ -1758,6 +1759,22 @@ class Tools:
 
     # ── handing over ──
 
+    def _no_check_on(self, url):
+        """False when this page was already reported as showing no check: the
+        agent asked again, so it is handed over whatever the page looks like."""
+        return self._unchecked != url
+
+    async def _shows_check(self, page):
+        try:
+            if await page.evaluate(_CHECK_JS):
+                return True
+            for frame in page.frames[1:]:
+                if frame.url and re.search(r"captcha|challenge|turnstile|arkoselabs", frame.url, re.I):
+                    return True
+        except Exception:                                    # noqa: BLE001 — unsure: let them look
+            return True
+        return False
+
     async def t_request_captcha_help(self, reason=""):
         """Dumps the context's cookies to a private temp file and says where;
         FreeClaw keeps them as the user's saved logins and draws a button that
@@ -1769,6 +1786,10 @@ class Tools:
         url = page.url
         if not url.lower().startswith(_SCHEMES):
             raise ToolError("Nothing to hand over: open the page with the check first.")
+        if self._no_check_on(url) and not await self._shows_check(page):
+            self._unchecked = url
+            return [{"type": "text", "text": NO_CHECK.format(url=url)}]
+        self._unchecked = None
         self._status("Asking you to solve a check", busy=False)
         import src.browser_handoff as browser_handoff
         state = await self.b.context.storage_state()
@@ -1779,6 +1800,30 @@ class Tools:
         path = browser_handoff.write_state_file(state)
         return [{"type": "text", "text": json.dumps({"url": url, "title": title,
                                                      "state_file": path})}]
+
+
+# Whether the page shows a human check: a CAPTCHA widget's frame, a known
+# challenge page's form, or words that only such a page uses. request_captcha_help
+# looks before handing the browser over, because a page with nothing to solve
+# handed to the person stalls the task on them for nothing.
+_CHECK_JS = r"""
+() => {
+    const frames = [...document.querySelectorAll('iframe')].map(f => (f.src || '') + ' ' + (f.title || ''));
+    const frameRe = /recaptcha|hcaptcha|challenges\.cloudflare|turnstile|arkoselabs|funcaptcha|captcha-delivery|perimeterx|px-cloud|geetest|challenge/i;
+    if (frames.some(f => frameRe.test(f))) return true;
+    if (document.querySelector('#px-captcha, #challenge-form, #challenge-stage, .cf-turnstile, .g-recaptcha, .h-captcha, '
+        + 'form[action*="captcha" i], [id*="captcha" i], [class*="captcha" i], [name*="captcha" i]')) return true;
+    const text = (document.title + ' ' + ((document.body && document.body.innerText) || '').slice(0, 4000));
+    return /captcha|are you (a )?(robot|human)|not a robot|press (&|and) hold|verify (that )?you are (a )?human|unusual traffic|just a moment|checking your browser|security check|human verification|bot detection/i.test(text);
+}
+"""
+
+# Told to the agent when it asks for help with a page that shows no check.
+NO_CHECK = (
+    "No CAPTCHA or human check was found on this page ({url}), so the browser was not handed "
+    "over and the person was not asked anything. The page is usable as it is: a pop-up, banner "
+    "or sign-in offer on it can be closed or ignored. If there really is a check this missed, "
+    "call request_captcha_help again for this page.")
 
 
 def _button(name):
