@@ -324,10 +324,16 @@ def is_tiny(text):
 
 def _local_route(messages, end):
     """The route for a tiny message, without a Jev call: the last exchange,
-    no tools (load_tools still offers them all), no memory sections."""
+    no tools (load_tools still offers them all), no memory sections.
+
+    Its replies go "raw", with the tool calls and results behind them. As
+    text alone, a "Thx" after "Rickrolled, the video is queued on the TV" put
+    a claim in front of the model with nothing to back it: it spent seven
+    steps (~6 credits) searching its history for the tool's result, then took
+    the claim back (2026-11-26)."""
     cands = candidates(messages, end)
     last_user = max((i for i, role, _t, _u in cands if role == "user"), default=None)
-    picked = [(i, "text") for i, role, _t, _u in cands
+    picked = [(i, "raw" if role == "assistant" else "text") for i, role, _t, _u in cands
               if last_user is not None and i >= last_user]
     return Route("Smalltalk", "balanced", set(), picked, [], 0, {}, {}, local=True)
 
