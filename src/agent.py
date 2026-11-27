@@ -5176,6 +5176,33 @@ def _jev_tool_groups(user):
     return groups, servers
 
 
+# Up to this many tools are named one by one in a server's line for Jev; past
+# it, they're named by family so every kind of thing the server does is there.
+_JEV_TOOLS_NAMED = 10
+
+
+def _tool_families(names):
+    """A server's tools for its line to Jev. A short list goes whole. A long
+    one is folded into families on the first word of each name —
+    "smarthome: tv, plug, printer3d, tree; apps: mail, notes" — because the
+    first ten names alone can be ten of one kind: a home server's 64 tools
+    began with ten TV controls, so Jev never saw it had a 3D printer and sent
+    "3-D print me a smiley face" to the browser instead (2026-11-26)."""
+    if len(names) <= _JEV_TOOLS_NAMED:
+        return ", ".join(names)
+    families = {}
+    for name in names:
+        head, _, rest = name.partition("_")
+        sub = rest.split("_", 1)[0] if rest else ""
+        subs = families.setdefault(head, [])
+        if sub and sub not in subs:
+            subs.append(sub)
+    parts = [f"{head}: {', '.join(subs)}" if len(subs) > 1 else
+             (f"{head}_{subs[0]}" if subs else head)
+             for head, subs in families.items()]
+    return jev.one_line("; ".join(parts), 600)
+
+
 def _jev_server_about(server, server_tools, used_for):
     """One line on what an MCP server is for: its own description, else the
     App Store's, then its tools, then what it has actually been used for.
@@ -5199,9 +5226,7 @@ def _jev_server_about(server, server_tools, used_for):
         projects = mcp_client.developer_projects(_tools_user())
         if projects:
             line += f" The user's own projects here: {', '.join(projects)}."
-    line += f" Tools: {', '.join(names[:10])}"
-    if len(names) > 10:
-        line += " …"
+    line += f" Tools: {_tool_families(names)}"
     if used_for:
         line += ". Used before for: " + "; ".join(f'"{u}"' for u in used_for)
     return line
